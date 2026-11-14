@@ -19,7 +19,7 @@ OS_CC    ?= x86_64-elf-gcc
 OS_CXX   ?= x86_64-elf-g++
 OS_LD    ?= x86_64-elf-ld
 
-WARN     := -Wall -Wextra -Wno-unused-parameter
+WARN     := -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation
 LANG_CXX := -std=c++20 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 LANG_C   := -std=gnu11
 
@@ -36,6 +36,10 @@ OS_PROGRAMS   :=
 
 .PHONY: all host os test clean
 all: host
+
+# build/host/<path>.o and build/os/<path>.o for a list of sources.
+host_objs = $(patsubst %,$(BUILD)/host/%.o,$(1))
+os_objs   = $(patsubst %,$(BUILD)/os/%.o,$(1))
 
 include $(sort $(wildcard mk/*.mk))
 
@@ -62,9 +66,6 @@ $(BUILD)/os/%.cpp.o: %.cpp
 $(BUILD)/os/%.c.o: %.c
 	@mkdir -p $(dir $@)
 	$(OS_CC) $(LANG_C) $(OS_FLAGS) $(OS_EXTRA_FLAGS) -MMD -MP -c $< -o $@
-
-host_objs = $(patsubst %,$(BUILD)/host/%.o,$(1))
-os_objs   = $(patsubst %,$(BUILD)/os/%.o,$(1))
 
 clean:
 	rm -rf $(BUILD)

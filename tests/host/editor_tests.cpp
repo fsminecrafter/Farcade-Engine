@@ -98,6 +98,15 @@ static void object_screen(ObjectId id, float* sx, float* sy) {
     to_screen(o->position, sx, sy);
 }
 
+static const Editor::UiRect* ui(const char* key) { return E->find_rect(key); }
+
+static bool click_ui(const char* key, int b = 0) {
+    const Editor::UiRect* r = ui(key);
+    if (!r) return false;
+    click(r->x + r->w * 0.5f, r->y + r->h * 0.5f, b);
+    return true;
+}
+
 static const Editor::TileRect* tile(const char* name) {
     for (int i = 0; i < E->file_tile_count; i++)
         if (!strcmp(path_filename(E->file_tiles[i].path), name)) return &E->file_tiles[i];
@@ -202,16 +211,38 @@ int main() {
     // ---- hierarchy: click and shift-click rows
     ImGuiWindow* hw = ImGui::FindWindowByName("Hierarchy");
     CHECK(hw != nullptr, "hierarchy window exists");
-    if (hw) {
-        float row_h = ImGui::GetTextLineHeight() + 8 + ImGui::GetStyle().ItemSpacing.y;
-        float x = hw->InnerRect.Min.x + 40;
-        float y0 = hw->InnerRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y * 2 + 8;
+    {
         ed.scene.clear_selection();
         frames(1);
-        click(x, y0 + row_h * 0.5f);
-        CHECK(ed.scene.selected_count() == 1 && ed.scene.is_selected(a), "clicking the first row selects A");
-        shift_click(x, y0 + row_h * 1.5f);
-        CHECK(ed.scene.selected_count() == 2, "shift-clicking the second row adds B (count %d)", ed.scene.selected_count());
+        char ka[32], kb[32];
+        snprintf(ka, sizeof(ka), "hier:%u", a);
+        snprintf(kb, sizeof(kb), "hier:%u", b);
+        const Editor::UiRect* ra = ui(ka);
+        const Editor::UiRect* rb = ui(kb);
+        CHECK(ra && rb, "hierarchy rows for A and B are drawn");
+        if (ra && rb) {
+            float x = ra->x + 40, ya = ra->y + ra->h * 0.5f, yb = rb->y + rb->h * 0.5f;
+            click(x, ya);
+            CHECK(ed.scene.selected_count() == 1 && ed.scene.is_selected(a), "clicking the first row selects A");
+            shift_click(x, yb);
+            CHECK(ed.scene.selected_count() == 2, "shift-clicking the second row adds B (count %d)", ed.scene.selected_count());
+        }
+        // The eye at the end of a row hides the object without selecting it.
+        ed.scene.clear_selection();
+        frames(1);
+        char ke[32];
+        snprintf(ke, sizeof(ke), "eye:%u", b);
+        const Editor::UiRect* re = ui(ke);
+        CHECK(re != nullptr, "B's row has a visibility button");
+        if (re) {
+            float ex = re->x + re->w * 0.5f, ey = re->y + re->h * 0.5f;
+            ev_move(ex, ey); frames(2);
+            click(ex, ey);
+            CHECK(!ed.scene.get(b)->visible, "the eye hides B");
+            CHECK(ed.scene.selected_count() == 0, "and does not select it (count %d)", ed.scene.selected_count());
+            click(ex, ey);
+            CHECK(ed.scene.get(b)->visible, "a second click shows B again");
+        }
     }
 
     // ---- files: double-click opens in the configured editor
@@ -231,11 +262,10 @@ int main() {
         click(png->x + png->w * 0.5f, png->y + png->h * 0.5f, 1);
         ImGuiContext& g = *ImGui::GetCurrentContext();
         CHECK(g.OpenPopupStack.Size == 1, "right-click opens a menu (%d)", g.OpenPopupStack.Size);
-        if (g.OpenPopupStack.Size == 1 && g.OpenPopupStack[0].Window) {
-            ImGuiWindow* pw = g.OpenPopupStack[0].Window;
-            float lh = ImGui::GetTextLineHeight(), sp = ImGui::GetStyle().ItemSpacing.y;
-            float iy = pw->Pos.y + ImGui::GetStyle().WindowPadding.y + (lh + sp) * 1 + lh * 0.5f;
-            click(pw->Pos.x + 40, iy);
+        const Editor::UiRect* item = ui("menu:Open in file manager");
+        CHECK(item != nullptr, "the menu has \"Open in file manager\"");
+        if (item) {
+            click(item->x + 30, item->y + item->h * 0.5f);
             CHECK(strstr(platform::headless_last_reveal(), "crate.png") != nullptr, "Open in file manager asks for crate.png (\"%s\")",
                   platform::headless_last_reveal());
         }
@@ -260,6 +290,121 @@ int main() {
         CHECK(ed.scene.count() == before + 1, "a .mof dropped on the ground makes a new object (%d -> %d)", before, ed.scene.count());
         Object* last = &ed.scene.at(ed.scene.count() - 1);
         CHECK(last->mesh == MeshKind::Model && strstr(last->model_path, "ship.mof"), "the new object uses ship.mof");
+    }
+
+    // ---- the floating tool pill switches tools
+    ed.tool = Tool::Select;
+    frames(2);
+    CHECK(click_ui("tool:rotate"), "the tool pill has a rotate button");
+    CHECK(ed.tool == Tool::Rotate, "clicking it selects the rotate tool");
+    CHECK(click_ui("tool:move") && ed.tool == Tool::Move, "and the move button the move tool");
+    {
+        bool grid = ed.settings.show_grid;
+        click_ui("tool:grid");
+        CHECK(ed.settings.show_grid != grid, "the grid button toggles the grid");
+        click_ui("tool:grid");
+    }
+    // A click on the pill does not reach the view below (no deselection).
+    ed.scene.select_only(a);
+    frames(1);
+    click_ui("tool:space");
+    CHECK(ed.scene.selected_count() == 1 && ed.gizmo_local, "the pill eats its clicks; world/local flips");
+    ed.gizmo_local = false;
+
+    // ---- orientation gizmo: clicking an axis looks along it
+    frames(2);
+    CHECK(ui("axis:+y") && ui("axis:+x") && ui("axis:-z"), "the orientation gizmo shows its axes");
+    {
+        const Editor::UiRect* r = ui("axis:+x");
+        if (r) {
+            float gx = r->x + r->w * 0.5f, gy = r->y + r->h * 0.5f;
+            ev_move(gx, gy); frames(2);
+            click(gx, gy);
+            CHECK(ed.camera.yaw > 89.0f && ed.camera.yaw < 91.0f && ed.camera.pitch > -1 && ed.camera.pitch < 1,
+                  "clicking +X views from the right (yaw %.1f pitch %.1f)", ed.camera.yaw, ed.camera.pitch);
+        }
+        frames(1);
+        r = ui("axis:+y");
+        if (r) {
+            float gx = r->x + r->w * 0.5f, gy = r->y + r->h * 0.5f;
+            ev_move(gx, gy); frames(2);
+            click(gx, gy);
+            CHECK(ed.camera.pitch > 89.0f, "clicking +Y views from the top (pitch %.1f)", ed.camera.pitch);
+        }
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 20;
+        frames(2);
+    }
+
+    // ---- view menu
+    if (click_ui("view:menu")) {
+        frames(1);
+        CHECK(click_ui("menu:Right"), "the view menu lists Right");
+        CHECK(ed.camera.yaw > 89.0f && ed.camera.yaw < 91.0f, "View > Right looks from +X (yaw %.1f)", ed.camera.yaw);
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 20;
+        frames(2);
+    } else {
+        CHECK(false, "the viewport has a view menu");
+    }
+
+    // ---- renderer chip: display modes
+    if (click_ui("run:renderer")) {
+        frames(1);
+        CHECK(click_ui("menu:Wireframe") && ed.view_mode == ViewMode::Wireframe, "the renderer menu switches to wireframe");
+        frames(2);
+        CHECK(ed.view_triangles > 0, "wireframe still draws the scene (%d triangles)", ed.view_triangles);
+        click(ed.view_rect[0] + 300, ed.view_rect[1] + 10);    // closes the popup (lands on the view: clears selection)
+        ed.view_mode = ViewMode::Lit;
+        frames(2);
+    } else {
+        CHECK(false, "the top bar has a renderer chip");
+    }
+
+    // ---- play mode: Play saves the scene, Stop restores it exactly
+    {
+        ed.scene.select_only(a);
+        ed.scene.toggle(b);
+        int count0 = ed.scene.count();
+        Vec3 pos_a = ed.scene.get(a)->position;
+        ObjectId active0 = ed.scene.active();
+        frames(1);
+        CHECK(click_ui("run:play") && ed.playing(), "Play starts play mode");
+        frames(30);
+        CHECK(ed.play_time > 0.3, "play time runs (%.2f s)", ed.play_time);
+        // Change things while playing.
+        ed.scene.get(a)->position = Vec3(5, 5, 5);
+        ed.delete_selection();
+        ObjectId c = ed.create_object("C", MeshKind::Sphere, Vec3(0, 1, 0));
+        frames(2);
+        CHECK(ed.scene.count() == count0 - 1, "objects can change while playing (%d)", ed.scene.count());
+        CHECK(click_ui("run:stop") && !ed.playing(), "Stop ends play mode");
+        CHECK(ed.scene.count() == count0, "Stop brings back the deleted objects (%d)", ed.scene.count());
+        CHECK(ed.scene.get(a) && ed.scene.get(a)->position.x == pos_a.x && ed.scene.get(a)->position.y == pos_a.y,
+              "and A's position");
+        CHECK(ed.scene.get(c) == nullptr, "and removes what was made while playing");
+        CHECK(ed.scene.selected_count() == 2 && ed.scene.active() == active0, "and the selection (count %d, active %u)",
+              ed.scene.selected_count(), ed.scene.active());
+        ObjectId d = ed.create_object("D", MeshKind::Cube, Vec3(0, 0.5f, 3));
+        CHECK(d != c && d > c, "ids are not reused after Stop (%u after %u)", d, c);
+        ed.scene.remove(d);
+        // F5 toggles too.
+        ev_key(platform::KEY_F5, true); frames(1); ev_key(platform::KEY_F5, false); frames(1);
+        CHECK(ed.playing(), "F5 starts play mode");
+        ev_key(platform::KEY_F5, true); frames(1); ev_key(platform::KEY_F5, false); frames(1);
+        CHECK(!ed.playing(), "F5 again stops it");
+    }
+
+    // ---- console chips filter by level
+    {
+        ImGuiWindow* cw = ImGui::FindWindowByName("Console");
+        if (cw && cw->DockNode && cw->DockNode->TabBar) {
+            ImGuiTabItem* t = ImGui::TabBarFindTabByID(cw->DockNode->TabBar, cw->TabId);
+            if (t) click(cw->DockNode->TabBar->BarRect.Min.x + t->Offset + t->Width * 0.5f, cw->DockNode->TabBar->BarRect.GetCenter().y);
+        }
+        frames(2);
+        CHECK(ui("console:warnings") != nullptr, "the console shows level chips");
+        CHECK(click_ui("console:clear") && ed.log_count == 0, "the trash button clears the console");
     }
 
     // ---- panels can be dragged out of the dock

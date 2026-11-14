@@ -1,6 +1,7 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
 #include "icons.h"
+#include "widgets.h"
 #include "platform/platform.h"
 
 #include "imgui/imgui.h"
@@ -36,43 +37,117 @@ static const char* accept_file_drop() {
     return path;
 }
 
+// ---------------------------------------------------------------- shared
+
+// A text input with a search icon drawn inside, at the left.
+static bool search_field(const char* id, const char* hint, char* buf, size_t cap, float width) {
+    const Palette& pal = ui_palette();
+    float fs = ImGui::GetFontSize();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetNextItemWidth(width);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(fs + 12, ImGui::GetStyle().FramePadding.y));
+    bool r = ImGui::InputTextWithHint(id, hint, buf, cap);
+    ImGui::PopStyleVar();
+    float h = ImGui::GetItemRectSize().y;
+    draw_icon(ImGui::GetWindowDrawList(), Icon::Search, ImVec2(p.x + 7, p.y + (h - fs) * 0.5f), fs, pal.text_faint);
+    return r;
+}
+
 // ---------------------------------------------------------------- Hierarchy
 
 void Editor::panel_hierarchy() {
     ImGui::Begin("Hierarchy");
+    const float bs = ImGui::GetFrameHeight();
     static char filter[64];
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##filter", "Search", filter, sizeof(filter));
-    ImGui::Spacing();
+    search_field("##filter", "Filter objects", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
+    track("hier:filter");
+    ImGui::SameLine(0, 4);
+    if (icon_button(Icon::Plus, "Add an object", false, bs)) ImGui::OpenPopup("##add");
+    track("hier:add");
+    if (ImGui::BeginPopup("##add")) {
+        Vec3 at = camera.target;
+        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, Vec3(at.x, 0.5f, at.z));
+        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, Vec3(at.x, 0.5f, at.z));
+        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, Vec3(at.x, 0.5f, at.z));
+        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
+        ImGui::EndPopup();
+    }
+    ImGui::Dummy(ImVec2(0, 2));
 
     ImGui::BeginChild("##objects");
-    float row_h = ImGui::GetTextLineHeight() + 8;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float fs = ImGui::GetFontSize();
+    float row_h = bs + 1;
+    // The scene root.
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        draw_icon(dl, Icon::Layers, ImVec2(p.x + 4, p.y + (row_h - fs) * 0.5f), fs, pal.text_dim);
+        if (font_medium) ImGui::PushFont(font_medium, 0.0f);
+        dl->AddText(ImVec2(p.x + fs + 11, p.y + (row_h - fs) * 0.5f), pal.text, "Scene");
+        if (font_medium) ImGui::PopFont();
+        char cnt[16];
+        snprintf(cnt, sizeof(cnt), "%d", scene.count());
+        float cw = ImGui::CalcTextSize(cnt).x;
+        dl->AddText(ImVec2(p.x + ImGui::GetContentRegionAvail().x - cw - 6, p.y + (row_h - fs) * 0.5f), pal.text_faint, cnt);
+        ImGui::Dummy(ImVec2(0, row_h));
+    }
+
     ObjectId clicked = kNoObject;
     bool shift = ImGui::GetIO().KeyShift;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
         if (filter[0] && !ImStristr(o.name, nullptr, filter, nullptr)) continue;
         ImGui::PushID((int)o.id);
         bool sel = scene.is_selected(o.id);
         ImVec2 pos = ImGui::GetCursorScreenPos();
-        if (ImGui::Selectable("##row", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, row_h))) clicked = o.id;
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) frame_selection();
+        float w = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Selectable("##row", sel, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, row_h)))
+            clicked = o.id;
+        bool hov = ImGui::IsItemHovered();
+        char key[32];
+        snprintf(key, sizeof(key), "hier:%u", o.id);
+        track(key);
+        if (hov && ImGui::IsMouseDoubleClicked(0)) frame_selection();
         if (const char* path = accept_file_drop()) apply_file_to_object(path, o.id);
         if (ImGui::BeginPopupContextItem("##ctx")) {
             if (!sel) scene.select_only(o.id);
-            if (ImGui::MenuItem("Frame", "F")) frame_selection();
-            if (ImGui::MenuItem("Duplicate", "Ctrl+D")) duplicate_selection();
-            if (ImGui::MenuItem("Delete", "Del")) delete_selection();
+            if (menu_item("Frame", "F")) frame_selection();
+            if (menu_item("Duplicate", "Ctrl+D")) duplicate_selection();
+            if (menu_item(o.visible ? "Hide" : "Show")) o.visible = !o.visible;
+            ImGui::Separator();
+            if (menu_item("Delete", "Del")) delete_selection();
             ImGui::EndPopup();
         }
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        float ih = ImGui::GetTextLineHeight();
-        ImU32 icol = sel ? ImGui::GetColorU32(ImVec4(0.45f, 0.65f, 1.0f, 1.0f)) : dim_text();
-        draw_icon(dl, mesh_icon(o.mesh), ImVec2(pos.x + 4, pos.y + (row_h - ih) * 0.5f), ih, icol);
-        dl->AddText(ImVec2(pos.x + ih + 12, pos.y + (row_h - ih) * 0.5f),
-                    ImGui::GetColorU32(o.visible ? ImGuiCol_Text : ImGuiCol_TextDisabled), o.name);
+        // The row: a rounded highlight, the active object marked at the left.
+        ImVec2 rmax(pos.x + w, pos.y + row_h);
+        if (sel) dl->AddRectFilled(pos, rmax, pal.accent_soft, 4.0f);
+        else if (hov) dl->AddRectFilled(pos, rmax, pal.hover, 4.0f);
+        if (o.id == scene.active()) dl->AddRectFilled(ImVec2(pos.x, pos.y + 4), ImVec2(pos.x + 2.5f, rmax.y - 4), pal.accent, 1.0f);
+        float indent = 14.0f;
+        float ty = pos.y + (row_h - fs) * 0.5f;
+        ImU32 icol = sel ? pal.accent_text : pal.text_dim;
+        draw_icon(dl, mesh_icon(o.mesh), ImVec2(pos.x + indent, ty), fs, icol);
+        dl->AddText(ImVec2(pos.x + indent + fs + 7, ty), o.visible ? pal.text : pal.text_faint, o.name);
+        // Visibility, at the right end of the row.
+        float eb = row_h - 2;
+        ImGui::SameLine(0, 0);
+        ImGui::SetCursorScreenPos(ImVec2(rmax.x - eb - 2, pos.y + 1));
+        // Shown on the hovered and selected rows, and always for hidden objects.
+        bool eye_hover = ImGui::IsMouseHoveringRect(ImVec2(rmax.x - eb - 2, pos.y), rmax);
+        ImU32 eye_col = !o.visible ? pal.text_dim : ((hov || sel || eye_hover) ? pal.text_dim : 0x00000000u);
+        if (icon_button(o.visible ? Icon::Eye : Icon::EyeOff, o.visible ? "Hide" : "Show", false, eb, eye_col ? eye_col : 0x00FFFFFFu))
+            o.visible = !o.visible;
+        snprintf(key, sizeof(key), "eye:%u", o.id);
+        track(key);
+        ImGui::SetCursorScreenPos(ImVec2(pos.x, rmax.y + 1));
         ImGui::PopID();
     }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
     if (clicked != kNoObject) {
         if (shift) scene.toggle(clicked);
         else scene.select_only(clicked);
@@ -87,10 +162,11 @@ void Editor::panel_hierarchy() {
         }
     }
     if (ImGui::BeginPopupContextItem("##create")) {
-        if (ImGui::MenuItem("Cube")) create_object("Cube", MeshKind::Cube, Vec3(0, 0.5f, 0));
-        if (ImGui::MenuItem("Sphere")) create_object("Sphere", MeshKind::Sphere, Vec3(0, 0.5f, 0));
-        if (ImGui::MenuItem("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, Vec3(0, 0.5f, 0));
-        if (ImGui::MenuItem("Plane")) create_object("Plane", MeshKind::Plane, Vec3(0, 0, 0));
+        ImGui::TextDisabled("Add");
+        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, Vec3(0, 0.5f, 0));
+        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, Vec3(0, 0.5f, 0));
+        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(0, 0, 0));
         ImGui::EndPopup();
     }
     ImGui::EndChild();
@@ -99,47 +175,62 @@ void Editor::panel_hierarchy() {
 
 // ---------------------------------------------------------------- Inspector
 
-// X/Y/Z drag fields with a colored bar per axis.
+// X/Y/Z drag fields, each with its axis letter in the axis color.
 static bool vec3_field(const char* label, Vec3* v, float speed, const char* fmt) {
+    const Palette& pal = ui_palette();
     bool changed = false;
     ImGui::PushID(label);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(84);
+    prop_label(label);
     float w = (ImGui::GetContentRegionAvail().x - 8) / 3.0f;
-    static const ImU32 axis[3] = { IM_COL32(230, 80, 80, 255), IM_COL32(110, 200, 90, 255), IM_COL32(80, 140, 240, 255) };
+    static const char* letters[3] = { "X", "Y", "Z" };
     float* f = &v->x;
+    float fs = ImGui::GetFontSize();
     for (int i = 0; i < 3; i++) {
         if (i) ImGui::SameLine(0, 4);
         ImGui::PushID(i);
         ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::SetNextItemWidth(w);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(fs * 0.9f, ImGui::GetStyle().FramePadding.y));
         changed |= ImGui::DragFloat("##v", &f[i], speed, 0, 0, fmt);
+        ImGui::PopStyleVar();
         float h = ImGui::GetFrameHeight();
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + 4), ImVec2(p.x + 3, p.y + h - 4), axis[i], 1.5f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + 2.0f, p.y + h), pal.axis[i], 1.0f);
+        dl->AddText(ImVec2(p.x + 6, p.y + (h - fs) * 0.5f), pal.axis[i], letters[i]);
         ImGui::PopID();
     }
     ImGui::PopID();
     return changed;
 }
 
-static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bool (*accepts)(const char*)) {
+// A file slot: shows the file (or "None"), takes a file dropped on it.
+static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bool (*accepts)(const char*), Icon icon) {
+    const Palette& pal = ui_palette();
     ImGui::PushID(label);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(84);
-    float w = ImGui::GetContentRegionAvail().x - (path[0] ? ImGui::GetFrameHeight() + 4 : 0);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-    ImGui::Button(path[0] ? path_filename(path) : "Drop a file here", ImVec2(w, 0));
-    ImGui::PopStyleColor();
-    if (path[0] && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path);
-    if (const char* p = accept_file_drop()) {
-        if (accepts(p)) snprintf(path, cap, "%s", p);
-        else ed->log(LogLevel::Warning, "%s does not fit the %s slot", path_filename(p), label);
+    prop_label(label);
+    float bs = ImGui::GetFrameHeight();
+    float w = ImGui::GetContentRegionAvail().x - (path[0] ? bs + 4 : 0);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##slot", ImVec2(w, bs));
+    bool hov = ImGui::IsItemHovered();
+    bool target = ImGui::GetDragDropPayload() != nullptr;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + bs), hov ? pal.hover : pal.frame, 4.0f);
+    if (target) dl->AddRect(p, ImVec2(p.x + w, p.y + bs), pal.accent, 4.0f, 0, 1.0f);
+    float fs = ImGui::GetFontSize();
+    draw_icon(dl, icon, ImVec2(p.x + 7, p.y + (bs - fs) * 0.5f), fs, path[0] ? pal.accent_text : pal.text_faint);
+    dl->PushClipRect(p, ImVec2(p.x + w - 4, p.y + bs), true);
+    dl->AddText(ImVec2(p.x + fs + 13, p.y + (bs - fs) * 0.5f), path[0] ? pal.text : pal.text_faint,
+                path[0] ? path_filename(path) : "None (drop a file)");
+    dl->PopClipRect();
+    if (path[0] && hov) ImGui::SetTooltip("%s", path);
+    if (const char* d = accept_file_drop()) {
+        if (accepts(d)) snprintf(path, cap, "%s", d);
+        else ed->log(LogLevel::Warning, "%s does not fit the %s slot", path_filename(d), label);
     }
     if (path[0]) {
         ImGui::SameLine(0, 4);
-        if (ImGui::Button("x", ImVec2(ImGui::GetFrameHeight(), 0))) path[0] = 0;
+        if (icon_button(Icon::Close, "Clear", false, bs)) path[0] = 0;
     }
     ImGui::PopID();
 }
@@ -148,23 +239,56 @@ void Editor::panel_inspector() {
     ImGui::Begin("Inspector");
     int n = scene.selected_count();
     Object* o = scene.get(scene.active());
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float fs = ImGui::GetFontSize();
     if (!o) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("Select an object in the viewport or the hierarchy to edit it here.");
-        ImGui::TextWrapped("Shift-click adds objects to the selection.");
-        ImGui::PopStyleColor();
+        // Empty state, centered.
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float cy = p.y + avail.y * 0.38f;
+        draw_icon(dl, Icon::Cube, ImVec2(p.x + avail.x * 0.5f - 18, cy - 44), 36, pal.text_faint);
+        const char* l1 = "Nothing selected";
+        const char* l2 = "Click an object in the viewport or the hierarchy.";
+        const char* l3 = "Shift-click adds to the selection.";
+        if (font_medium) ImGui::PushFont(font_medium, 0.0f);
+        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l1).x) * 0.5f, cy), pal.text_dim, l1);
+        if (font_medium) ImGui::PopFont();
+        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l2).x) * 0.5f, cy + fs + 8), pal.text_faint, l2);
+        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l3).x) * 0.5f, cy + fs * 2 + 12), pal.text_faint, l3);
         ImGui::End();
         return;
     }
-    if (n > 1) {
-        ImGui::TextDisabled("%d objects selected; editing %s", n, o->name);
-        ImGui::Spacing();
-    }
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputText("##name", o->name, sizeof(o->name));
-    ImGui::Spacing();
 
-    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Header: the object's icon on its color, the name, what it is.
+    {
+        float big = ImGui::GetFrameHeight() * 2 + 4;
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        auto ch = [](float v) { return (int)(fclamp(v, 0.0f, 1.0f) * 255.0f); };
+        ImU32 tint = IM_COL32(ch(o->color.x), ch(o->color.y), ch(o->color.z), 60);
+        dl->AddRectFilled(p, ImVec2(p.x + big, p.y + big), pal.frame, 6.0f);
+        dl->AddRectFilled(p, ImVec2(p.x + big, p.y + big), tint, 6.0f);
+        // The icon in the object's color, lifted on dark and deepened on light.
+        float lift = settings.dark_theme ? 0.4f : 0.0f, keep = settings.dark_theme ? 0.6f : 0.75f;
+        draw_icon(dl, mesh_icon(o->mesh), ImVec2(p.x + big * 0.22f, p.y + big * 0.22f), big * 0.56f,
+                  IM_COL32(ch(o->color.x * keep + lift), ch(o->color.y * keep + lift), ch(o->color.z * keep + lift), 255));
+        ImGui::Dummy(ImVec2(big, big));
+        ImGui::SameLine(0, 8);
+        ImGui::BeginGroup();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (font_medium) ImGui::PushFont(font_medium, 0.0f);
+        ImGui::InputText("##name", o->name, sizeof(o->name));
+        if (font_medium) ImGui::PopFont();
+        static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model" };
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        if (n > 1) ImGui::Text("%s   #%u   +%d more selected", kinds[(int)o->mesh], o->id, n - 1);
+        else ImGui::Text("%s   #%u", kinds[(int)o->mesh], o->id);
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+
+    if (section_header("Transform", Icon::Move)) {
         Vec3 pos = o->position, scl = o->scale;
         Vec3 rot = o->rotation.to_euler_deg();
         Vec3 old_pos = pos;
@@ -176,29 +300,32 @@ void Editor::panel_inspector() {
         }
         if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
         if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
+        ImGui::Dummy(ImVec2(0, 4));
     }
-    if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (section_header("Mesh", Icon::Cube)) {
         static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model (.mof)" };
         int k = (int)o->mesh;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Shape");
-        ImGui::SameLine(84);
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        prop_label("Shape");
         if (ImGui::Combo("##shape", &k, kinds, 5)) o->mesh = (MeshKind)k;
-        if (o->mesh == MeshKind::Model) slot_field("Model", o->model_path, sizeof(o->model_path), this, path_is_model);
-        ImGui::Checkbox("Visible", &o->visible);
+        if (o->mesh == MeshKind::Model) slot_field("Model", o->model_path, sizeof(o->model_path), this, path_is_model, Icon::Model);
+        prop_label("Visible");
+        toggle_switch("##visible", &o->visible);
+        track("inspector:visible");
+        ImGui::Dummy(ImVec2(0, 4));
     }
-    if (ImGui::CollapsingHeader("Look", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Color");
-        ImGui::SameLine(84);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::ColorEdit3("##color", &o->color.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-        slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image);
+    if (section_header("Look", Icon::Sun)) {
+        prop_label("Color");
+        ImGui::ColorEdit3("##color", &o->color.x, ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_DisplayHex);
+        slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image, Icon::Image);
+        ImGui::Dummy(ImVec2(0, 4));
     }
-    if (ImGui::CollapsingHeader("Script", ImGuiTreeNodeFlags_DefaultOpen)) {
-        slot_field("Script", o->script_path, sizeof(o->script_path), this, path_is_script);
-        if (o->script_path[0] && ImGui::Button("Edit script")) open_file(o->script_path);
+    if (section_header("Script", Icon::Script)) {
+        slot_field("Script", o->script_path, sizeof(o->script_path), this, path_is_script, Icon::Script);
+        if (o->script_path[0]) {
+            prop_label("");
+            if (ImGui::Button("Open in editor", ImVec2(-FLT_MIN, 0))) open_file(o->script_path);
+        }
+        ImGui::Dummy(ImVec2(0, 4));
     }
     ImGui::End();
 }
@@ -264,7 +391,10 @@ ImU32 file_color(const platform::DirEntry& e) {
 void Editor::panel_files() {
     ImGui::Begin("Files");
     if (!g_listing.valid || strcmp(g_listing.dir, files_dir)) refresh(files_dir);
+    static char selected_file[512];
+    static char filter[64];
 
+    // Toolbar: up, refresh, the folder as clickable parts, a filter.
     float bs = ImGui::GetFrameHeight();
     bool at_root = !strcmp(files_dir, project_dir);
     ImGui::BeginDisabled(at_root);
@@ -275,49 +405,93 @@ void Editor::panel_files() {
     ImGui::EndDisabled();
     ImGui::SameLine(0, 2);
     if (icon_button(Icon::Refresh, "Refresh", false, bs)) refresh(files_dir);
-    ImGui::SameLine(0, 10);
-    ImGui::AlignTextToFramePadding();
-    // The folder, relative to the project ("MyGame / assets / textures").
+    ImGui::SameLine(0, 8);
+    char go_to[256] = {};
     size_t pl = strlen(project_dir);
+    auto crumb = [&](const char* label, int len, const char* target_end) {
+        char text[96];
+        snprintf(text, sizeof(text), "%.*s", len, label);
+        ImGui::PushID(target_end);
+        float tw = ImGui::CalcTextSize(text).x + 12;
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##crumb", ImVec2(tw, bs))) {
+            size_t n = (size_t)(target_end - files_dir);
+            snprintf(go_to, sizeof(go_to), "%.*s", (int)n, files_dir);
+        }
+        bool last = *target_end == 0;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (ImGui::IsItemHovered()) dl->AddRectFilled(p, ImVec2(p.x + tw, p.y + bs), pal.hover, 4.0f);
+        float fs = ImGui::GetFontSize();
+        if (last && font_medium) ImGui::PushFont(font_medium, 0.0f);
+        dl->AddText(ImVec2(p.x + 6, p.y + (bs - fs) * 0.5f), last ? pal.text : pal.text_dim, text);
+        if (last && font_medium) ImGui::PopFont();
+        ImGui::PopID();
+    };
     if (!strncmp(files_dir, project_dir, pl)) {
-        ImGui::TextUnformatted(path_filename(project_dir));
+        const char* pname = path_filename(project_dir);
+        crumb(pname, (int)strlen(pname), files_dir + pl);
         for (const char* p = files_dir + pl; *p;) {
             while (*p == '/') p++;
             if (!*p) break;
             const char* e = p;
             while (*e && *e != '/') e++;
-            ImGui::SameLine(0, 6);
-            ImGui::TextDisabled("/");
-            ImGui::SameLine(0, 6);
-            ImGui::Text("%.*s", (int)(e - p), p);
+            ImGui::SameLine(0, 0);
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            float fs = ImGui::GetFontSize();
+            draw_icon(ImGui::GetWindowDrawList(), Icon::ChevronRight, ImVec2(cp.x, cp.y + (bs - fs * 0.8f) * 0.5f), fs * 0.8f, pal.text_faint);
+            ImGui::Dummy(ImVec2(fs * 0.8f, bs));
+            ImGui::SameLine(0, 0);
+            crumb(p, (int)(e - p), e);
             p = e;
         }
     } else {
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", files_dir);
     }
-    ImGui::Separator();
+    float fw = 180 * settings.ui_scale;
+    ImGui::SameLine(0, 0);
+    float right = ImGui::GetWindowContentRegionMax().x - fw;
+    if (right > ImGui::GetCursorPosX() + 10) {
+        ImGui::SameLine(right);
+        search_field("##filefilter", "Filter files", filter, sizeof(filter), fw);
+    } else {
+        ImGui::NewLine();
+    }
+    if (go_to[0]) snprintf(files_dir, sizeof(files_dir), "%s", go_to);
+    ImGui::Dummy(ImVec2(0, 2));
 
     ImGui::BeginChild("##grid");
     if (!g_listing.valid) ImGui::TextDisabled("This folder cannot be read.");
-    float tile = 84.0f * settings.ui_scale, icon = 34.0f * settings.ui_scale;
-    int cols = (int)(ImGui::GetContentRegionAvail().x / (tile + 8));
+    float tile = 80.0f * settings.ui_scale, icon = 32.0f * settings.ui_scale;
+    float gap = 6.0f;
+    int cols = (int)((ImGui::GetContentRegionAvail().x + gap) / (tile + gap));
     if (cols < 1) cols = 1;
     char open_dir[256] = {};
     file_tile_count = 0;
+    int shown = 0;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
     for (int i = 0; i < g_listing.count; i++) {
         const platform::DirEntry& e = g_listing.items[i];
+        if (filter[0] && !ImStristr(e.name, nullptr, filter, nullptr)) continue;
         char full[512];
         join(full, sizeof(full), files_dir, e.name);
         ImGui::PushID(i);
-        if (i % cols) ImGui::SameLine(0, 8);
+        if (shown++ % cols) ImGui::SameLine();
         ImVec2 p = ImGui::GetCursorScreenPos();
-        ImGui::Selectable("##tile", false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(tile, tile));
+        bool sel = !strcmp(selected_file, full);
+        if (ImGui::Selectable("##tile", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(tile, tile)))
+            snprintf(selected_file, sizeof(selected_file), "%s", full);
+        bool hov = ImGui::IsItemHovered();
         if (file_tile_count < kMaxTiles) {
             TileRect& tr = file_tiles[file_tile_count++];
             snprintf(tr.path, sizeof(tr.path), "%s", full);
             tr.x = p.x; tr.y = p.y; tr.w = tile; tr.h = tile;
         }
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+        if (hov && ImGui::IsMouseDoubleClicked(0)) {
             if (e.is_dir) snprintf(open_dir, sizeof(open_dir), "%s", full);
             else open_file(full);
         }
@@ -330,41 +504,47 @@ void Editor::panel_files() {
             ImGui::EndDragDropSource();
         }
         if (ImGui::BeginPopupContextItem("##ctx")) {
-            if (ImGui::MenuItem(e.is_dir ? "Open folder" : "Open")) {
+            snprintf(selected_file, sizeof(selected_file), "%s", full);
+            if (menu_item(e.is_dir ? "Open folder" : "Open")) {
                 if (e.is_dir) snprintf(open_dir, sizeof(open_dir), "%s", full);
                 else open_file(full);
             }
             const char* why = platform::reveal_unavailable_reason();
-            if (ImGui::MenuItem("Open in file manager", nullptr, false, why == nullptr)) {
+            if (menu_item("Open in file manager", nullptr, false, why == nullptr)) {
                 if (!platform::reveal_in_file_manager(full)) log(LogLevel::Error, "Could not open the file manager");
             }
             if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
-            if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(full);
+            if (menu_item("Copy path")) ImGui::SetClipboardText(full);
             ImGui::EndPopup();
         }
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        draw_icon(dl, file_icon(e), ImVec2(p.x + (tile - icon) * 0.5f, p.y + 8), icon, file_color(e));
+        ImVec2 q(p.x + tile, p.y + tile);
+        if (sel) dl->AddRectFilled(p, q, pal.accent_soft, 6.0f);
+        else if (hov) dl->AddRectFilled(p, q, pal.hover, 6.0f);
+        draw_icon(dl, file_icon(e), ImVec2(p.x + (tile - icon) * 0.5f, p.y + 10), icon, file_color(e));
         // Name, cut to the tile width.
         char label[40];
         snprintf(label, sizeof(label), "%s", e.name);
         ImFont* f = ImGui::GetFont();
         float fs = ImGui::GetFontSize();
-        while (strlen(label) > 4 && f->CalcTextSizeA(fs, FLT_MAX, 0, label).x > tile - 6) {
+        while (strlen(label) > 4 && f->CalcTextSizeA(fs, FLT_MAX, 0, label).x > tile - 8) {
             size_t n = strlen(label);
             label[n - 4] = '.'; label[n - 3] = '.'; label[n - 2] = 0;
         }
         float tw = f->CalcTextSizeA(fs, FLT_MAX, 0, label).x;
-        dl->AddText(ImVec2(p.x + (tile - tw) * 0.5f, p.y + tile - fs - 8), ImGui::GetColorU32(ImGuiCol_Text), label);
+        dl->AddText(ImVec2(p.x + (tile - tw) * 0.5f, p.y + tile - fs - 10), sel ? pal.text : pal.text_dim, label);
         ImGui::PopID();
     }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
     if (open_dir[0]) snprintf(files_dir, sizeof(files_dir), "%s", open_dir);
     // Empty space: context menu for the folder itself.
     ImGui::Dummy(ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 20)));
+    if (ImGui::IsItemClicked(0)) selected_file[0] = 0;
     if (ImGui::BeginPopupContextItem("##folderctx")) {
         const char* why = platform::reveal_unavailable_reason();
-        if (ImGui::MenuItem("Open folder in file manager", nullptr, false, why == nullptr)) platform::reveal_in_file_manager(files_dir);
+        if (menu_item("Open folder in file manager", nullptr, false, why == nullptr)) platform::reveal_in_file_manager(files_dir);
         if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
-        if (ImGui::MenuItem("Refresh")) refresh(files_dir);
+        if (menu_item("Refresh")) refresh(files_dir);
         ImGui::EndPopup();
     }
     if (g_listing.count == 0 && g_listing.valid)
@@ -378,27 +558,58 @@ void Editor::panel_files() {
 void Editor::panel_console() {
     ImGui::Begin("Console");
     static bool show[3] = { true, true, true };
-    if (ImGui::Button("Clear")) { log_count = 0; log_head = 0; }
-    ImGui::SameLine();
-    ImGui::Checkbox("Info", &show[0]);
-    ImGui::SameLine();
-    ImGui::Checkbox("Warnings", &show[1]);
-    ImGui::SameLine();
-    ImGui::Checkbox("Errors", &show[2]);
-    ImGui::Separator();
-    ImGui::BeginChild("##log");
-    ImGui::PushFont(font_mono, 0.0f);
-    static const ImU32 colors[3] = { IM_COL32(150, 160, 175, 255), IM_COL32(240, 190, 80, 255), IM_COL32(240, 95, 95, 255) };
+    static char filter[64];
+    int counts[3] = { 0, 0, 0 };
+    for (int i = 0; i < log_count; i++) counts[(int)log_lines[(log_head + i) % kLogLines].level]++;
     static const Icon icons[3] = { Icon::Info, Icon::Warning, Icon::Error };
+    ImU32 colors[3] = { pal.text_dim, pal.warning, pal.error };
+    static const char* names[3] = { "info", "warnings", "errors" };
+    for (int k = 0; k < 3; k++) {
+        if (k) ImGui::SameLine(0, 4);
+        char label[32], id[16];
+        snprintf(label, sizeof(label), "%d", counts[k]);
+        snprintf(id, sizeof(id), "##chip%d", k);
+        if (chip(id, icons[k], colors[k], label, show[k])) show[k] = !show[k];
+        ImGui::SetItemTooltip("Show %s", names[k]);
+        char key[24];
+        snprintf(key, sizeof(key), "console:%s", names[k]);
+        track(key);
+    }
+    ImGui::SameLine(0, 10);
+    float bs = ImGui::GetFrameHeight();
+    float fw = ImGui::GetContentRegionAvail().x - bs - 6;
+    if (fw > 260) fw = 260;
+    search_field("##logfilter", "Filter messages", filter, sizeof(filter), fw);
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - bs);
+    if (icon_button(Icon::Trash, "Clear the console", false, bs)) { log_count = 0; log_head = 0; }
+    track("console:clear");
+    ImGui::Dummy(ImVec2(0, 1));
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(pal.app_bg & 0x60FFFFFF));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+    ImGui::BeginChild("##log", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::PushFont(font_mono, 0.0f);
     float lh = ImGui::GetTextLineHeight();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    double t0 = log_count ? log_lines[log_head].time : 0.0;
     for (int i = 0; i < log_count; i++) {
         const LogLine& l = log_lines[(log_head + i) % kLogLines];
         if (!show[(int)l.level]) continue;
+        if (filter[0] && !ImStristr(l.text, nullptr, filter, nullptr)) continue;
         ImVec2 p = ImGui::GetCursorScreenPos();
-        draw_icon(ImGui::GetWindowDrawList(), icons[(int)l.level], ImVec2(p.x, p.y + 1), lh - 2, colors[(int)l.level]);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + lh + 4, p.y));
-        if (l.level == LogLevel::Info) ImGui::TextUnformatted(l.text);
-        else ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colors[(int)l.level]), "%s", l.text);
+        char ts[16];
+        double t = l.time - t0;
+        snprintf(ts, sizeof(ts), "%02d:%04.1f", (int)(t / 60), t - 60 * (int)(t / 60));
+        dl->AddText(p, pal.text_faint, ts);
+        float tx = p.x + ImGui::CalcTextSize("00:00.0").x + 10;
+        draw_icon(dl, icons[(int)l.level], ImVec2(tx, p.y + 1), lh - 2, colors[(int)l.level]);
+        ImGui::SetCursorScreenPos(ImVec2(tx + lh + 6, p.y));
+        ImU32 tc = l.level == LogLevel::Info ? pal.text : colors[(int)l.level];
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(tc));
+        ImGui::TextUnformatted(l.text);
+        ImGui::PopStyleColor();
     }
     ImGui::PopFont();
     if (log_scroll_to_end) { ImGui::SetScrollHereY(1.0f); log_scroll_to_end = false; }

@@ -45,6 +45,17 @@ class Scene {
 public:
     Scene();
     ~Scene();
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+
+    // Makes this scene an exact copy of `other`: objects (with their ids),
+    // the next id, the selection and the active object. Play mode uses it to
+    // put the scene back when play stops.
+    void copy_from(const Scene& other);
+    // The id the next created object gets; ids are never handed out twice
+    // (Stop keeps the higher of the two, see Editor::stop).
+    ObjectId next_id() const { return next_id_; }
+    void keep_ids_above(ObjectId next) { if (next > next_id_) next_id_ = next; }
 
     ObjectId create(const char* name, MeshKind mesh);
     void remove(ObjectId id);

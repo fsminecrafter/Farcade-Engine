@@ -2,6 +2,7 @@
 #pragma once
 
 #include "scene.h"
+#include "widgets.h"
 #include <stdint.h>
 
 struct ImFont;
@@ -10,6 +11,8 @@ namespace fe {
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
+enum class ViewMode : uint8_t { Lit, Unlit, Wireframe };
+
 
 // What opens a file on double-click: a program per extension (Settings).
 struct FileEditor {
@@ -44,6 +47,7 @@ struct Camera {
 
 class Editor {
 public:
+    ~Editor();
     bool init(int width, int height);
     // One UI frame: builds the UI and renders it into the platform's
     // framebuffer. Returns false when the editor should quit.
@@ -56,6 +60,8 @@ public:
     Camera camera;
     Tool tool = Tool::Move;
     bool gizmo_local = false;
+    ViewMode view_mode = ViewMode::Lit;
+    Palette pal = {};
     char project_dir[256] = {};
     char files_dir[256] = {};
 
@@ -67,8 +73,17 @@ public:
     void duplicate_selection();
     void frame_selection();
     void apply_theme();
+    void set_view(float yaw, float pitch);      // orbit the camera to a fixed direction
+
+    // ---- play mode: Play saves the scene, Stop puts it back. Game code
+    // (Lua, C++) does not run yet; that comes with the runtime.
+    bool playing() const { return play_backup_ != nullptr; }
+    void play();
+    void stop();
+    double play_time = 0.0;
 
     ImFont* font_ui = nullptr;
+    ImFont* font_medium = nullptr;      // headings, tabs, section titles
     ImFont* font_mono = nullptr;
     bool show_settings = false;
     bool show_demo = false;
@@ -77,6 +92,21 @@ public:
 
     // Where things were drawn in the last frame (tests and tools use these).
     float view_rect[4] = {};            // viewport x, y, width, height
+    // Named rectangles of the last frame: "hier:<id>", "eye:<id>",
+    // "menu:<label>", "tool:<name>", "run:play", "run:stop", "axis:+x", ...
+    struct UiRect { char key[48]; float x, y, w, h; };
+    static constexpr int kMaxUiRects = 256;
+    UiRect ui_rects[kMaxUiRects];
+    int ui_rect_count = 0;
+    void track(const char* key);                // records the last item's rectangle
+    void track_rect(const char* key, float x, float y, float w, float h);
+    const UiRect* find_rect(const char* key) const;
+    // ImGui::MenuItem that also records its rectangle as "menu:<label>".
+    bool menu_item(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true);
+    // Viewport statistics of the last frame.
+    int view_triangles = 0;
+    float view_ms = 0.0f;
+    double (*perf_clock)() = nullptr;           // a real clock for view_ms (default: platform::time_seconds)
     struct TileRect { char path[256]; float x, y, w, h; };
     static constexpr int kMaxTiles = 64;
     TileRect file_tiles[kMaxTiles];
@@ -92,8 +122,11 @@ public:
 private:
     void build_ui();
     void main_menu();
-    void toolbar(float y, float height);
-    void dockspace(float top);
+    void run_controls();
+    void status_bar(float height);
+    void dockspace(float top, float bottom);
+    void viewport_overlays(float x, float y, float w, float h);
+    void orientation_gizmo(float x, float y, float size);
     void panel_hierarchy();
     void panel_inspector();
     void panel_files();
@@ -101,6 +134,7 @@ private:
     void panel_viewport();
     void window_settings();
     void shortcuts();
+    Scene* play_backup_ = nullptr;
 };
 
 // File type helpers shared by the panels.

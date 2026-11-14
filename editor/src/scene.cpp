@@ -13,6 +13,25 @@ Scene::~Scene() {
     free(selection_);
 }
 
+void Scene::copy_from(const Scene& other) {
+    if (&other == this) return;
+    clear();
+    if (cap_ < other.count_) {
+        objects_ = (Object**)realloc(objects_, sizeof(Object*) * (other.count_ ? other.count_ : 1));
+        cap_ = other.count_;
+    }
+    for (int i = 0; i < other.count_; i++) objects_[i] = new Object(*other.objects_[i]);
+    count_ = other.count_;
+    next_id_ = other.next_id_;
+    if (sel_cap_ < other.sel_count_) {
+        selection_ = (ObjectId*)realloc(selection_, sizeof(ObjectId) * other.sel_count_);
+        sel_cap_ = other.sel_count_;
+    }
+    if (other.sel_count_) memcpy(selection_, other.selection_, sizeof(ObjectId) * other.sel_count_);
+    sel_count_ = other.sel_count_;
+    active_ = other.active_;
+}
+
 ObjectId Scene::create(const char* name, MeshKind mesh) {
     if (count_ == cap_) {
         int ncap = cap_ ? cap_ * 2 : 32;

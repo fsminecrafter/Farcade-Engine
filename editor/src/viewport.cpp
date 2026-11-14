@@ -8,6 +8,7 @@
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "platform/platform.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -91,12 +92,15 @@ void Editor::panel_viewport() {
     ImVec2 end(v.pos.x + v.size.x, v.pos.y + v.size.y);
     dl->PushClipRect(v.pos, end, true);
 
-    // The scene into the viewport image: gradient background, grid, objects.
+    // The scene into the viewport image.
+    double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+    double t0 = clock();
     static View3D view3d;
-    uint32_t top = settings.dark_theme ? 0x2C2F36 : 0xD6DCE6;
-    uint32_t bottom = settings.dark_theme ? 0x1B1D21 : 0xEEF1F5;
+    uint32_t top = settings.dark_theme ? 0x2A2E35 : 0xCDD3DC;
+    uint32_t bottom = settings.dark_theme ? 0x17191D : 0xEDF0F4;
     view3d.begin((int)v.size.x, (int)v.size.y, v.viewproj, top, bottom);
     Vec3 light_dir = normalize(Vec3(0.45f, 0.85f, 0.35f));
+    int tris = 0;
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
         if (!o.visible) continue;
@@ -107,8 +111,16 @@ void Editor::panel_viewport() {
             Vec3 a = transform_point(model, mesh.positions[t]);
             Vec3 b = transform_point(model, mesh.positions[t + 1]);
             Vec3 c = transform_point(model, mesh.positions[t + 2]);
+            tris++;
+            if (view_mode == ViewMode::Wireframe) {
+                uint32_t wc = sel ? 0x6EA3FF : (settings.dark_theme ? 0xC8CDD5 : 0x3A3F47);
+                view3d.line(a, b, wc, 200);
+                view3d.line(b, c, wc, 200);
+                view3d.line(c, a, wc, 200);
+                continue;
+            }
             Vec3 n = normalize(cross(b - a, c - a));
-            float lit = 0.35f + 0.65f * fmaxf_(0.0f, dot(n, light_dir));
+            float lit = view_mode == ViewMode::Unlit ? 1.0f : 0.35f + 0.65f * fmaxf_(0.0f, dot(n, light_dir));
             view3d.triangle(a, b, c, shade(o.color, lit, sel));
         }
     }
@@ -126,6 +138,8 @@ void Editor::panel_viewport() {
         view3d.line(Vec3(-ext, 0, 0), Vec3(ext, 0, 0), 0xDC5050, 170);
         view3d.line(Vec3(0, 0, -ext), Vec3(0, 0, ext), 0x5082E6, 170);
     }
+    view_triangles = tris;
+    view_ms = (float)((clock() - t0) * 1000.0);
     dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
 
     // Selection: the bounding box of each selected object in the accent color.
@@ -163,6 +177,13 @@ void Editor::panel_viewport() {
         gs.ScaleLineThickness = 3.0f;
         gs.ScaleLineCircleSize = 6.5f;
         gs.CenterCircleSize = 5.0f;
+        gs.Colors[ImGuizmo::DIRECTION_X] = ImGui::ColorConvertU32ToFloat4(pal.axis[0]);
+        gs.Colors[ImGuizmo::DIRECTION_Y] = ImGui::ColorConvertU32ToFloat4(pal.axis[1]);
+        gs.Colors[ImGuizmo::DIRECTION_Z] = ImGui::ColorConvertU32ToFloat4(pal.axis[2]);
+        gs.Colors[ImGuizmo::PLANE_X] = ImGui::ColorConvertU32ToFloat4(pal.axis[0] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::PLANE_Y] = ImGui::ColorConvertU32ToFloat4(pal.axis[1] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::PLANE_Z] = ImGui::ColorConvertU32ToFloat4(pal.axis[2] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::SELECTION] = ImVec4(1.0f, 0.78f, 0.25f, 0.9f);
         ImGuizmo::OPERATION op = tool == Tool::Move ? ImGuizmo::TRANSLATE : (tool == Tool::Rotate ? ImGuizmo::ROTATE : ImGuizmo::SCALE);
         ImGuizmo::MODE mode = (gizmo_local || tool == Tool::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
         bool snap = settings.snap != gio.KeyCtrl;
@@ -252,31 +273,209 @@ void Editor::panel_viewport() {
         else scene.select_only(hit);
     }
 
-    // Overlay: what is shown and the axes.
-    ImU32 dimc = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    char info[96];
-    snprintf(info, sizeof(info), "Perspective   %d object%s   %d selected", scene.count(), scene.count() == 1 ? "" : "s",
-             scene.selected_count());
-    dl->AddText(ImVec2(v.pos.x + 12, v.pos.y + 10), dimc, info);
-    {
-        ImVec2 o(v.pos.x + 40, end.y - 40);
-        struct Ax { Vec3 d; ImU32 c; const char* n; } axes[3] = {
-            { { 1, 0, 0 }, IM_COL32(230, 80, 80, 255), "X" }, { { 0, 1, 0 }, IM_COL32(110, 200, 90, 255), "Y" },
-            { { 0, 0, 1 }, IM_COL32(80, 140, 240, 255), "Z" } };
-        for (auto& a : axes) {
-            Vec3 d = transform_dir(v.view, a.d);
-            ImVec2 tip(o.x + d.x * 24, o.y - d.y * 24);
-            dl->AddLine(o, tip, a.c, 2.0f);
-            dl->AddText(ImVec2(tip.x - 3, tip.y - 7), a.c, a.n);
-        }
+    // Play mode: a frame around the view.
+    if (playing()) {
+        dl->AddRect(ImVec2(v.pos.x + 1, v.pos.y + 1), ImVec2(end.x - 1, end.y - 1), pal.play, 0, 0, 2.0f);
     }
     if (scene.count() == 0) {
         const char* hint = "Create > Cube to add an object, or drop a .mof file here";
         ImVec2 ts = ImGui::CalcTextSize(hint);
-        dl->AddText(ImVec2(v.pos.x + (v.size.x - ts.x) * 0.5f, v.pos.y + v.size.y * 0.5f), dimc, hint);
+        dl->AddText(ImVec2(v.pos.x + (v.size.x - ts.x) * 0.5f, v.pos.y + v.size.y * 0.5f), pal.text_dim, hint);
     }
     dl->PopClipRect();
+
+    // Floating toolbars and the orientation gizmo, on top of the view.
+    viewport_overlays(v.pos.x, v.pos.y, v.size.x, v.size.y);
     ImGui::End();
+}
+
+// ---------------------------------------------------------------- overlays
+
+namespace {
+
+// A floating rounded panel at (x, y) of size (w, h), as a child window so
+// that clicks on it never reach the view below.
+bool begin_overlay(const char* id, float x, float y, float w, float h) {
+    const Palette& pal = ui_palette();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(x + 1, y + 2), ImVec2(x + w + 1, y + h + 3), pal.shadow, 8.0f);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(pal.overlay));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(pal.border));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 2));
+    bool open = ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(2);
+    return open;
+}
+
+void overlay_separator(float h) {
+    ImGui::SameLine(0, 4);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + 4), ImVec2(p.x, p.y + h - 4), ui_palette().border, 1.0f);
+    ImGui::Dummy(ImVec2(1, h));
+    ImGui::SameLine(0, 4);
+}
+
+}  // namespace
+
+void Editor::viewport_overlays(float x, float y, float w, float h) {
+    float bs = ImGui::GetFrameHeight() + 2;
+    float pad = 4;
+    float margin = 10;
+
+    // Tools: select, move, rotate, scale | world/local | snap | grid.
+    float snap_w = 58 * settings.ui_scale;
+    float tools_w = pad * 2 + bs * 4 + 2 * 3 + 9 + bs + 9 + bs + 2 + snap_w + 9 + bs;
+    if (w > tools_w + 140 && begin_overlay("##tools", x + margin, y + margin, tools_w, bs + pad * 2)) {
+        struct ToolDef { Tool tool; Icon icon; const char* tip; const char* key; };
+        static const ToolDef tools[] = {
+            { Tool::Select, Icon::Pointer, "Select (Q)", "tool:select" }, { Tool::Move, Icon::Move, "Move (W)", "tool:move" },
+            { Tool::Rotate, Icon::Rotate, "Rotate (E)", "tool:rotate" }, { Tool::Scale, Icon::Scale, "Scale (R)", "tool:scale" },
+        };
+        for (int i = 0; i < 4; i++) {
+            if (i) ImGui::SameLine(0, 2);
+            if (icon_button(tools[i].icon, tools[i].tip, tool == tools[i].tool, bs)) tool = tools[i].tool;
+            track(tools[i].key);
+        }
+        overlay_separator(bs);
+        if (icon_button(gizmo_local ? Icon::Local : Icon::World, gizmo_local ? "Local axes (click for world)" : "World axes (click for local)",
+                        false, bs))
+            gizmo_local = !gizmo_local;
+        track("tool:space");
+        overlay_separator(bs);
+        if (icon_button(Icon::Magnet, "Snap (hold Ctrl to invert)", settings.snap, bs)) settings.snap = !settings.snap;
+        track("tool:snap");
+        ImGui::SameLine(0, 2);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (bs - ImGui::GetFrameHeight()) * 0.5f);
+        ImGui::SetNextItemWidth(snap_w);
+        float* snapv = tool == Tool::Rotate ? &settings.snap_rotate : (tool == Tool::Scale ? &settings.snap_scale : &settings.snap_move);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(pal.frame));
+        ImGui::DragFloat("##snapv", snapv, tool == Tool::Rotate ? 1.0f : 0.05f, 0.01f, 360.0f, tool == Tool::Rotate ? "%.0f\xC2\xB0" : "%.2f");
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Snap step for the current tool");
+        overlay_separator(bs);
+        if (icon_button(Icon::Grid, "Grid (G)", settings.show_grid, bs)) settings.show_grid = !settings.show_grid;
+        track("tool:grid");
+        ImGui::EndChild();
+    }
+
+    // View menu: fixed views of the scene.
+    {
+        const char* label = "Perspective";
+        float lw = ImGui::CalcTextSize(label).x + ImGui::GetFontSize() + 22;
+        float vx = x + margin + tools_w + 8;
+        if (w > tools_w + lw + 140 && begin_overlay("##viewmenu", vx, y + margin, lw, bs + pad * 2)) {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##view", ImVec2(lw - pad * 2, bs))) ImGui::OpenPopup("##viewpopup");
+            track("view:menu");
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (ImGui::IsItemHovered()) dl->AddRectFilled(p, ImVec2(p.x + lw - pad * 2, p.y + bs), pal.hover, 4.0f);
+            float fs = ImGui::GetFontSize();
+            dl->AddText(ImVec2(p.x + 7, p.y + (bs - fs) * 0.5f), pal.text, label);
+            draw_icon(dl, Icon::ChevronDown, ImVec2(p.x + lw - pad * 2 - fs - 4, p.y + (bs - fs) * 0.5f), fs * 0.9f, pal.text_faint);
+            if (ImGui::BeginPopup("##viewpopup")) {
+                struct V { const char* n; float yaw, pitch; } views[] = {
+                    { "Top", camera.yaw, 89.9f }, { "Bottom", camera.yaw, -89.9f }, { "Front", 0, 0 },
+                    { "Back", 180, 0 }, { "Right", 90, 0 }, { "Left", -90, 0 },
+                };
+                for (const V& vw : views) {
+                    if (menu_item(vw.n)) set_view(vw.yaw, vw.pitch);
+                }
+                ImGui::Separator();
+                if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
+                if (menu_item("Reset view")) camera = Camera();
+                ImGui::EndPopup();
+            }
+            ImGui::EndChild();
+        }
+    }
+
+    // Orientation gizmo in the top-right corner.
+    float gsz = 84 * settings.ui_scale;
+    if (w > gsz * 3 && h > gsz * 2) orientation_gizmo(x + w - gsz - margin * 0.5f, y + margin * 0.5f, gsz);
+}
+
+void Editor::orientation_gizmo(float x, float y, float size) {
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    bool open = ImGui::BeginChild("##orient", ImVec2(size, size), ImGuiChildFlags_None,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar();
+    if (!open) { ImGui::EndChild(); return; }
+    ImVec2 c(x + size * 0.5f, y + size * 0.5f);
+    float r = size * 0.5f - 11;         // axis length
+    float br = 8.5f * settings.ui_scale; // bubble radius
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::InvisibleButton("##orient_btn", ImVec2(size, size), ImGuiButtonFlags_MouseButtonLeft);
+    bool hovered = ImGui::IsItemHovered();
+    bool active = ImGui::IsItemActive();
+    ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered || active) dl->AddCircleFilled(c, size * 0.5f - 1, pal.overlay, 32);
+
+    // The six axis ends in view space, drawn back to front.
+    Mat4 view = camera.view();
+    struct End { Vec3 d; int axis; bool positive; ImVec2 p; float depth; };
+    End ends[6];
+    for (int i = 0; i < 6; i++) {
+        Vec3 dir(0, 0, 0);
+        (&dir.x)[i / 2] = (i & 1) ? -1.0f : 1.0f;
+        Vec3 d = transform_dir(view, dir);
+        ends[i] = { dir, i / 2, (i & 1) == 0, ImVec2(c.x + d.x * r, c.y - d.y * r), d.z };
+    }
+    for (int i = 0; i < 6; i++)
+        for (int j = i + 1; j < 6; j++)
+            if (ends[j].depth < ends[i].depth) { End t = ends[i]; ends[i] = ends[j]; ends[j] = t; }
+    static const char* names[3] = { "X", "Y", "Z" };
+    static const char* keys[6] = { "axis:+x", "axis:-x", "axis:+y", "axis:-y", "axis:+z", "axis:-z" };
+    int hit = -1;
+    for (int i = 5; i >= 0 && hovered; i--) {      // front-most first
+        float dx = io.MousePos.x - ends[i].p.x, dy = io.MousePos.y - ends[i].p.y;
+        if (dx * dx + dy * dy <= br * br) { hit = i; break; }
+    }
+    for (int i = 0; i < 6; i++) {
+        const End& e = ends[i];
+        ImU32 col = pal.axis[e.axis];
+        if (e.positive) dl->AddLine(c, e.p, col, 2.0f);
+        if (e.positive) {
+            dl->AddCircleFilled(e.p, br, col, 20);
+            ImVec2 ts = ImGui::CalcTextSize(names[e.axis]);
+            dl->AddText(ImVec2(e.p.x - ts.x * 0.5f, e.p.y - ts.y * 0.5f), IM_COL32(16, 18, 21, 255), names[e.axis]);
+        } else {
+            dl->AddCircleFilled(e.p, br * 0.8f, (col & 0x00FFFFFF) | 0x50000000, 20);
+            dl->AddCircle(e.p, br * 0.8f, col, 20, 1.5f);
+        }
+        if (i == hit) dl->AddCircle(e.p, br + 2, IM_COL32(255, 255, 255, 220), 20, 1.5f);
+        int k = e.axis * 2 + (e.positive ? 0 : 1);
+        track_rect(keys[k], e.p.x - br, e.p.y - br, br * 2, br * 2);
+    }
+    if (hit >= 0) {
+        const End& e = ends[hit];
+        static const char* tips[6] = { "View from +X (right)", "View from -X (left)", "View from +Y (top)", "View from -Y (bottom)",
+                                       "View from +Z (front)", "View from -Z (back)" };
+        ImGui::SetTooltip("%s", tips[e.axis * 2 + (e.positive ? 0 : 1)]);
+    }
+    // A click on an axis looks along it; dragging the gizmo orbits.
+    if (ImGui::IsItemDeactivated() && hit >= 0) {
+        ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0);
+        if (dd.x * dd.x + dd.y * dd.y < 16) {
+            const End& e = ends[hit];
+            float s = e.positive ? 1.0f : -1.0f;
+            if (e.axis == 0) set_view(90 * s, 0);
+            else if (e.axis == 1) set_view(camera.yaw, 89.9f * s);
+            else set_view(e.positive ? 0 : 180, 0);
+        }
+    }
+    if (active && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+        camera.yaw -= io.MouseDelta.x * 0.4f;
+        camera.pitch = fclamp(camera.pitch + io.MouseDelta.y * 0.4f, -89.9f, 89.9f);
+    }
+    ImGui::EndChild();
 }
 
 }  // namespace fe

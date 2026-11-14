@@ -15,8 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 using namespace fe;
+
+static double real_seconds() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 
 static void touch(const char* dir, const char* name, const char* text) {
     char path[512];
@@ -26,8 +33,8 @@ static void touch(const char* dir, const char* name, const char* text) {
 
 static void demo_scene(Editor& ed) {
     ObjectId ground = ed.create_object("Ground", MeshKind::Plane, Vec3(0, 0, 0));
-    ed.scene.get(ground)->scale = Vec3(8, 1, 8);
-    ed.scene.get(ground)->color = Vec3(0.42f, 0.45f, 0.50f);
+    ed.scene.get(ground)->scale = Vec3(5, 1, 5);
+    ed.scene.get(ground)->color = Vec3(0.30f, 0.32f, 0.36f);
     ObjectId cube = ed.create_object("Crate", MeshKind::Cube, Vec3(-1.6f, 0.5f, 0.4f));
     ed.scene.get(cube)->color = Vec3(0.86f, 0.58f, 0.32f);
     ed.scene.get(cube)->rotation = Quat::euler_deg(Vec3(0, 20, 0));
@@ -76,6 +83,7 @@ int main(int argc, char** argv) {
     if (!ed.init(w, h)) { fprintf(stderr, "init failed\n"); return 1; }
     snprintf(ed.project_dir, sizeof(ed.project_dir), "%s", project);
     snprintf(ed.files_dir, sizeof(ed.files_dir), "%s", project);
+    ed.perf_clock = real_seconds;
     demo_scene(ed);
 
     platform::headless_set_time(0.0);
@@ -88,6 +96,19 @@ int main(int argc, char** argv) {
         platform::headless_push(mv);
         ed.frame();
     }
+    // Timing: a few more frames, the whole frame and the viewport alone.
+    {
+        const int n = 10;
+        double t0 = real_seconds(), view = 0;
+        for (int i = 0; i < n; i++) {
+            platform::headless_set_time((4 + i) / 60.0);
+            ed.frame();
+            view += ed.view_ms;
+        }
+        double ms = (real_seconds() - t0) * 1000.0 / n;
+        printf("frame %.2f ms (viewport %.2f ms, %d triangles, %dx%d)\n", ms, view / n, ed.view_triangles, (int)ed.view_rect[2],
+               (int)ed.view_rect[3]);
+    }
     char path[600];
     snprintf(path, sizeof(path), "%s/editor-dark.png", out);
     if (!platform::headless_save_png(path)) { fprintf(stderr, "cannot write %s\n", path); return 1; }
@@ -95,7 +116,7 @@ int main(int argc, char** argv) {
 
     ed.settings.dark_theme = false;
     ed.apply_theme();
-    for (int i = 4; i < 7; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }
+    for (int i = 14; i < 17; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }
     snprintf(path, sizeof(path), "%s/editor-light.png", out);
     if (!platform::headless_save_png(path)) return 1;
     printf("wrote %s\n", path);

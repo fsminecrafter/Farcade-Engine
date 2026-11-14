@@ -47,6 +47,13 @@ static void demo_scene(Editor& ed) {
     ObjectId small = ed.create_object("Crate", MeshKind::Cube, Vec3(-2.4f, 0.3f, -1.6f));
     ed.scene.get(small)->scale = Vec3(0.6f, 0.6f, 0.6f);
     ed.scene.get(small)->color = Vec3(0.55f, 0.75f, 0.45f);
+    // A small tree: the green crate sits on the big one, as its child, and
+    // the lamp is a child of the pillar.
+    ed.scene.set_parent(small, cube);
+    ObjectId lamp = ed.create_child("Lamp", MeshKind::Sphere, pillar);
+    ed.scene.get(lamp)->position = Vec3(0, 0.65f, 0);
+    ed.scene.get(lamp)->scale = Vec3(0.6f, 0.15f, 0.6f);
+    ed.scene.get(lamp)->color = Vec3(0.98f, 0.85f, 0.45f);
     snprintf(ed.scene.get(cube)->texture_path, 256, "%s", "assets/crate.png");
     snprintf(ed.scene.get(sphere)->script_path, 256, "%s", "scripts/ball.lua");
     // Crate selected, then shift-click on the ball: two selected, the ball active.

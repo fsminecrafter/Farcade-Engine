@@ -99,6 +99,7 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.color, sizeof(o.color));
         mix(&o.mesh, sizeof(o.mesh));
         mix(&o.visible, sizeof(o.visible));
+        mix(&o.parent, sizeof(o.parent));
     }
     for (int i = 0; i < sc.selected_count(); i++) { ObjectId id = sc.selected(i); mix(&id, sizeof(id)); }
     ObjectId act = sc.active();
@@ -124,9 +125,9 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     int wire_tris = 0;
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
-        if (!o.visible) continue;
+        if (!scene.visible_in_tree(o)) continue;
         const MeshData& mesh = Scene::mesh_for(o);
-        Mat4 model = o.matrix();
+        Mat4 model = scene.world_matrix(o);
         if (!wire) {
             view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
             continue;
@@ -147,9 +148,9 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
-            if (!o.visible || o.mesh == MeshKind::Plane) continue;
+            if (!scene.visible_in_tree(o) || o.mesh == MeshKind::Plane) continue;
             const MeshData& mesh = Scene::mesh_for(o);
-            view3d.shadow(mesh.positions, mesh.vertex_count, o.matrix());
+            view3d.shadow(mesh.positions, mesh.vertex_count, scene.world_matrix(o));
         }
     }
     if (settings.show_grid) view3d.grid(settings.grid_size, settings.dark_theme);
@@ -219,30 +220,48 @@ void Editor::panel_viewport() {
         bool snap = settings.snap != gio.KeyCtrl;
         float step = tool == Tool::Move ? settings.snap_move : (tool == Tool::Rotate ? settings.snap_rotate : settings.snap_scale);
         float snap3[3] = { step, step, step };
-        Mat4 m = act->matrix();
-        Vec3 old_pos = act->position, old_scale = act->scale;
-        Quat old_rot = act->rotation;
+        // The gizmo works on world matrices; the result goes back into each
+        // object's transform relative to its parent.
+        Mat4 old_world = scene.world_matrix(*act);
+        Mat4 m = old_world;
+        Vec3 old_scale = act->scale;
+        // The other selected objects that are not under a selected parent
+        // (those move with their parent), with their world matrices now.
+        ObjectId others[256];
+        Mat4 others_world[256];
+        int n_others = 0;
+        for (int s = 0; s < scene.selected_count() && n_others < 256; s++) {
+            ObjectId id = scene.selected(s);
+            Object* o = scene.get(id);
+            if (!o || o == act || scene.has_selected_ancestor(id)) continue;
+            others[n_others] = id;
+            others_world[n_others++] = scene.world_matrix(*o);
+        }
         if (ImGuizmo::Manipulate(v.view.m, v.proj.m, op, mode, m.m, nullptr, snap ? snap3 : nullptr)) {
-            act->set_matrix(m);
-            if (tool == Tool::Move && snap && !gizmo_local) {
-                // Keep positions on the snap grid, not just the steps.
+            if (tool == Tool::Move && snap && mode == ImGuizmo::WORLD) {
+                // Keep world positions on the snap grid, not just the steps.
                 auto q = [&](float x) { float k = x / step; long n = (long)(k + (k >= 0 ? 0.5f : -0.5f)); return n * step; };
-                act->position = Vec3(q(act->position.x), q(act->position.y), q(act->position.z));
+                m.m[12] = q(m.m[12]); m.m[13] = q(m.m[13]); m.m[14] = q(m.m[14]);
             }
-            // The rest of the selection follows the active object.
-            Vec3 dpos = act->position - old_pos;
-            Quat drot = normalize(act->rotation * conjugate(old_rot));
-            Vec3 ratio(old_scale.x != 0 ? act->scale.x / old_scale.x : 1, old_scale.y != 0 ? act->scale.y / old_scale.y : 1,
-                       old_scale.z != 0 ? act->scale.z / old_scale.z : 1);
-            for (int s = 0; s < scene.selected_count(); s++) {
-                Object* o = scene.get(scene.selected(s));
-                if (!o || o == act) continue;
-                if (tool == Tool::Move) o->position += dpos;
-                else if (tool == Tool::Rotate) {
-                    o->position = old_pos + rotate(drot, o->position - old_pos);
-                    o->rotation = normalize(drot * o->rotation);
-                } else o->scale = mul(o->scale, ratio);
+            Mat4 inv_old, delta;
+            if (invert(old_world, &inv_old)) delta = m * inv_old;      // the change, in world space
+            // The rest of the selection follows: moved and rotated about the
+            // active object; scaled along their own axes.
+            Mat4 local_new, inv_parent;
+            bool ok = invert(scene.parent_world_matrix(*act), &inv_parent);
+            Vec3 tpos; Quat trot; Vec3 new_scale = old_scale;
+            if (ok) { local_new = inv_parent * m; decompose(local_new, &tpos, &trot, &new_scale); }
+            Vec3 ratio(old_scale.x != 0 ? new_scale.x / old_scale.x : 1, old_scale.y != 0 ? new_scale.y / old_scale.y : 1,
+                       old_scale.z != 0 ? new_scale.z / old_scale.z : 1);
+            for (int k = 0; k < n_others; k++) {
+                Object* o = scene.get(others[k]);
+                if (!o) continue;
+                if (tool == Tool::Scale) { o->scale = mul(o->scale, ratio); continue; }
+                Mat4 ip;
+                if (invert(scene.parent_world_matrix(*o), &ip)) o->set_matrix(ip * (delta * others_world[k]));
             }
+            // The active object last: its parent may have just moved with the selection.
+            if (invert(scene.parent_world_matrix(*act), &inv_parent)) act->set_matrix(inv_parent * m);
         }
         gizmo_active = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
     }
@@ -367,7 +386,9 @@ void Editor::viewport_overlays(float x, float y, float w, float h) {
 
     // Tools: select, move, rotate, scale | world/local | snap | grid.
     float snap_w = 58 * settings.ui_scale;
-    float tools_w = pad * 2 + bs * 4 + 2 * 3 + 9 + bs + 9 + bs + 2 + snap_w + 9 + bs;
+    float fs = ImGui::GetFontSize();
+    float space_w = ImGui::CalcTextSize("World").x + ImGui::CalcTextSize("Local").x + 2 * (fs + 18);
+    float tools_w = pad * 2 + bs * 4 + 2 * 3 + 9 + space_w + 9 + bs + 2 + snap_w + 9 + bs;
     if (w > tools_w + 140 && begin_overlay("##tools", x + margin, y + margin, tools_w, bs + pad * 2)) {
         struct ToolDef { Tool tool; Icon icon; const char* tip; const char* key; };
         static const ToolDef tools[] = {
@@ -380,10 +401,33 @@ void Editor::viewport_overlays(float x, float y, float w, float h) {
             track(tools[i].key);
         }
         overlay_separator(bs);
-        if (icon_button(gizmo_local ? Icon::Local : Icon::World, gizmo_local ? "Local axes (click for world)" : "World axes (click for local)",
-                        false, bs))
-            gizmo_local = !gizmo_local;
-        track("tool:space");
+        {
+            // World | Local: which axes the gizmo uses (X toggles). Scale is
+            // always along the object's own axes.
+            bool scale = tool == Tool::Scale;
+            bool local = gizmo_local || scale;
+            ImGui::BeginDisabled(scale);
+            for (int k = 0; k < 2; k++) {
+                if (k) ImGui::SameLine(0, 0);
+                const char* label = k ? "Local" : "World";
+                bool on = (k == 1) == local;
+                ImVec2 bp = ImGui::GetCursorScreenPos();
+                float fs = ImGui::GetFontSize();
+                float bw = ImGui::CalcTextSize(label).x + fs + 18;
+                if (ImGui::InvisibleButton(k ? "##local" : "##world", ImVec2(bw, bs))) gizmo_local = k == 1;
+                bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+                if (hov) ImGui::SetTooltip(scale ? "Scale always uses the object's own axes" :
+                                           (k ? "Move and rotate along the object's own axes (X)" : "Move and rotate along the world axes (X)"));
+                track(k ? "tool:local" : "tool:world");
+                ImDrawList* odl = ImGui::GetWindowDrawList();
+                if (on) odl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bs), pal.accent_soft, 4.0f);
+                else if (hov && !scale) odl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bs), pal.hover, 4.0f);
+                ImU32 col = on ? pal.accent_text : (scale ? pal.text_faint : pal.text_dim);
+                draw_icon(odl, k ? Icon::Local : Icon::World, ImVec2(bp.x + 7, bp.y + (bs - fs) * 0.5f), fs, col);
+                odl->AddText(ImVec2(bp.x + fs + 11, bp.y + (bs - fs) * 0.5f), on ? pal.text : col, label);
+            }
+            ImGui::EndDisabled();
+        }
         overlay_separator(bs);
         if (icon_button(Icon::Magnet, "Snap (hold Ctrl to invert)", settings.snap, bs)) settings.snap = !settings.snap;
         track("tool:snap");

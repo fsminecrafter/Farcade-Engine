@@ -78,9 +78,30 @@ void Editor::panel_hierarchy() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float fs = ImGui::GetFontSize();
     float row_h = bs + 1;
-    // The scene root.
+    static const char* kObjectPayload = "FE_OBJECT";   // a dragged hierarchy row: an ObjectId
+    // Reparents the object in a dropped row payload under `parent`.
+    auto drop_object = [&](ObjectId parent) {
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kObjectPayload)) {
+            ObjectId id = *(const ObjectId*)pl->Data;
+            Object* o = scene.get(id);
+            Object* p = scene.get(parent);
+            if (!o) return;
+            if (scene.set_parent(id, parent)) {
+                if (p) { p->expanded = true; log(LogLevel::Info, "%s is now a child of %s", o->name, p->name); }
+                else log(LogLevel::Info, "%s is now at the top of the scene", o->name);
+            } else {
+                log(LogLevel::Warning, "%s cannot go under %s (it is one of its own children)", o->name, p ? p->name : "?");
+            }
+        }
+    };
+
+    // The scene root: dropping a row here takes it out of its parent.
     {
         ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##root", ImVec2(ImGui::GetContentRegionAvail().x, row_h));
+        track("hier:root");
+        if (ImGui::IsItemClicked(0)) scene.clear_selection();
+        if (ImGui::BeginDragDropTarget()) { drop_object(kNoObject); ImGui::EndDragDropTarget(); }
         draw_icon(dl, Icon::Layers, ImVec2(p.x + 4, p.y + (row_h - fs) * 0.5f), fs, pal.text_dim);
         if (font_medium) ImGui::PushFont(font_medium, 0.0f);
         dl->AddText(ImVec2(p.x + fs + 11, p.y + (row_h - fs) * 0.5f), pal.text, "Scene");
@@ -89,7 +110,45 @@ void Editor::panel_hierarchy() {
         snprintf(cnt, sizeof(cnt), "%d", scene.count());
         float cw = ImGui::CalcTextSize(cnt).x;
         dl->AddText(ImVec2(p.x + ImGui::GetContentRegionAvail().x - cw - 6, p.y + (row_h - fs) * 0.5f), pal.text_faint, cnt);
-        ImGui::Dummy(ImVec2(0, row_h));
+    }
+
+    // The rows to show: the tree (children under their parent, folded ones
+    // hidden), or with a filter the matching objects as a flat list.
+    struct Row { ObjectId id; int depth; };
+    static Row* rows = nullptr;
+    static int rows_cap = 0;
+    if (rows_cap < scene.count()) {
+        rows_cap = scene.count() + 64;
+        rows = (Row*)realloc(rows, sizeof(Row) * rows_cap);
+    }
+    int nrows = 0;
+    if (filter[0]) {
+        for (int i = 0; i < scene.count(); i++)
+            if (ImStristr(scene.at(i).name, nullptr, filter, nullptr)) rows[nrows++] = { scene.at(i).id, 0 };
+    } else {
+        // Depth-first with an explicit stack; children keep the scene's order.
+        struct Frame { ObjectId parent; int next; int depth; };
+        Frame stack[64];
+        int sp = 0;
+        stack[sp++] = { kNoObject, 0, 0 };
+        while (sp > 0 && nrows < rows_cap) {
+            Frame& f = stack[sp - 1];
+            bool pushed = false;
+            for (; f.next < scene.count(); f.next++) {
+                Object& o = scene.at(f.next);
+                ObjectId parent = o.parent;
+                if (parent != kNoObject && !scene.get(parent)) parent = kNoObject;     // a lost parent: show at the top
+                if (parent != f.parent) continue;
+                rows[nrows++] = { o.id, f.depth };
+                f.next++;
+                if (o.expanded && sp < 64 && scene.has_children(o.id)) {
+                    stack[sp++] = { o.id, 0, f.depth + 1 };
+                    pushed = true;
+                }
+                break;
+            }
+            if (!pushed && f.next >= scene.count()) sp--;
+        }
     }
 
     ObjectId clicked = kNoObject;
@@ -98,9 +157,11 @@ void Editor::panel_hierarchy() {
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
-    for (int i = 0; i < scene.count(); i++) {
-        Object& o = scene.at(i);
-        if (filter[0] && !ImStristr(o.name, nullptr, filter, nullptr)) continue;
+    for (int r = 0; r < nrows; r++) {
+        Object* op = scene.get(rows[r].id);
+        if (!op) continue;
+        Object& o = *op;
+        int depth = rows[r].depth;
         ImGui::PushID((int)o.id);
         bool sel = scene.is_selected(o.id);
         ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -112,12 +173,34 @@ void Editor::panel_hierarchy() {
         snprintf(key, sizeof(key), "hier:%u", o.id);
         track(key);
         if (hov && ImGui::IsMouseDoubleClicked(0)) frame_selection();
-        if (const char* path = accept_file_drop()) apply_file_to_object(path, o.id);
+        // Drag a row onto another to make it a child, onto "Scene" to take it out.
+        if (ImGui::BeginDragDropSource()) {
+            ObjectId id = o.id;
+            ImGui::SetDragDropPayload(kObjectPayload, &id, sizeof(id));
+            draw_icon(ImGui::GetWindowDrawList(), mesh_icon(o.mesh), ImGui::GetCursorScreenPos(), fs, pal.accent_text);
+            ImGui::Dummy(ImVec2(fs + 4, fs));
+            ImGui::SameLine();
+            ImGui::TextUnformatted(o.name);
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kFilePayload)) apply_file_to_object((const char*)pl->Data, o.id);
+            drop_object(o.id);
+            ImGui::EndDragDropTarget();
+        }
         if (ImGui::BeginPopupContextItem("##ctx")) {
             if (!sel) scene.select_only(o.id);
             if (menu_item("Frame", "F")) frame_selection();
             if (menu_item("Duplicate", "Ctrl+D")) duplicate_selection();
             if (menu_item(o.visible ? "Hide" : "Show")) o.visible = !o.visible;
+            if (ImGui::BeginMenu("Add child")) {
+                if (menu_item("Cube")) create_child("Cube", MeshKind::Cube, o.id);
+                if (menu_item("Sphere")) create_child("Sphere", MeshKind::Sphere, o.id);
+                if (menu_item("Cylinder")) create_child("Cylinder", MeshKind::Cylinder, o.id);
+                if (menu_item("Plane")) create_child("Plane", MeshKind::Plane, o.id);
+                ImGui::EndMenu();
+            }
+            if (o.parent && menu_item("Move to the top")) scene.set_parent(o.id, kNoObject);
             ImGui::Separator();
             if (menu_item("Delete", "Del")) delete_selection();
             ImGui::EndPopup();
@@ -127,11 +210,29 @@ void Editor::panel_hierarchy() {
         if (sel) dl->AddRectFilled(pos, rmax, pal.accent_soft, 4.0f);
         else if (hov) dl->AddRectFilled(pos, rmax, pal.hover, 4.0f);
         if (o.id == scene.active()) dl->AddRectFilled(ImVec2(pos.x, pos.y + 4), ImVec2(pos.x + 2.5f, rmax.y - 4), pal.accent, 1.0f);
-        float indent = 14.0f;
+        float x0 = pos.x + 6.0f + depth * 16.0f;
         float ty = pos.y + (row_h - fs) * 0.5f;
-        ImU32 icol = sel ? pal.accent_text : pal.text_dim;
-        draw_icon(dl, mesh_icon(o.mesh), ImVec2(pos.x + indent, ty), fs, icol);
-        dl->AddText(ImVec2(pos.x + indent + fs + 7, ty), o.visible ? pal.text : pal.text_faint, o.name);
+        // Guide lines for nested rows.
+        for (int d = 0; d < depth; d++) {
+            float gx = pos.x + 6.0f + d * 16.0f + fs * 0.5f;
+            dl->AddLine(ImVec2(gx, pos.y), ImVec2(gx, rmax.y + 1), pal.border, 1.0f);
+        }
+        bool kids = !filter[0] && scene.has_children(o.id);
+        float icon_x = x0 + fs + 2;
+        bool shown = scene.visible_in_tree(o);
+        ImU32 icol = sel ? pal.accent_text : (shown ? pal.text_dim : pal.text_faint);
+        draw_icon(dl, mesh_icon(o.mesh), ImVec2(icon_x, ty), fs, icol);
+        dl->AddText(ImVec2(icon_x + fs + 7, ty), shown ? pal.text : pal.text_faint, o.name);
+        // Fold arrow for objects with children.
+        if (kids) {
+            ImGui::SameLine(0, 0);
+            ImGui::SetCursorScreenPos(ImVec2(x0 - 2, pos.y));
+            if (ImGui::InvisibleButton("##fold", ImVec2(fs + 4, row_h))) o.expanded = !o.expanded;
+            snprintf(key, sizeof(key), "fold:%u", o.id);
+            track(key);
+            bool fh = ImGui::IsItemHovered();
+            draw_icon(dl, o.expanded ? Icon::ChevronDown : Icon::ChevronRight, ImVec2(x0, ty), fs, fh ? pal.text : pal.text_faint);
+        }
         // Visibility, at the right end of the row.
         float eb = row_h - 2;
         ImGui::SameLine(0, 0);
@@ -155,11 +256,16 @@ void Editor::panel_hierarchy() {
     // Empty area: click clears, right-click creates.
     ImGui::InvisibleButton("##empty", ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 40)));
     if (ImGui::IsItemClicked(0) && !shift) scene.clear_selection();
-    if (const char* path = accept_file_drop()) {
-        if (path_is_model(path)) {
-            ObjectId id = create_object(path_filename(path), MeshKind::Model, camera.target);
-            apply_file_to_object(path, id);
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kFilePayload)) {
+            const char* path = (const char*)pl->Data;
+            if (path_is_model(path)) {
+                ObjectId id = create_object(path_filename(path), MeshKind::Model, camera.target);
+                apply_file_to_object(path, id);
+            }
         }
+        drop_object(kNoObject);
+        ImGui::EndDragDropTarget();
     }
     if (ImGui::BeginPopupContextItem("##create")) {
         ImGui::TextDisabled("Add");
@@ -189,14 +295,17 @@ static bool vec3_field(const char* label, Vec3* v, float speed, const char* fmt)
         if (i) ImGui::SameLine(0, 4);
         ImGui::PushID(i);
         ImVec2 p = ImGui::GetCursorScreenPos();
+        // Narrow fields (small screens) keep only the colored bar: the
+        // value is centered and would run into the letter.
+        bool letter = w >= fs * 3.6f;
         ImGui::SetNextItemWidth(w);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(fs * 0.9f, ImGui::GetStyle().FramePadding.y));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(letter ? fs * 0.9f : 4.0f, ImGui::GetStyle().FramePadding.y));
         changed |= ImGui::DragFloat("##v", &f[i], speed, 0, 0, fmt);
         ImGui::PopStyleVar();
         float h = ImGui::GetFrameHeight();
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + 2.0f, p.y + h), pal.axis[i], 1.0f);
-        dl->AddText(ImVec2(p.x + 6, p.y + (h - fs) * 0.5f), pal.axis[i], letters[i]);
+        if (letter) dl->AddText(ImVec2(p.x + 6, p.y + (h - fs) * 0.5f), pal.axis[i], letters[i]);
         ImGui::PopID();
     }
     ImGui::PopID();
@@ -289,14 +398,37 @@ void Editor::panel_inspector() {
     ImGui::Dummy(ImVec2(0, 4));
 
     if (section_header("Transform", Icon::Move)) {
+        // The parent: position, rotation and scale below are relative to it.
+        {
+            prop_label("Parent");
+            Object* par = scene.get(o->parent);
+            if (ImGui::BeginCombo("##parent", par ? par->name : "None (scene)")) {
+                if (ImGui::Selectable("None (scene)", !par)) scene.set_parent(o->id, kNoObject);
+                for (int i = 0; i < scene.count(); i++) {
+                    Object& c = scene.at(i);
+                    if (c.id == o->id || scene.is_ancestor(o->id, c.id)) continue;     // not itself or its children
+                    ImGui::PushID((int)c.id);
+                    if (ImGui::Selectable(c.name, c.id == o->parent)) {
+                        scene.set_parent(o->id, c.id);
+                        c.expanded = true;
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            track("inspector:parent");
+        }
         Vec3 pos = o->position, scl = o->scale;
         Vec3 rot = o->rotation.to_euler_deg();
         Vec3 old_pos = pos;
         if (vec3_field("Position", &pos, 0.05f, "%.2f")) {
             // With several objects selected, move them all by the same amount.
             Vec3 d = pos - old_pos;
-            for (int i = 0; i < n; i++)
-                if (Object* s = scene.get(scene.selected(i))) s->position += d;
+            for (int i = 0; i < n; i++) {
+                ObjectId sid = scene.selected(i);
+                if (sid != o->id && scene.has_selected_ancestor(sid)) continue;     // moves with its parent
+                if (Object* s = scene.get(sid)) s->position += d;
+            }
         }
         if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
         if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
@@ -537,6 +669,8 @@ void Editor::panel_files() {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
     if (open_dir[0]) snprintf(files_dir, sizeof(files_dir), "%s", open_dir);
+    if (g_listing.count == 0 && g_listing.valid)
+        ImGui::TextDisabled("Empty folder. Files dropped here from the file manager will appear here.");
     // Empty space: context menu for the folder itself.
     ImGui::Dummy(ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 20)));
     if (ImGui::IsItemClicked(0)) selected_file[0] = 0;
@@ -547,8 +681,6 @@ void Editor::panel_files() {
         if (menu_item("Refresh")) refresh(files_dir);
         ImGui::EndPopup();
     }
-    if (g_listing.count == 0 && g_listing.valid)
-        ImGui::TextDisabled("Empty folder. Files dropped here from the file manager will appear here.");
     ImGui::EndChild();
     ImGui::End();
 }

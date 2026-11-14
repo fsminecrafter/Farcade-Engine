@@ -68,7 +68,7 @@ public:
     Settings settings;
     Camera camera;
     Tool tool = Tool::Move;
-    bool gizmo_local = false;
+    bool gizmo_local = false;           // gizmo along the object's axes (X toggles); Scale always is
     ViewMode view_mode = ViewMode::Lit;
     Palette pal = {};
     char project_dir[256] = {};
@@ -78,7 +78,9 @@ public:
     void open_file(const char* path);           // double-click in Files
     void apply_file_to_object(const char* path, ObjectId id);   // a file dropped on an object
     ObjectId create_object(const char* name, MeshKind mesh, const Vec3& at);
-    void delete_selection();
+    void delete_selection();                    // with their children
+    ObjectId create_child(const char* name, MeshKind mesh, ObjectId parent);
+    ObjectId duplicate_tree(ObjectId src, ObjectId parent, bool offset);    // an object and its children
     void duplicate_selection();
     void frame_selection();
     void apply_theme();

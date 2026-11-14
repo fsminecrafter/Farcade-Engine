@@ -334,35 +334,66 @@ ObjectId Editor::create_object(const char* name, MeshKind mesh, const Vec3& at) 
 }
 
 void Editor::delete_selection() {
-    int n = scene.selected_count();
-    while (scene.selected_count()) scene.remove(scene.selected(0));
+    // Removing an object removes its children too (Scene::remove).
+    int n = 0;
+    while (scene.selected_count()) {
+        ObjectId id = scene.selected(0);
+        if (!scene.has_selected_ancestor(id)) n++;
+        scene.remove(id);
+    }
     if (n) log(LogLevel::Info, "Deleted %d object%s", n, n == 1 ? "" : "s");
+}
+
+ObjectId Editor::duplicate_tree(ObjectId src_id, ObjectId parent, bool offset) {
+    Object* src = scene.get(src_id);
+    if (!src) return kNoObject;
+    Object copy = *src;
+    ObjectId id = create_object(copy.name, copy.mesh, copy.position);
+    Object* o = scene.get(id);
+    char name[64];
+    memcpy(name, o->name, sizeof(name));
+    *o = copy;                                  // everything but the id, the name and the parent
+    o->id = id;
+    memcpy(o->name, name, sizeof(name));
+    o->parent = parent;
+    if (offset) o->position = copy.position + Vec3(0.5f, 0, 0.5f);
+    // The children, in their order (the list grows while copying).
+    int n = scene.count();
+    ObjectId kids[256];
+    int nk = 0;
+    for (int i = 0; i < n && nk < 256; i++)
+        if (scene.at(i).parent == src_id) kids[nk++] = scene.at(i).id;
+    for (int k = 0; k < nk; k++) duplicate_tree(kids[k], id, false);
+    return id;
 }
 
 void Editor::duplicate_selection() {
     int n = scene.selected_count();
     if (!n) return;
     ObjectId src_ids[64], new_ids[64];
-    if (n > 64) n = 64;
-    for (int i = 0; i < n; i++) src_ids[i] = scene.selected(i);
+    int ns = 0;
+    for (int i = 0; i < n && ns < 64; i++)
+        if (!scene.has_selected_ancestor(scene.selected(i))) src_ids[ns++] = scene.selected(i);
     int made = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < ns; i++) {
         Object* src = scene.get(src_ids[i]);
         if (!src) continue;
-        Object copy = *src;
-        ObjectId id = create_object(copy.name, copy.mesh, copy.position);
-        Object* o = scene.get(id);
-        char name[64];
-        memcpy(name, o->name, sizeof(name));
-        *o = copy;                              // everything but the id and the name
-        o->id = id;
-        memcpy(o->name, name, sizeof(name));
-        o->position = copy.position + Vec3(0.5f, 0, 0.5f);
-        new_ids[made++] = id;
+        ObjectId id = duplicate_tree(src_ids[i], src->parent, true);
+        if (id) new_ids[made++] = id;
     }
     scene.clear_selection();
     for (int i = 0; i < made; i++) scene.toggle(new_ids[i]);
     log(LogLevel::Info, "Duplicated %d object%s", made, made == 1 ? "" : "s");
+}
+
+ObjectId Editor::create_child(const char* name, MeshKind mesh, ObjectId parent) {
+    ObjectId id = create_object(name, mesh, Vec3(0, 0, 0));
+    if (Object* o = scene.get(id)) {
+        o->parent = parent;
+        o->position = Vec3(0, mesh == MeshKind::Plane ? 0.0f : 1.0f, 0);   // just above the parent's origin
+        if (Object* p = scene.get(parent)) p->expanded = true;
+    }
+    return id;
 }
 
 void Editor::frame_selection() {
@@ -372,7 +403,7 @@ void Editor::frame_selection() {
         Object* o = scene.get(scene.selected(i));
         if (!o) continue;
         const MeshData& m = Scene::mesh_for(*o);
-        Mat4 mm = o->matrix();
+        Mat4 mm = scene.world_matrix(*o);
         for (int c = 0; c < 8; c++) {
             Vec3 p((c & 1) ? m.bounds_max.x : m.bounds_min.x, (c & 2) ? m.bounds_max.y : m.bounds_min.y,
                    (c & 4) ? m.bounds_max.z : m.bounds_min.z);
@@ -752,9 +783,10 @@ void Editor::status_bar(float h) {
     }
     // Right side: counts and the renderer.
     char right[128];
-    snprintf(right, sizeof(right), "%d object%s   %d selected   |   %s   |   %d x %d", scene.count(), scene.count() == 1 ? "" : "s",
+    const char* space = tool == Tool::Select ? "" : (gizmo_local || tool == Tool::Scale) ? ", local axes" : ", world axes";
+    snprintf(right, sizeof(right), "%d object%s   %d selected   |   %s%s   |   %d x %d", scene.count(), scene.count() == 1 ? "" : "s",
              scene.selected_count(), tool == Tool::Select ? "Select" : tool == Tool::Move ? "Move" : tool == Tool::Rotate ? "Rotate" : "Scale",
-             platform::width(), platform::height());
+             space, platform::width(), platform::height());
     float rw = ImGui::CalcTextSize(right).x;
     dl->AddText(ImVec2(p.x + vp->Size.x - rw - 12, ty), pal.text_faint, right);
     ImGui::End();
@@ -801,6 +833,7 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_E, false)) tool = Tool::Rotate;
     if (ImGui::IsKeyPressed(ImGuiKey_R, false)) tool = Tool::Scale;
     if (ImGui::IsKeyPressed(ImGuiKey_G, false) && !io.KeyCtrl) settings.show_grid = !settings.show_grid;
+    if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !io.KeyCtrl) gizmo_local = !gizmo_local;
     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) delete_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selection();

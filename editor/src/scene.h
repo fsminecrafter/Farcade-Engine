@@ -26,7 +26,8 @@ struct MeshData {
 struct Object {
     ObjectId id = kNoObject;
     char name[64] = {};
-    ObjectId parent = kNoObject;    // not used by the tools yet; kept for the hierarchy
+    ObjectId parent = kNoObject;    // kNoObject = at the root; the transform is relative to the parent
+    bool expanded = true;           // children shown in the hierarchy
     Vec3 position;
     Quat rotation;
     Vec3 scale = Vec3(1, 1, 1);
@@ -37,7 +38,7 @@ struct Object {
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);
     bool visible = true;
 
-    Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }
+    Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
     void set_matrix(const Mat4& m) { decompose(m, &position, &rotation, &scale); }
 };
 
@@ -58,7 +59,7 @@ public:
     void keep_ids_above(ObjectId next) { if (next > next_id_) next_id_ = next; }
 
     ObjectId create(const char* name, MeshKind mesh);
-    void remove(ObjectId id);
+    void remove(ObjectId id);           // with all its children
     void clear();
 
     Object* get(ObjectId id);
@@ -76,6 +77,20 @@ public:
     ObjectId selected(int i) const { return selection_[i]; }
     ObjectId active() const { return active_; }
 
+    // ---- the tree: an object's position, rotation and scale are relative
+    // to its parent.
+    Mat4 world_matrix(const Object& o);
+    Mat4 parent_world_matrix(const Object& o);      // identity at the root
+    bool visible_in_tree(const Object& o);          // it and all its parents are visible
+    bool is_ancestor(ObjectId ancestor, ObjectId id);   // ancestor is above id (not id itself)
+    bool has_children(ObjectId id) const;
+    int depth(const Object& o);
+    // Moves id under parent (kNoObject: to the root), keeping where it is in
+    // the world. Fails when parent is id itself or one of its descendants.
+    bool set_parent(ObjectId id, ObjectId parent);
+    // True when one of the object's parents is selected (it moves with it).
+    bool has_selected_ancestor(ObjectId id);
+
     // The built-in mesh of an object (primitives are generated once).
     static const MeshData& mesh_for(const Object& o);
 
@@ -83,6 +98,7 @@ public:
     ObjectId pick(const Ray& ray, float* distance = nullptr);
 
 private:
+    void remove_one(ObjectId id);
     Object** objects_ = nullptr;
     int count_ = 0, cap_ = 0;
     ObjectId next_id_ = 1;

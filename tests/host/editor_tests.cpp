@@ -7,6 +7,7 @@
 #include "imgui/imgui_internal.h"
 #include "imguizmo/ImGuizmo.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -304,12 +305,132 @@ int main() {
         CHECK(ed.settings.show_grid != grid, "the grid button toggles the grid");
         click_ui("tool:grid");
     }
-    // A click on the pill does not reach the view below (no deselection).
+    // World | Local; a click on the pill does not reach the view below.
     ed.scene.select_only(a);
-    frames(1);
-    click_ui("tool:space");
-    CHECK(ed.scene.selected_count() == 1 && ed.gizmo_local, "the pill eats its clicks; world/local flips");
     ed.gizmo_local = false;
+    frames(1);
+    CHECK(click_ui("tool:local") && ed.gizmo_local, "the Local button switches the gizmo to local axes");
+    CHECK(ed.scene.selected_count() == 1, "the pill eats its clicks (selection kept)");
+    CHECK(click_ui("tool:world") && !ed.gizmo_local, "the World button switches back");
+    ev_key(platform::KEY_A + ('x' - 'a'), true); frames(1); ev_key(platform::KEY_A + ('x' - 'a'), false); frames(1);
+    CHECK(ed.gizmo_local, "X toggles local axes");
+    ev_key(platform::KEY_A + ('x' - 'a'), true); frames(1); ev_key(platform::KEY_A + ('x' - 'a'), false); frames(1);
+    CHECK(!ed.gizmo_local, "X again goes back to world axes");
+
+    // ---- local gizmo: an object turned 45 degrees about y moves along its own x
+    {
+        ed.tool = Tool::Move;
+        ed.settings.snap = false;
+        Object* oa2 = ed.scene.get(a);
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        // Turned so that its x points towards the camera (ImGuizmo flips an
+        // axis that points away to its other side).
+        oa2->rotation = Quat::euler_deg(Vec3(0, -45, 0));
+        ed.scene.select_only(a);
+        ed.gizmo_local = true;
+        frames(2);
+        Vec3 local_x = rotate(oa2->rotation, Vec3(1, 0, 0));     // diagonal in x and z
+        Vec3 p0 = oa2->position;
+        float cx2, cy2, ax2, ay2;
+        to_screen(p0, &cx2, &cy2);
+        to_screen(p0 + local_x * 0.6f, &ax2, &ay2);
+        float gx = cx2 + (ax2 - cx2) * 0.9f, gy = cy2 + (ay2 - cy2) * 0.9f;
+        float dxs = ax2 - cx2, dys = ay2 - cy2;
+        float len = sqrtf(dxs * dxs + dys * dys);
+        drag(gx, gy, gx + dxs / len * 60, gy + dys / len * 60);
+        Vec3 moved = oa2->position - p0;
+        float ml = length(moved);
+        float along = ml > 0 ? dot(moved, local_x) / ml : 0;
+        CHECK(ml > 0.15f && along > 0.999f && fabsf(moved.y) < 1e-3f,
+              "with local axes the X arrow moves A along its own x (moved %.3f, %.3f, %.3f; along %.4f)", moved.x, moved.y, moved.z, along);
+        ed.gizmo_local = false;
+        oa2->rotation = Quat();
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        frames(2);
+    }
+
+    // ---- parenting: the tree, drag to parent, world transforms
+    {
+        ed.tool = Tool::Select;
+        ed.scene.clear_selection();
+        Object* oa2 = ed.scene.get(a);
+        Object* ob2 = ed.scene.get(b);
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        ob2->position = Vec3(1.5f, 0.5f, 0);
+        frames(2);
+        char ka[32], kb[32];
+        snprintf(ka, sizeof(ka), "hier:%u", a);
+        snprintf(kb, sizeof(kb), "hier:%u", b);
+        const Editor::UiRect* rb = ui(kb);
+        const Editor::UiRect* ra = ui(ka);
+        CHECK(ra && rb, "rows for A and B");
+        if (ra && rb) {
+            // Drag B's row onto A's row: B becomes A's child, staying where it is.
+            drag(rb->x + 60, rb->y + rb->h * 0.5f, ra->x + 60, ra->y + ra->h * 0.5f, 0, 10);
+            CHECK(ob2->parent == a, "dragging B's row onto A makes B a child of A (parent %u)", ob2->parent);
+            Mat4 wb = ed.scene.world_matrix(*ob2);
+            CHECK(fabsf(wb.m[12] - 1.5f) < 1e-3f && fabsf(wb.m[14]) < 1e-3f, "B stays where it was in the world (%.3f, %.3f)", wb.m[12], wb.m[14]);
+            CHECK(fabsf(ob2->position.x - 3.0f) < 1e-3f, "and its position is now relative to A (%.3f)", ob2->position.x);
+            frames(2);
+            ra = ui(ka);
+            rb = ui(kb);
+            CHECK(ra && rb && rb->y > ra->y, "B's row is under A's");
+            char kf[32];
+            snprintf(kf, sizeof(kf), "fold:%u", a);
+            const Editor::UiRect* rf = ui(kf);
+            CHECK(rf != nullptr, "A has a fold arrow");
+            // Moving the parent moves the child.
+            oa2->position.y += 1.0f;
+            frames(1);
+            wb = ed.scene.world_matrix(*ob2);
+            CHECK(fabsf(wb.m[13] - 1.5f) < 1e-3f, "moving A moves B (world y %.3f)", wb.m[13]);
+            oa2->position.y -= 1.0f;
+            // Clicking where B is in the viewport picks B through its parent.
+            frames(2);
+            float sx2, sy2;
+            to_screen(Vec3(1.5f, 0.5f, 0), &sx2, &sy2);
+            click(sx2, sy2);
+            CHECK(ed.scene.is_selected(b) && ed.scene.selected_count() == 1, "B can be picked in the viewport");
+            // Folding hides the child row.
+            if (rf) {
+                click(rf->x + rf->w * 0.5f, rf->y + rf->h * 0.5f);
+                CHECK(!oa2->expanded && ui(kb) == nullptr, "the fold arrow hides A's children");
+                click(rf->x + rf->w * 0.5f, rf->y + rf->h * 0.5f);
+                CHECK(oa2->expanded && ui(kb) != nullptr, "and shows them again");
+            }
+            // A cannot go under its own child.
+            CHECK(!ed.scene.set_parent(a, b), "a parent cannot become its child's child");
+            // Hiding A hides B in the viewport (it is not picked).
+            oa2->visible = false;
+            frames(2);
+            ed.scene.clear_selection();
+            click(sx2, sy2);
+            CHECK(ed.scene.selected_count() == 0, "hiding A hides its child B");
+            oa2->visible = true;
+            // Dropping B's row on "Scene" takes it out again.
+            frames(2);
+            rb = ui(kb);
+            const Editor::UiRect* rr = ui("hier:root");
+            if (rb && rr) drag(rb->x + 80, rb->y + rb->h * 0.5f, rr->x + 60, rr->y + rr->h * 0.5f, 0, 10);
+            CHECK(ob2->parent == kNoObject, "dropping B on Scene moves it to the top (parent %u)", ob2->parent);
+            CHECK(fabsf(ob2->position.x - 1.5f) < 1e-3f, "keeping its world position (%.3f)", ob2->position.x);
+            // Deleting a parent deletes its children; duplicating copies them.
+            ed.scene.set_parent(b, a);
+            ed.scene.select_only(a);
+            int before = ed.scene.count();
+            ed.duplicate_selection();
+            CHECK(ed.scene.count() == before + 2, "duplicating A copies its child too (%d -> %d)", before, ed.scene.count());
+            ObjectId a_copy = ed.scene.active();
+            int kids = 0;
+            for (int i = 0; i < ed.scene.count(); i++) if (ed.scene.at(i).parent == a_copy) kids++;
+            CHECK(kids == 1, "the copy has one child (%d)", kids);
+            ed.delete_selection();
+            CHECK(ed.scene.count() == before, "deleting the copy deletes its child (%d)", ed.scene.count());
+            ed.scene.set_parent(b, kNoObject);
+            ed.scene.clear_selection();
+            frames(2);
+        }
+    }
 
     // ---- orientation gizmo: clicking an axis looks along it
     frames(2);

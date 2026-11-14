@@ -1,0 +1,3 @@
+[submodule "external/Minimal-OS-SDK"]
+	path = external/Minimal-OS-SDK
+	url = https://github.com/fsminecrafter/Minimal-OS-SDK

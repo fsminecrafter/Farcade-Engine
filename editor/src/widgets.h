@@ -37,7 +37,8 @@ const Palette& ui_palette();
 void set_ui_palette(const Palette& p, ImFont* medium);
 
 // A collapsible section ("Transform", "Mesh"): a quiet header with a
-// chevron and an icon. Returns true while open.
+// chevron and an icon. Returns true while open. Text after "##" in the
+// title is part of its id only.
 bool section_header(const char* title, Icon icon, bool default_open = true);
 
 // A property row: the label in the left column, then the cursor sits in the

@@ -8,6 +8,7 @@
 #include "imguizmo/ImGuizmo.h"
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -345,26 +346,96 @@ void Editor::delete_selection() {
 }
 
 ObjectId Editor::duplicate_tree(ObjectId src_id, ObjectId parent, bool offset) {
+    // Pairs (original, copy) of everything copied, so that script inputs
+    // linking inside the copied tree link to the copies (a switch and its
+    // door duplicated together stay a pair).
+    ObjectId from[256], to[256];
+    int pairs = 0;
+    ObjectId id = duplicate_one(src_id, parent, offset, from, to, &pairs);
+    for (int i = 0; i < pairs; i++) {
+        Object* o = scene.get(to[i]);
+        if (!o) continue;
+        for (int s = 0; s < o->script_count; s++)
+            for (int k = 0; k < o->scripts[s].prop_count; k++) {
+                ScriptProp& p = o->scripts[s].props[k];
+                if (p.type != PropType::Object) continue;
+                for (int j = 0; j < pairs; j++)
+                    if (p.object == from[j]) { p.object = to[j]; break; }
+            }
+    }
+    return id;
+}
+
+ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, ObjectId* from, ObjectId* to, int* pairs) {
     Object* src = scene.get(src_id);
     if (!src) return kNoObject;
-    Object copy = *src;
-    ObjectId id = create_object(copy.name, copy.mesh, copy.position);
+    ObjectId id = create_object(src->name, src->mesh, src->position);
+    src = scene.get(src_id);                    // objects are separate allocations, but look it up again anyway
     Object* o = scene.get(id);
     char name[64];
     memcpy(name, o->name, sizeof(name));
-    *o = copy;                                  // everything but the id, the name and the parent
+    *o = *src;                                  // everything but the id, the name and the parent
     o->id = id;
     memcpy(o->name, name, sizeof(name));
     o->parent = parent;
-    if (offset) o->position = copy.position + Vec3(0.5f, 0, 0.5f);
+    if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    if (*pairs < 256) { from[*pairs] = src_id; to[*pairs] = id; (*pairs)++; }
     // The children, in their order (the list grows while copying).
     int n = scene.count();
     ObjectId kids[256];
     int nk = 0;
     for (int i = 0; i < n && nk < 256; i++)
         if (scene.at(i).parent == src_id) kids[nk++] = scene.at(i).id;
-    for (int k = 0; k < nk; k++) duplicate_tree(kids[k], id, false);
+    for (int k = 0; k < nk; k++) duplicate_one(kids[k], id, false, from, to, pairs);
     return id;
+}
+
+int Editor::add_script(ObjectId id, const char* path) {
+    Object* o = scene.get(id);
+    if (!o) return -1;
+    int i = scene.add_script(id, path);
+    if (i < 0) {
+        log(LogLevel::Warning, "%s already has %d scripts (the most an object can hold)", o->name, kMaxScripts);
+        return -1;
+    }
+    reload_script(id, i);
+    return i;
+}
+
+bool Editor::reload_script(ObjectId id, int index) {
+    Object* o = scene.get(id);
+    if (!o || index < 0 || index >= o->script_count) return false;
+    ScriptSlot& slot = o->scripts[index];
+    // Paths from the Files panel are full; others are relative to the project.
+    size_t size = 0;
+    char* text = (char*)platform::read_file(slot.path, &size);
+    if (!text && project_dir[0] && slot.path[0] != '/') {
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", project_dir, slot.path);
+        text = (char*)platform::read_file(full, &size);
+    }
+    if (!text) {
+        if (!slot.missing) log(LogLevel::Warning, "%s: cannot read %s; its inputs keep their values", o->name, slot.path);
+        slot.missing = true;
+        return false;
+    }
+    slot.missing = false;
+    ScriptProp declared[kMaxProps];
+    int bad = 0;
+    int n = parse_script_props(text, (uint32_t)size, declared, kMaxProps, &bad);
+    free(text);
+    merge_script_props(&slot, declared, n);
+    if (bad) log(LogLevel::Warning, "%s: %d @prop line%s could not be read", path_filename(slot.path), bad, bad == 1 ? "" : "s");
+    return true;
+}
+
+int Editor::reload_all_scripts() {
+    int failed = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        for (int s = 0; s < o.script_count; s++) failed += !reload_script(o.id, s);
+    }
+    return failed;
 }
 
 void Editor::duplicate_selection() {
@@ -424,6 +495,9 @@ void Editor::set_view(float yaw, float pitch) {
 
 void Editor::play() {
     if (playing()) return;
+    // Script inputs follow the files as they are now (the values set in the
+    // editor stay).
+    reload_all_scripts();
     play_backup_ = new Scene();
     play_backup_->copy_from(scene);
     play_time = 0.0;
@@ -461,8 +535,9 @@ void Editor::apply_file_to_object(const char* path, ObjectId id) {
         snprintf(o->model_path, sizeof(o->model_path), "%s", path);
         log(LogLevel::Info, "%s: model %s", o->name, path_filename(path));
     } else if (path_is_script(path)) {
-        snprintf(o->script_path, sizeof(o->script_path), "%s", path);
-        log(LogLevel::Info, "%s: script %s", o->name, path_filename(path));
+        int i = add_script(id, path);
+        if (i >= 0) log(LogLevel::Info, "%s: added script %s (%d input%s)", o->name, path_filename(path), o->scripts[i].prop_count,
+                        o->scripts[i].prop_count == 1 ? "" : "s");
     } else {
         log(LogLevel::Warning, "%s cannot be put on an object", path_filename(path));
     }

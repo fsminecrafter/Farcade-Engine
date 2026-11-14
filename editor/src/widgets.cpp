@@ -52,7 +52,9 @@ bool section_header(const char* title, Icon icon, bool default_open) {
     draw_icon(dl, open ? Icon::ChevronDown : Icon::ChevronRight, ImVec2(pos.x + 6, cy - fs * 0.4f), fs * 0.8f, g_pal.text_faint);
     draw_icon(dl, icon, ImVec2(pos.x + 8 + fs, cy - fs * 0.45f), fs * 0.9f, g_pal.accent_text);
     if (g_medium) ImGui::PushFont(g_medium, 0.0f);
-    dl->AddText(ImVec2(pos.x + 14 + fs * 2.0f, cy - ImGui::GetFontSize() * 0.5f), g_pal.text, title);
+    // "ball.lua##script0": the part after ## keeps headers with the same
+    // text apart and is not shown.
+    dl->AddText(ImVec2(pos.x + 14 + fs * 2.0f, cy - ImGui::GetFontSize() * 0.5f), g_pal.text, title, ImGui::FindRenderedTextEnd(title));
     if (g_medium) ImGui::PopFont();
     if (open) ImGui::Dummy(ImVec2(0, 1));
     return open;

@@ -528,6 +528,157 @@ int main() {
         CHECK(click_ui("console:clear") && ed.log_count == 0, "the trash button clears the console");
     }
 
+    // ---- scripts: declared inputs (parsed without running Lua)
+    {
+        const char* src =
+            "-- A door.\n"
+            "-- @prop speed  number = 5  range 0 20   -- how fast\n"
+            "--- @prop label text = \"Front door\"\n"
+            "-- @prop note   text = plain words here\n"
+            "-- @prop open   toggle = true\n"
+            "-- @prop mode   list(closed, open, locked) = locked\n"
+            "-- @prop target object\n"
+            "-- @prop big    number = 50 range 0 10\n"
+            "-- @prop bad    vector = 1\n"
+            "-- @prop worse  list() \n"
+            "-- @prop speed  number = 1\n"
+            "local x = 1 -- @prop not_a_decl number\n";
+        ScriptProp props[kMaxProps];
+        int bad = 0;
+        int n = parse_script_props(src, (uint32_t)strlen(src), props, kMaxProps, &bad);
+        CHECK(n == 7, "7 inputs declared (got %d)", n);
+        CHECK(bad == 3, "3 bad lines: unknown type, empty list, a repeated name (got %d)", bad);
+        if (n == 7) {
+            CHECK(!strcmp(props[0].name, "speed") && props[0].type == PropType::Number && props[0].number == 5 && props[0].min == 0 && props[0].max == 20,
+                  "number with a range (%s %g [%g %g])", props[0].name, props[0].number, props[0].min, props[0].max);
+            CHECK(props[1].type == PropType::Text && !strcmp(props[1].text, "Front door"), "quoted text (\"%s\")", props[1].text);
+            CHECK(!strcmp(props[2].text, "plain words here"), "bare text is the rest of the line (\"%s\")", props[2].text);
+            CHECK(props[3].type == PropType::Toggle && props[3].toggle, "toggle = true");
+            CHECK(props[4].type == PropType::List && props[4].choice_count == 3 && props[4].choice == 2 && !strcmp(props[4].choices[2], "locked"),
+                  "list with a default choice (%d choices, choice %d)", props[4].choice_count, props[4].choice);
+            CHECK(props[5].type == PropType::Object && props[5].object == 0, "object link, empty");
+            CHECK(props[6].number == 10, "a default outside the range is clamped (%g)", props[6].number);
+        }
+
+        // Merging after the file changed: kept values, new defaults, dropped inputs.
+        ScriptSlot slot;
+        merge_script_props(&slot, props, n);
+        slot.prop("speed")->number = 12;
+        slot.prop("mode")->choice = 1;                 // "open"
+        snprintf(slot.prop("label")->text, sizeof(slot.prop("label")->text), "%s", "Back door");
+        const char* src2 =
+            "-- @prop mode  list(locked, open) = locked\n"
+            "-- @prop speed number = 1 range 0 10\n"
+            "-- @prop label toggle = false\n"
+            "-- @prop extra number = 3\n";
+        ScriptProp p2[kMaxProps];
+        int n2 = parse_script_props(src2, (uint32_t)strlen(src2), p2, kMaxProps);
+        merge_script_props(&slot, p2, n2);
+        CHECK(slot.prop_count == 4 && !slot.prop("note") && !slot.prop("target"), "inputs no longer declared are dropped (%d)", slot.prop_count);
+        CHECK(slot.prop("speed")->number == 10, "a kept number is clamped to the new range (%g)", slot.prop("speed")->number);
+        CHECK(slot.prop("mode")->choice == 1, "a list choice is found again by its text (%d)", slot.prop("mode")->choice);
+        CHECK(slot.prop("label")->type == PropType::Toggle && !slot.prop("label")->toggle, "an input whose type changed starts from its default");
+        CHECK(slot.prop("extra")->number == 3, "a new input gets its default");
+        CHECK(!strcmp(slot.props[0].name, "mode"), "inputs follow the file's order");
+    }
+
+    // ---- scripts on objects: several per object, linked to each other
+    {
+        const char* door1 = "-- @prop speed number = 2 range 0 5\n-- @prop locked toggle = true\n";
+        platform::write_file("build/host/test-project/door.lua", door1, strlen(door1));
+        const char* sw = "-- @prop door object\n-- @prop mode list(press, hold) = press\n-- @prop label text = \"Switch\"\n";
+        platform::write_file("build/host/test-project/switch.lua", sw, strlen(sw));
+        ObjectId door = ed.create_object("Door", MeshKind::Cube, Vec3(0, 0.5f, -3));
+        ObjectId lever = ed.create_object("Lever", MeshKind::Cylinder, Vec3(1, 0.5f, -3));
+        ObjectId knob = ed.create_child("Knob", MeshKind::Sphere, lever);
+        ed.apply_file_to_object("build/host/test-project/door.lua", door);
+        ed.apply_file_to_object("build/host/test-project/player.lua", door);
+        Object* od = ed.scene.get(door);
+        CHECK(od->script_count == 2, "dropping a second script adds it (count %d)", od->script_count);
+        CHECK(od->scripts[0].prop_count == 2 && od->scripts[0].prop("locked")->toggle, "door.lua's inputs are read when it is added");
+        CHECK(od->scripts[1].prop_count == 0 && !od->scripts[1].missing, "a script without @prop lines has no inputs");
+        CHECK(ed.scene.find_script(door, "door") == &od->scripts[0] && ed.scene.find_script(door, "door.lua") == &od->scripts[0],
+              "find_script by name, with or without the extension");
+        CHECK(ed.scene.find_script(door, "do") == nullptr && ed.scene.find_script(door, "switch") == nullptr, "find_script: no partial or absent names");
+
+        ed.add_script(lever, "build/host/test-project/switch.lua");
+        ed.add_script(knob, "build/host/test-project/switch.lua");
+        ScriptProp* link = ed.scene.script_prop(lever, "switch", "door");
+        CHECK(link && link->type == PropType::Object, "the lever's switch has a door link");
+        if (link) link->object = door;
+        // The knob's switch links to the lever, inside the tree that is duplicated below.
+        if (ScriptProp* k = ed.scene.script_prop(knob, "switch", "door")) k->object = lever;
+        // What a switch script does at run time: follow the link to the door's script and use its inputs.
+        ScriptProp* through = link ? ed.scene.script_prop(link->object, "door", "locked") : nullptr;
+        CHECK(through && through->toggle, "a script reaches another object's script through a link");
+        CHECK(ed.scene.links_to(door) == 1 && ed.scene.links_to(lever) == 1, "links_to counts links (%d, %d)", ed.scene.links_to(door), ed.scene.links_to(lever));
+
+        // Duplicating the lever (with its knob): the copy's links inside the
+        // copied tree go to the copies, links outside stay.
+        ed.scene.select_only(lever);
+        int before = ed.scene.count();
+        ed.duplicate_selection();
+        CHECK(ed.scene.count() == before + 2, "lever and knob duplicated");
+        ObjectId lever2 = ed.scene.active();
+        ObjectId knob2 = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) if (ed.scene.at(i).parent == lever2) knob2 = ed.scene.at(i).id;
+        ScriptProp* l2 = ed.scene.script_prop(lever2, "switch", "door");
+        ScriptProp* k2 = ed.scene.script_prop(knob2, "switch", "door");
+        CHECK(l2 && l2->object == door, "a link out of the copied tree stays (%u)", l2 ? l2->object : 0);
+        CHECK(k2 && k2->object == lever2, "a link inside the copied tree goes to the copy (%u, copy %u)", k2 ? k2->object : 0, lever2);
+
+        // Play keeps editor values and puts back what play changed.
+        ed.scene.script_prop(door, "door", "speed")->number = 4;
+        ed.play();
+        ed.scene.script_prop(door, "door", "speed")->number = 1;
+        ed.stop();
+        CHECK(ed.scene.script_prop(door, "door", "speed")->number == 4, "Stop puts script inputs back (%g)", ed.scene.script_prop(door, "door", "speed")->number);
+
+        // The file changes: Reload keeps the value and adds the new input.
+        const char* door2 = "-- @prop speed number = 2 range 0 5\n-- @prop locked toggle = true\n-- @prop sound text = creak\n";
+        platform::write_file("build/host/test-project/door.lua", door2, strlen(door2));
+        CHECK(ed.reload_script(door, 0), "reload reads the file again");
+        od = ed.scene.get(door);
+        CHECK(od->scripts[0].prop_count == 3 && od->scripts[0].prop("speed")->number == 4 && !strcmp(od->scripts[0].prop("sound")->text, "creak"),
+              "reload keeps values and adds new inputs");
+
+        // Deleting the door clears the links to it.
+        ed.scene.select_only(door);
+        ed.delete_selection();
+        CHECK(ed.scene.script_prop(lever, "switch", "door")->object == kNoObject && ed.scene.links_to(door) == 0, "links to a deleted object are cleared");
+
+        // ---- the Inspector: one section per script, inputs, add and remove
+        ed.scene.select_only(lever);
+        // Scroll the Inspector down so the scripts are in view.
+        frames(2);
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
+        frames(2);
+        if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
+        frames(2);
+        CHECK(ui("script:0") && ui("script:0:mode") && ui("script:0:label") && ui("script:0:door"), "the Inspector shows the switch and its inputs");
+        CHECK(ui("inspector:add_script") != nullptr, "an Add script button");
+        if (ui("inspector:add_script")) {
+            click_ui("inspector:add_script");
+            frames(2);
+            CHECK(ui("addscript:door.lua") != nullptr, "Add script lists the project's scripts");
+            if (ui("addscript:door.lua")) click_ui("addscript:door.lua");
+            Object* ol = ed.scene.get(lever);
+            CHECK(ol->script_count == 2 && ol->scripts[1].name_is("door") && ol->scripts[1].prop_count == 3, "picking one adds it with its inputs (count %d)",
+                  ol->script_count);
+            if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
+            CHECK(click_ui("script:1:up") && ed.scene.get(lever)->scripts[0].name_is("door"), "the up button moves a script earlier");
+            if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
+            CHECK(click_ui("script:0:remove") && ed.scene.get(lever)->script_count == 1 && ed.scene.get(lever)->scripts[0].name_is("switch"),
+                  "the trash button removes a script");
+        }
+        // Filling the slots: at most kMaxScripts.
+        for (int i = 0; i < kMaxScripts + 2; i++) ed.scene.add_script(knob, "build/host/test-project/player.lua");
+        CHECK(ed.scene.get(knob)->script_count == kMaxScripts, "an object holds at most %d scripts", kMaxScripts);
+        ed.scene.select_only(kNoObject);
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");

@@ -70,6 +70,62 @@ void Scene::remove_one(ObjectId id) {
         break;
     }
     if (is_selected(id)) toggle(id);
+    // Script inputs that linked to it now link to nothing.
+    for (int i = 0; i < count_; i++)
+        for (int s = 0; s < objects_[i]->script_count; s++) {
+            ScriptSlot& sl = objects_[i]->scripts[s];
+            for (int k = 0; k < sl.prop_count; k++)
+                if (sl.props[k].type == PropType::Object && sl.props[k].object == id) sl.props[k].object = kNoObject;
+        }
+}
+
+int Scene::add_script(ObjectId id, const char* path) {
+    Object* o = get(id);
+    if (!o || o->script_count >= kMaxScripts || !path || !*path) return -1;
+    ScriptSlot& s = o->scripts[o->script_count];
+    s = ScriptSlot();
+    strncpy(s.path, path, sizeof(s.path) - 1);
+    return o->script_count++;
+}
+
+void Scene::remove_script(ObjectId id, int index) {
+    Object* o = get(id);
+    if (!o || index < 0 || index >= o->script_count) return;
+    for (int i = index; i < o->script_count - 1; i++) o->scripts[i] = o->scripts[i + 1];
+    o->script_count--;
+    o->scripts[o->script_count] = ScriptSlot();
+}
+
+void Scene::move_script(ObjectId id, int from, int to) {
+    Object* o = get(id);
+    if (!o || from < 0 || to < 0 || from >= o->script_count || to >= o->script_count || from == to) return;
+    ScriptSlot tmp = o->scripts[from];
+    int step = to > from ? 1 : -1;
+    for (int i = from; i != to; i += step) o->scripts[i] = o->scripts[i + step];
+    o->scripts[to] = tmp;
+}
+
+ScriptSlot* Scene::find_script(ObjectId id, const char* name) {
+    Object* o = get(id);
+    if (!o || !name) return nullptr;
+    for (int i = 0; i < o->script_count; i++)
+        if (o->scripts[i].name_is(name)) return &o->scripts[i];
+    return nullptr;
+}
+
+ScriptProp* Scene::script_prop(ObjectId id, const char* script, const char* prop) {
+    ScriptSlot* s = find_script(id, script);
+    return s ? s->prop(prop) : nullptr;
+}
+
+int Scene::links_to(ObjectId id) {
+    int n = 0;
+    for (int i = 0; i < count_; i++)
+        for (int s = 0; s < objects_[i]->script_count; s++) {
+            const ScriptSlot& sl = objects_[i]->scripts[s];
+            for (int k = 0; k < sl.prop_count; k++) n += sl.props[k].type == PropType::Object && sl.props[k].object == id;
+        }
+    return n;
 }
 
 Mat4 Scene::parent_world_matrix(const Object& o) {

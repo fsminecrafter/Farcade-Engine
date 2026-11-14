@@ -81,6 +81,13 @@ public:
     void delete_selection();                    // with their children
     ObjectId create_child(const char* name, MeshKind mesh, ObjectId parent);
     ObjectId duplicate_tree(ObjectId src, ObjectId parent, bool offset);    // an object and its children
+    // Scripts: adds one to an object and reads the inputs it declares
+    // (-- @prop lines, see script.h). Returns its index or -1.
+    int add_script(ObjectId id, const char* path);
+    // Reads a script's file again and brings its inputs up to date, keeping
+    // the values set in the editor. False when the file cannot be read.
+    bool reload_script(ObjectId id, int index);
+    int reload_all_scripts();                   // every script in the scene; returns how many failed
     void duplicate_selection();
     void frame_selection();
     void apply_theme();
@@ -131,7 +138,10 @@ public:
     bool log_scroll_to_end = false;
 
 private:
+    ObjectId duplicate_one(ObjectId src, ObjectId parent, bool offset, ObjectId* from, ObjectId* to, int* pairs);
     void build_ui();
+    void script_section(Object* o, int index);
+    void add_script_button(Object* o);
     void main_menu();
     void run_controls();
     void status_bar(float height);

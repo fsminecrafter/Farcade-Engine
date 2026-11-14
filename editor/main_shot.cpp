@@ -55,7 +55,14 @@ static void demo_scene(Editor& ed) {
     ed.scene.get(lamp)->scale = Vec3(0.6f, 0.15f, 0.6f);
     ed.scene.get(lamp)->color = Vec3(0.98f, 0.85f, 0.45f);
     snprintf(ed.scene.get(cube)->texture_path, 256, "%s", "assets/crate.png");
-    snprintf(ed.scene.get(sphere)->script_path, 256, "%s", "scripts/ball.lua");
+    // Two scripts on the ball, with inputs set in the editor; the lamp's
+    // script links to the ball (its "follow" input) to reach its scripts.
+    ed.add_script(sphere, "scripts/ball.lua");
+    ed.add_script(sphere, "scripts/hover.lua");
+    if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "speed")) p->number = 7.5f;
+    if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "mode")) p->choice = 1;
+    ed.add_script(lamp, "scripts/lamp.lua");
+    if (ScriptProp* p = ed.scene.script_prop(lamp, "lamp", "follow")) p->object = sphere;
     // Crate selected, then shift-click on the ball: two selected, the ball active.
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
@@ -81,7 +88,29 @@ int main(int argc, char** argv) {
     snprintf(sub, sizeof(sub), "%s/scenes", project); mkdir(sub, 0755);
     touch(project, "project.fe", "name = \"Demo\"\n");
     touch(project, "crate.mof", "MOF");
-    touch(project, "ball.lua", "function on_update(dt) end\n");
+    touch(project, "scripts/ball.lua",
+          "-- Rolls the ball around.\n"
+          "-- @prop speed  number = 5  range 0 20\n"
+          "-- @prop mode   list(roll, bounce, idle) = roll\n"
+          "-- @prop label  text = \"Player ball\"\n"
+          "-- @prop sticky toggle = false\n"
+          "\n"
+          "function on_update(self, dt)\n"
+          "  if self.mode == \"idle\" then return end\n"
+          "  self.object:move(self.speed * dt, 0, 0)\n"
+          "end\n");
+    touch(project, "scripts/hover.lua",
+          "-- @prop height number = 0.4\n"
+          "-- @prop enabled toggle = true\n"
+          "function on_update(self, dt) end\n");
+    touch(project, "scripts/lamp.lua",
+          "-- Lights up when the ball rolls fast.\n"
+          "-- @prop follow object\n"
+          "-- @prop threshold number = 6\n"
+          "function on_update(self, dt)\n"
+          "  local ball = self.follow and self.follow:script(\"ball\")\n"
+          "  self.on = ball ~= nil and ball.speed > self.threshold\n"
+          "end\n");
     touch(project, "crate.png", "PNG");
     touch(project, "grass.jpg", "JPG");
     touch(project, "notes.txt", "todo\n");

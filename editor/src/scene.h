@@ -6,6 +6,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "script.h"
 #include <stdint.h>
 
 namespace fe {
@@ -34,7 +35,8 @@ struct Object {
     MeshKind mesh = MeshKind::Cube;
     char model_path[256] = {};      // MeshKind::Model: the .mof file
     char texture_path[256] = {};    // a texture dropped on the object
-    char script_path[256] = {};     // a script dropped on the object
+    ScriptSlot scripts[kMaxScripts];    // the scripts on the object, in the order they run
+    int script_count = 0;
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);
     bool visible = true;
 
@@ -90,6 +92,21 @@ public:
     bool set_parent(ObjectId id, ObjectId parent);
     // True when one of the object's parents is selected (it moves with it).
     bool has_selected_ancestor(ObjectId id);
+
+    // ---- scripts. An object holds up to kMaxScripts; the same file may sit
+    // on it more than once.
+    // Adds a script (no inputs yet: Editor::reload_script reads them).
+    // Returns its index, or -1 when the object is full.
+    int add_script(ObjectId id, const char* path);
+    void remove_script(ObjectId id, int index);
+    void move_script(ObjectId id, int from, int to);
+    // The first script on `id` called `name` ("door" or "door.lua"), or null:
+    // what a script's target:script("door") finds at run time.
+    ScriptSlot* find_script(ObjectId id, const char* name);
+    // An input of a script on another object, or null.
+    ScriptProp* script_prop(ObjectId id, const char* script, const char* prop);
+    // How many script inputs (on any object) link to `id`.
+    int links_to(ObjectId id);
 
     // The built-in mesh of an object (primitives are generated once).
     static const MeshData& mesh_for(const Object& o);

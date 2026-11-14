@@ -344,6 +344,214 @@ static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bo
     ImGui::PopID();
 }
 
+// One script on the object: its file, buttons, and the inputs it declares.
+void Editor::script_section(Object* o, int si) {
+    const Palette& pal = ui_palette();
+    ScriptSlot& sl = o->scripts[si];
+    char title[300];
+    snprintf(title, sizeof(title), "%s##script%d", sl.name(), si);
+    char key[48];
+    snprintf(key, sizeof(key), "script:%d", si);
+    bool open = section_header(title, Icon::Script);
+    track(key);
+    if (!open) return;
+    ImGui::PushID(si);
+    float bs = ImGui::GetFrameHeight();
+    // Buttons: open, read again, move up / down, remove.
+    {
+        float w = ImGui::GetContentRegionAvail().x - (bs + 4) * 4;
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(sl.missing ? pal.warning : pal.text_dim));
+        ImGui::AlignTextToFramePadding();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::PushClipRect(p, ImVec2(p.x + w, p.y + bs), true);
+        ImGui::TextUnformatted(sl.missing ? "missing file" : sl.path);
+        ImGui::PopClipRect();
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", sl.path);
+        ImGui::SameLine(0, 0);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + w + 4, p.y));
+    }
+    if (icon_button(Icon::File, "Open in editor", false, bs)) open_file(sl.path);
+    ImGui::SameLine(0, 4);
+    if (icon_button(Icon::Refresh, "Read the inputs again", false, bs)) reload_script(o->id, si);
+    snprintf(key, sizeof(key), "script:%d:reload", si);
+    track(key);
+    ImGui::SameLine(0, 4);
+    ImGui::BeginDisabled(si == 0);
+    if (icon_button(Icon::Up, "Run earlier", false, bs)) {
+        scene.move_script(o->id, si, si - 1);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        return;
+    }
+    snprintf(key, sizeof(key), "script:%d:up", si);
+    track(key);
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, 4);
+    if (icon_button(Icon::Trash, "Remove the script", false, bs)) {
+        log(LogLevel::Info, "%s: removed script %s", o->name, sl.name());
+        scene.remove_script(o->id, si);
+        ImGui::PopID();
+        return;
+    }
+    snprintf(key, sizeof(key), "script:%d:remove", si);
+    track(key);
+
+    if (sl.prop_count == 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("No inputs. A script declares them with lines like  -- @prop speed number = 5");
+        ImGui::PopStyleColor();
+    }
+    for (int k = 0; k < sl.prop_count; k++) {
+        ScriptProp& p = sl.props[k];
+        ImGui::PushID(k);
+        prop_label(p.name);
+        switch (p.type) {
+            case PropType::Number:
+                if (p.min < p.max) ImGui::SliderFloat("##v", &p.number, p.min, p.max, "%.2f");
+                else ImGui::DragFloat("##v", &p.number, 0.05f, 0, 0, "%.2f");
+                break;
+            case PropType::Text:
+                ImGui::InputText("##v", p.text, sizeof(p.text));
+                break;
+            case PropType::Toggle:
+                toggle_switch("##v", &p.toggle);
+                break;
+            case PropType::List:
+                if (ImGui::BeginCombo("##v", p.choice < p.choice_count ? p.choices[p.choice] : "")) {
+                    for (int c = 0; c < p.choice_count; c++)
+                        if (ImGui::Selectable(p.choices[c], c == p.choice)) p.choice = c;
+                    ImGui::EndCombo();
+                }
+                break;
+            case PropType::Object: {
+                // A link to another object: pick it from the list or drop a
+                // hierarchy row here. Its scripts are what this script talks to.
+                Object* t = scene.get(p.object);
+                float w = ImGui::GetContentRegionAvail().x - (t ? bs + 4 : 0);
+                ImGui::SetNextItemWidth(w);
+                if (!t) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                bool combo = ImGui::BeginCombo("##v", t ? t->name : "None (drop an object)");
+                if (!t) ImGui::PopStyleColor();
+                if (combo) {
+                    if (ImGui::Selectable("None", !t)) p.object = kNoObject;
+                    for (int i = 0; i < scene.count(); i++) {
+                        Object& c = scene.at(i);
+                        ImGui::PushID((int)c.id);
+                        char label[96];
+                        if (c.script_count) snprintf(label, sizeof(label), "%s   (%d script%s)", c.name, c.script_count, c.script_count == 1 ? "" : "s");
+                        else snprintf(label, sizeof(label), "%s", c.name);
+                        if (ImGui::Selectable(label, c.id == p.object)) p.object = c.id;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("FE_OBJECT")) p.object = *(const ObjectId*)pl->Data;
+                    ImGui::EndDragDropTarget();
+                }
+                if (t && ImGui::IsItemHovered() && t->script_count) {
+                    char tip[400];
+                    int n = snprintf(tip, sizeof(tip), "Scripts on %s:", t->name);
+                    for (int s2 = 0; s2 < t->script_count && n < (int)sizeof(tip) - 2; s2++)
+                        n += snprintf(tip + n, sizeof(tip) - n, "\n  %s", t->scripts[s2].name());
+                    ImGui::SetTooltip("%s", tip);
+                }
+                if (t) {
+                    ImGui::SameLine(0, 4);
+                    if (icon_button(Icon::Pointer, "Select it", false, bs)) {
+                        ObjectId target = t->id;
+                        ImGui::PopID();
+                        ImGui::PopID();
+                        scene.select_only(target);
+                        return;
+                    }
+                }
+                break;
+            }
+        }
+        char pk[48];
+        snprintf(pk, sizeof(pk), "script:%d:%s", si, p.name);
+        track(pk);
+        ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PopID();
+}
+
+namespace {
+struct ScriptList {
+    char paths[64][256];
+    int count = 0;
+};
+void collect_scripts(const platform::DirEntry& e, void* user) {
+    ScriptList* l = (ScriptList*)user;
+    if (!e.is_dir && path_is_script(e.name) && l->count < 64) snprintf(l->paths[l->count++], 256, "%s", e.name);
+}
+}  // namespace
+
+// "Add script": a button that lists the project's scripts and takes a
+// script dropped from Files.
+void Editor::add_script_button(Object* o) {
+    const Palette& pal = ui_palette();
+    float bs = ImGui::GetFrameHeight();
+    ImGui::Dummy(ImVec2(0, 2));
+    bool full = o->script_count >= kMaxScripts;
+    ImGui::BeginDisabled(full);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    bool clicked = ImGui::InvisibleButton("##add_script", ImVec2(w, bs + 4));
+    bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    bool target = ImGui::GetDragDropPayload() != nullptr;
+    dl->AddRect(p, ImVec2(p.x + w, p.y + bs + 4), target ? pal.accent : (hov ? pal.text_faint : pal.border), 4.0f, 0, 1.0f);
+    if (hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + bs + 4), pal.hover, 4.0f);
+    float fs = ImGui::GetFontSize();
+    const char* label = full ? "Script slots full" : "Add script";
+    float tw = ImGui::CalcTextSize(label).x;
+    float x = p.x + (w - tw - fs - 6) * 0.5f;
+    draw_icon(dl, Icon::Plus, ImVec2(x, p.y + (bs + 4 - fs) * 0.5f), fs, pal.accent_text);
+    dl->AddText(ImVec2(x + fs + 6, p.y + (bs + 4 - fs) * 0.5f), pal.text_dim, label);
+    track("inspector:add_script");
+    if (const char* d = accept_file_drop()) {
+        if (path_is_script(d)) apply_file_to_object(d, o->id);
+        else log(LogLevel::Warning, "%s is not a script", path_filename(d));
+    }
+    ImGui::EndDisabled();
+    if (clicked) ImGui::OpenPopup("##add_script_menu");
+    if (ImGui::BeginPopup("##add_script_menu")) {
+        // Scripts in the project folder and its scripts/ folder.
+        static ScriptList list;
+        if (ImGui::IsWindowAppearing()) {
+            list.count = 0;
+            const char* dirs[2] = { project_dir, nullptr };
+            char sub[300];
+            snprintf(sub, sizeof(sub), "%s/scripts", project_dir);
+            dirs[1] = sub;
+            for (int d = 0; d < 2; d++) {
+                int before = list.count;
+                if (!dirs[d][0]) continue;
+                platform::list_dir(dirs[d], collect_scripts, &list);
+                for (int i = before; i < list.count; i++) {
+                    char full[256];
+                    snprintf(full, sizeof(full), "%s/%s", dirs[d], list.paths[i]);
+                    memcpy(list.paths[i], full, sizeof(full));
+                }
+            }
+        }
+        if (!list.count) ImGui::TextDisabled("No scripts in the project (drop one from Files)");
+        for (int i = 0; i < list.count; i++) {
+            ImGui::PushID(i);
+            if (ImGui::Selectable(path_filename(list.paths[i]))) apply_file_to_object(list.paths[i], o->id);
+            char k[48];
+            snprintf(k, sizeof(k), "addscript:%s", path_filename(list.paths[i]));
+            track(k);
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void Editor::panel_inspector() {
     ImGui::Begin("Inspector");
     int n = scene.selected_count();
@@ -451,13 +659,13 @@ void Editor::panel_inspector() {
         slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image, Icon::Image);
         ImGui::Dummy(ImVec2(0, 4));
     }
-    if (section_header("Script", Icon::Script)) {
-        slot_field("Script", o->script_path, sizeof(o->script_path), this, path_is_script, Icon::Script);
-        if (o->script_path[0]) {
-            prop_label("");
-            if (ImGui::Button("Open in editor", ImVec2(-FLT_MIN, 0))) open_file(o->script_path);
-        }
-        ImGui::Dummy(ImVec2(0, 4));
+    // ---- scripts: one section each, in the order they run, then "Add script".
+    for (int si = 0; si < o->script_count; si++) script_section(o, si);
+    add_script_button(o);
+    if (int links = scene.links_to(o->id)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%d script input%s link%s to this object.", links, links == 1 ? "" : "s", links == 1 ? "s" : "");
+        ImGui::PopStyleColor();
     }
     ImGui::End();
 }

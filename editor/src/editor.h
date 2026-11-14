@@ -9,6 +9,8 @@ struct ImFont;
 
 namespace fe {
 
+class View3D;
+
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
 enum class ViewMode : uint8_t { Lit, Unlit, Wireframe };
@@ -27,6 +29,13 @@ struct Settings {
     int grid_lines = 20;                // to each side of the origin
     bool show_grid = true;
     bool snap = false;
+#if FE_MINIMALOS
+    bool view_supersample = false;      // the CPU preview is slow under emulation
+    bool view_shadows = false;
+#else
+    bool view_supersample = true;       // 2x2 supersampling in the viewport
+    bool view_shadows = true;           // shadows on the ground
+#endif
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
     float snap_scale = 0.1f;
@@ -126,6 +135,8 @@ private:
     void status_bar(float height);
     void dockspace(float top, float bottom);
     void viewport_overlays(float x, float y, float w, float h);
+    uint64_t view_hash(int w, int h) const;
+    void render_view(View3D& view3d, const void* view);
     void orientation_gizmo(float x, float y, float size);
     void panel_hierarchy();
     void panel_inspector();

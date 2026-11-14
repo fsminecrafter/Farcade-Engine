@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
             view += ed.view_ms;
         }
         double ms = (real_seconds() - t0) * 1000.0 / n;
-        printf("frame %.2f ms (viewport %.2f ms, %d triangles, %dx%d)\n", ms, view / n, ed.view_triangles, (int)ed.view_rect[2],
+        printf("frame %.2f ms when idle (a full viewport render: %.2f ms, %d triangles, %dx%d)\n", ms, view / n, ed.view_triangles, (int)ed.view_rect[2],
                (int)ed.view_rect[3]);
     }
     char path[600];

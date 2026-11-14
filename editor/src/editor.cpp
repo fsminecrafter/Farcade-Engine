@@ -648,7 +648,7 @@ void Editor::run_controls() {
     float bs = ImGui::GetFrameHeight();
     char chip_label[64];
     snprintf(chip_label, sizeof(chip_label), "CPU preview  %.1f ms", view_ms);
-    float chip_w = ImGui::CalcTextSize("CPU preview  00.0 ms").x + bs + 18;
+    float chip_w = ImGui::CalcTextSize("CPU preview  000.0 ms").x + bs + 14;
     float group_w = bs * 2 + 8;
     float total = group_w + 10 + chip_w + 6 + bs + 8;
     float x = bar->Size.x - total;
@@ -696,6 +696,11 @@ void Editor::run_controls() {
         if (ImGui::RadioButton("Wireframe", view_mode == ViewMode::Wireframe)) view_mode = ViewMode::Wireframe;
         track("menu:Wireframe");
         ImGui::Separator();
+        ImGui::TextDisabled("Quality");
+        ImGui::Checkbox("Smooth edges (2x2 supersampling)", &settings.view_supersample);
+        track("menu:Smooth edges");
+        ImGui::Checkbox("Ground shadows", &settings.view_shadows);
+        track("menu:Ground shadows");
         ImGui::Checkbox("Grid", &settings.show_grid);
         ImGui::Separator();
         ImGui::TextDisabled("%d x %d   %d triangles   %.2f ms", (int)view_rect[2], (int)view_rect[3], view_triangles, view_ms);

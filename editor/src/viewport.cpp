@@ -75,6 +75,91 @@ Quat conjugate(const Quat& q) { return { -q.x, -q.y, -q.z, q.w }; }
 
 }  // namespace
 
+// Everything the viewport image depends on, hashed (FNV-1a).
+uint64_t Editor::view_hash(int w, int h) const {
+    uint64_t hsh = 1469598103934665603ull;
+    auto mix = [&](const void* data, size_t n) {
+        const uint8_t* b = (const uint8_t*)data;
+        for (size_t i = 0; i < n; i++) { hsh ^= b[i]; hsh *= 1099511628211ull; }
+    };
+    mix(&w, sizeof(w));
+    mix(&h, sizeof(h));
+    mix(&camera, sizeof(camera));
+    mix(&view_mode, sizeof(view_mode));
+    bool flags[4] = { settings.show_grid, settings.view_shadows, settings.view_supersample, settings.dark_theme };
+    mix(flags, sizeof(flags));
+    mix(&settings.grid_size, sizeof(settings.grid_size));
+    Scene& sc = const_cast<Scene&>(scene);
+    for (int i = 0; i < sc.count(); i++) {
+        const Object& o = sc.at(i);
+        mix(&o.id, sizeof(o.id));
+        mix(&o.position, sizeof(o.position));
+        mix(&o.rotation, sizeof(o.rotation));
+        mix(&o.scale, sizeof(o.scale));
+        mix(&o.color, sizeof(o.color));
+        mix(&o.mesh, sizeof(o.mesh));
+        mix(&o.visible, sizeof(o.visible));
+    }
+    for (int i = 0; i < sc.selected_count(); i++) { ObjectId id = sc.selected(i); mix(&id, sizeof(id)); }
+    ObjectId act = sc.active();
+    mix(&act, sizeof(act));
+    return hsh;
+}
+
+void Editor::render_view(View3D& view3d, const void* view_ptr) {
+    const View& v = *(const View*)view_ptr;
+    double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+    double t0 = clock();
+
+    uint32_t top = settings.dark_theme ? 0x2B3038 : 0xC9D0DA;
+    uint32_t bottom = settings.dark_theme ? 0x16181C : 0xEEF1F5;
+    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, settings.view_supersample ? 2 : 1);
+    bool wire = view_mode == ViewMode::Wireframe;
+    {
+        uint16_t sel_ids[256];
+        int nsel = 0;
+        for (int s2 = 0; s2 < scene.selected_count() && nsel < 256; s2++) sel_ids[nsel++] = (uint16_t)scene.selected(s2);
+        view3d.select(sel_ids, wire ? 0 : nsel, wire ? 0 : (uint16_t)scene.active());
+    }
+    int wire_tris = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        if (!o.visible) continue;
+        const MeshData& mesh = Scene::mesh_for(o);
+        Mat4 model = o.matrix();
+        if (!wire) {
+            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
+            continue;
+        }
+        bool sel = scene.is_selected(o.id);
+        uint32_t wc = sel ? 0x6EA3FF : (settings.dark_theme ? 0xC8CDD5 : 0x3A3F47);
+        for (uint32_t t = 0; t + 2 < mesh.vertex_count; t += 3) {
+            Vec3 a = transform_point(model, mesh.positions[t]);
+            Vec3 b = transform_point(model, mesh.positions[t + 1]);
+            Vec3 c = transform_point(model, mesh.positions[t + 2]);
+            wire_tris++;
+            view3d.line(a, b, wc, 190);
+            view3d.line(b, c, wc, 190);
+            view3d.line(c, a, wc, 190);
+        }
+    }
+    // Shadows on the ground from everything that is not flat on it.
+    if (settings.view_shadows && !wire && view_mode != ViewMode::Unlit) {
+        for (int i = 0; i < scene.count(); i++) {
+            Object& o = scene.at(i);
+            if (!o.visible || o.mesh == MeshKind::Plane) continue;
+            const MeshData& mesh = Scene::mesh_for(o);
+            view3d.shadow(mesh.positions, mesh.vertex_count, o.matrix());
+        }
+    }
+    if (settings.show_grid) view3d.grid(settings.grid_size, settings.dark_theme);
+    // Shadows, smoothing, and the selection outline (the active object brighter).
+    view3d.finish(0xFFB13B, 0xD98A1C, settings.dark_theme ? 0.42f : 0.30f);
+    view_triangles = view3d.triangles() + wire_tris;
+    view_ms = (float)((clock() - t0) * 1000.0);
+
+}
+
 void Editor::panel_viewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -92,71 +177,16 @@ void Editor::panel_viewport() {
     ImVec2 end(v.pos.x + v.size.x, v.pos.y + v.size.y);
     dl->PushClipRect(v.pos, end, true);
 
-    // The scene into the viewport image.
-    double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
-    double t0 = clock();
+    // The scene into the viewport image, redrawn only when something it
+    // shows has changed (the CPU preview is not cheap; idle frames are free).
     static View3D view3d;
-    uint32_t top = settings.dark_theme ? 0x2A2E35 : 0xCDD3DC;
-    uint32_t bottom = settings.dark_theme ? 0x17191D : 0xEDF0F4;
-    view3d.begin((int)v.size.x, (int)v.size.y, v.viewproj, top, bottom);
-    Vec3 light_dir = normalize(Vec3(0.45f, 0.85f, 0.35f));
-    int tris = 0;
-    for (int i = 0; i < scene.count(); i++) {
-        Object& o = scene.at(i);
-        if (!o.visible) continue;
-        const MeshData& mesh = Scene::mesh_for(o);
-        Mat4 model = o.matrix();
-        bool sel = scene.is_selected(o.id);
-        for (uint32_t t = 0; t + 2 < mesh.vertex_count; t += 3) {
-            Vec3 a = transform_point(model, mesh.positions[t]);
-            Vec3 b = transform_point(model, mesh.positions[t + 1]);
-            Vec3 c = transform_point(model, mesh.positions[t + 2]);
-            tris++;
-            if (view_mode == ViewMode::Wireframe) {
-                uint32_t wc = sel ? 0x6EA3FF : (settings.dark_theme ? 0xC8CDD5 : 0x3A3F47);
-                view3d.line(a, b, wc, 200);
-                view3d.line(b, c, wc, 200);
-                view3d.line(c, a, wc, 200);
-                continue;
-            }
-            Vec3 n = normalize(cross(b - a, c - a));
-            float lit = view_mode == ViewMode::Unlit ? 1.0f : 0.35f + 0.65f * fmaxf_(0.0f, dot(n, light_dir));
-            view3d.triangle(a, b, c, shade(o.color, lit, sel));
-        }
+    static uint64_t last_hash = 0;
+    uint64_t hash = view_hash((int)v.size.x, (int)v.size.y);
+    if (hash != last_hash || !view3d.width()) {
+        last_hash = hash;
+        render_view(view3d, &v);
     }
-    if (settings.show_grid) {
-        float g = settings.grid_size;
-        int n = settings.grid_lines;
-        float ext = g * n;
-        uint32_t gc = settings.dark_theme ? 0xFFFFFF : 0x000000;
-        for (int i = -n; i <= n; i++) {
-            if (i == 0) continue;
-            int alpha = (i % 10 == 0) ? 48 : 20;
-            view3d.line(Vec3(i * g, 0, -ext), Vec3(i * g, 0, ext), gc, alpha);
-            view3d.line(Vec3(-ext, 0, i * g), Vec3(ext, 0, i * g), gc, alpha);
-        }
-        view3d.line(Vec3(-ext, 0, 0), Vec3(ext, 0, 0), 0xDC5050, 170);
-        view3d.line(Vec3(0, 0, -ext), Vec3(0, 0, ext), 0x5082E6, 170);
-    }
-    view_triangles = tris;
-    view_ms = (float)((clock() - t0) * 1000.0);
     dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
-
-    // Selection: the bounding box of each selected object in the accent color.
-    for (int s = 0; s < scene.selected_count(); s++) {
-        Object* o = scene.get(scene.selected(s));
-        if (!o) continue;
-        const MeshData& m = Scene::mesh_for(*o);
-        Mat4 mm = o->matrix();
-        Vec3 c[8];
-        for (int k = 0; k < 8; k++)
-            c[k] = transform_point(mm, Vec3((k & 1) ? m.bounds_max.x : m.bounds_min.x, (k & 2) ? m.bounds_max.y : m.bounds_min.y,
-                                            (k & 4) ? m.bounds_max.z : m.bounds_min.z));
-        static const int edges[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 },
-                                          { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
-        ImU32 col = o->id == scene.active() ? IM_COL32(90, 150, 255, 255) : IM_COL32(90, 150, 255, 140);
-        for (auto& e : edges) line3(dl, v, c[e[0]], c[e[1]], col, 1.5f);
-    }
 
     // Gizmo on the active object. It comes before the input area: ImGuizmo
     // only starts a drag when no other item is hovered, so the input area is

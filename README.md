@@ -27,3 +27,19 @@ make host      # Linux: tools, tests, headless editor
 make test      # run the host tests
 make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 ```
+
+## Models: `.mof`
+
+`.mof` is the engine's model file: meshes (positions, normals, tangents,
+two UV sets, colors), materials, textures (raw RGBA8 with mips, PNG or
+JPEG), a skeleton (bones with inverse bind matrices, joints and weights)
+and a node tree, in one little-endian file of 16-byte aligned chunks. The
+byte-level specification is `docs/mof-format.md`; the reader and writer
+are `engine/mof/mof.h` (the reader is freestanding and zero-copy).
+
+```sh
+build/host/bin/mofconv model.glb model.mof     # from glTF 2.0 (.gltf/.glb) or OBJ (+MTL)
+build/host/bin/mofconv --info model.mof        # what is inside
+make mof-samples                               # rebuild assets/samples/*.mof
+make test-mof-asan                             # the .mof tests under ASan/UBSan
+```

@@ -136,6 +136,9 @@ private:
     void dockspace(float top, float bottom);
     void viewport_overlays(float x, float y, float w, float h);
     uint64_t view_hash(int w, int h) const;
+    bool view_interacting_ = false;     // a drag in the viewport (last frame)
+    bool view_supersample_now() const { return settings.view_supersample && !view_interacting_; }
+    bool view_shadows_now() const { return settings.view_shadows && !view_interacting_; }
     void render_view(View3D& view3d, const void* view);
     void orientation_gizmo(float x, float y, float size);
     void panel_hierarchy();

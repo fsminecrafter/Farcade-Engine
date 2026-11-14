@@ -86,7 +86,7 @@ uint64_t Editor::view_hash(int w, int h) const {
     mix(&h, sizeof(h));
     mix(&camera, sizeof(camera));
     mix(&view_mode, sizeof(view_mode));
-    bool flags[4] = { settings.show_grid, settings.view_shadows, settings.view_supersample, settings.dark_theme };
+    bool flags[4] = { settings.show_grid, view_shadows_now(), view_supersample_now(), settings.dark_theme };
     mix(flags, sizeof(flags));
     mix(&settings.grid_size, sizeof(settings.grid_size));
     Scene& sc = const_cast<Scene&>(scene);
@@ -113,7 +113,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
 
     uint32_t top = settings.dark_theme ? 0x2B3038 : 0xC9D0DA;
     uint32_t bottom = settings.dark_theme ? 0x16181C : 0xEEF1F5;
-    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, settings.view_supersample ? 2 : 1);
+    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
     bool wire = view_mode == ViewMode::Wireframe;
     {
         uint16_t sel_ids[256];
@@ -144,7 +144,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
         }
     }
     // Shadows on the ground from everything that is not flat on it.
-    if (settings.view_shadows && !wire && view_mode != ViewMode::Unlit) {
+    if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
             if (!o.visible || o.mesh == MeshKind::Plane) continue;
@@ -277,8 +277,10 @@ void Editor::panel_viewport() {
     if (hovered && !gizmo_active) {
         if (io.MouseWheel != 0) camera.distance = fclamp(camera.distance * (io.MouseWheel > 0 ? 0.85f : 1.18f), 0.5f, 400.0f);
     }
+    bool camera_drag = false;
     if (!gizmo_active && ImGui::IsItemActive()) {
         ImVec2 d = io.MouseDelta;
+        camera_drag = ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseDown(ImGuiMouseButton_Middle);
         bool pan = ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (ImGui::IsMouseDown(ImGuiMouseButton_Right) && io.KeyShift);
         if (pan) {
             float k = camera.distance * 0.0016f;
@@ -313,6 +315,11 @@ void Editor::panel_viewport() {
         dl->AddText(ImVec2(v.pos.x + (v.size.x - ts.x) * 0.5f, v.pos.y + v.size.y * 0.5f), pal.text_dim, hint);
     }
     dl->PopClipRect();
+
+    // While the camera or an object is being dragged, the next frames render
+    // at full speed (no supersampling or shadows); the full image comes back
+    // when the drag ends (the setting is part of the hash).
+    view_interacting_ = (!gizmo_active && camera_drag) || ImGuizmo::IsUsing();
 
     // Floating toolbars and the orientation gizmo, on top of the view.
     viewport_overlays(v.pos.x, v.pos.y, v.size.x, v.size.y);
@@ -444,6 +451,7 @@ void Editor::orientation_gizmo(float x, float y, float size) {
     ImGui::InvisibleButton("##orient_btn", ImVec2(size, size), ImGuiButtonFlags_MouseButtonLeft);
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
+    if (active) view_interacting_ = true;
     ImGuiIO& io = ImGui::GetIO();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (hovered || active) dl->AddCircleFilled(c, size * 0.5f - 1, pal.overlay, 32);

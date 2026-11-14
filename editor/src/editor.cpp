@@ -164,7 +164,7 @@ void Editor::apply_theme() {
     c[ImGuiCol_TextDisabled] = rgb(faint);
     c[ImGuiCol_WindowBg] = rgb(bg1);
     c[ImGuiCol_ChildBg] = rgb(0, 0);
-    c[ImGuiCol_PopupBg] = dark ? rgb(0x1E2126) : rgb(0xFFFFFF);
+    c[ImGuiCol_PopupBg] = dark ? rgb(0x15171B) : rgb(0xF4F5F7);
     c[ImGuiCol_Border] = rgb(border);
     c[ImGuiCol_BorderShadow] = rgb(0, 0);
     c[ImGuiCol_FrameBg] = rgb(bg2);
@@ -629,11 +629,6 @@ void Editor::main_menu() {
             if (font_medium) ImGui::PushFont(font_medium, 0.0f);
             dl->AddText(ImVec2(bar->Pos.x + x, ty), pal.text_dim, title);
             if (font_medium) ImGui::PopFont();
-            if (playing()) {
-                char t[48];
-                snprintf(t, sizeof(t), "Playing  %d:%02d", (int)play_time / 60, (int)play_time % 60);
-                dl->AddText(ImVec2(bar->Pos.x + x + tw + 14, ty), pal.play, t);
-            }
         }
     }
     run_controls();
@@ -660,7 +655,11 @@ void Editor::run_controls() {
     ImVec2 gp(bar->Pos.x + x, bar->Pos.y + y);
     dl->AddRectFilled(ImVec2(gp.x - 1, gp.y - 1), ImVec2(gp.x + group_w + 1, gp.y + bs + 1), pal.frame, ImGui::GetStyle().FrameRounding + 1);
     ImGui::SetCursorPos(ImVec2(x + 2, y));
-    if (icon_button(Icon::Play, playing() ? "Playing (Stop puts the scene back)" : "Play the scene (F5)", playing(), bs - 0, pal.play))
+    if (playing()) {
+        ImVec2 pp = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(pp, ImVec2(pp.x + bs, pp.y + bs), (pal.play & 0x00FFFFFF) | 0x40000000, ImGui::GetStyle().FrameRounding);
+    }
+    if (icon_button(Icon::Play, playing() ? "Playing (Stop puts the scene back)" : "Play the scene (F5)", false, bs, pal.play))
         if (!playing()) play();
     track("run:play");
     ImGui::SameLine(0, 2);

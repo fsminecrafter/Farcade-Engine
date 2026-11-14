@@ -601,6 +601,7 @@ void Editor::panel_console() {
         ImVec2 p = ImGui::GetCursorScreenPos();
         char ts[16];
         double t = l.time - t0;
+        if (t < 0) t = 0;
         snprintf(ts, sizeof(ts), "%02d:%04.1f", (int)(t / 60), t - 60 * (int)(t / 60));
         dl->AddText(p, pal.text_faint, ts);
         float tx = p.x + ImGui::CalcTextSize("00:00.0").x + 10;
@@ -620,35 +621,65 @@ void Editor::panel_console() {
 // ---------------------------------------------------------------- Settings
 
 void Editor::window_settings() {
-    ImGui::SetNextWindowSize(ImVec2(520, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560, 440), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     if (!ImGui::Begin("Settings", &show_settings, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
     }
-    if (ImGui::BeginTabBar("##settings")) {
+    // Tabs inside a window: the selected one gets a visible background.
+    ImGui::PushStyleColor(ImGuiCol_TabSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
+    ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
+    bool tabs = ImGui::BeginTabBar("##settings");
+    ImGui::PopStyleColor(2);
+    if (tabs) {
         if (ImGui::BeginTabItem("Appearance")) {
-            if (ImGui::Checkbox("Dark theme", &settings.dark_theme)) apply_theme();
+            ImGui::Dummy(ImVec2(0, 4));
+            prop_label("Dark theme");
+            if (toggle_switch("##dark", &settings.dark_theme)) apply_theme();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Grid and snap")) {
-            ImGui::DragFloat("Grid size", &settings.grid_size, 0.05f, 0.1f, 100.0f, "%.2f m");
-            ImGui::DragInt("Grid lines", &settings.grid_lines, 1, 2, 200);
-            ImGui::Checkbox("Snap on", &settings.snap);
-            ImGui::DragFloat("Move step", &settings.snap_move, 0.05f, 0.01f, 100.0f, "%.2f m");
-            ImGui::DragFloat("Rotate step", &settings.snap_rotate, 1.0f, 1.0f, 180.0f, "%.0f deg");
-            ImGui::DragFloat("Scale step", &settings.snap_scale, 0.01f, 0.01f, 10.0f, "%.2f");
+        if (ImGui::BeginTabItem("Viewport")) {
+            ImGui::Dummy(ImVec2(0, 4));
+            if (section_header("Grid and snap", Icon::Grid)) {
+                prop_label("Show grid");
+                toggle_switch("##grid", &settings.show_grid);
+                prop_label("Grid size");
+                ImGui::DragFloat("##gs", &settings.grid_size, 0.05f, 0.1f, 100.0f, "%.2f m");
+                prop_label("Snap");
+                toggle_switch("##snap", &settings.snap);
+                prop_label("Move step");
+                ImGui::DragFloat("##ms", &settings.snap_move, 0.05f, 0.01f, 100.0f, "%.2f m");
+                prop_label("Rotate step");
+                ImGui::DragFloat("##rs", &settings.snap_rotate, 1.0f, 1.0f, 180.0f, "%.0f deg");
+                prop_label("Scale step");
+                ImGui::DragFloat("##ss", &settings.snap_scale, 0.01f, 0.01f, 10.0f, "%.2f");
+                ImGui::Dummy(ImVec2(0, 4));
+            }
+            if (section_header("CPU preview", Icon::Monitor)) {
+                prop_label("Smooth edges");
+                toggle_switch("##ssaa", &settings.view_supersample);
+                prop_label("Ground shadows");
+                toggle_switch("##shadows", &settings.view_shadows);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                ImGui::TextWrapped("The viewport is drawn on the CPU until the FarcadeGL renderer lands. While you drag the camera "
+                                   "or an object it draws without smoothing and shadows, and redraws in full when you let go.");
+                ImGui::PopStyleColor();
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("File editors")) {
+            ImGui::Dummy(ImVec2(0, 4));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_dim));
             ImGui::TextWrapped("Double-clicking a file in Files opens it with the program set for its extension. "
                                "\"*\" is used for every other extension.");
+            ImGui::PopStyleColor();
             ImGui::Spacing();
             int remove = -1;
             if (ImGui::BeginTable("##eds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
                 ImGui::TableSetupColumn("Extension", ImGuiTableColumnFlags_WidthFixed, 90);
                 ImGui::TableSetupColumn("Program");
-                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 24);
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
                 ImGui::TableHeadersRow();
                 for (int i = 0; i < settings.editor_count; i++) {
                     FileEditor& e = settings.editors[i];
@@ -661,7 +692,7 @@ void Editor::window_settings() {
                     ImGui::SetNextItemWidth(-FLT_MIN);
                     ImGui::InputText("##prog", e.program, sizeof(e.program));
                     ImGui::TableNextColumn();
-                    if (ImGui::SmallButton("x")) remove = i;
+                    if (icon_button(Icon::Close, "Remove", false, ImGui::GetFrameHeight())) remove = i;
                     ImGui::PopID();
                 }
                 ImGui::EndTable();
@@ -670,7 +701,7 @@ void Editor::window_settings() {
                 memmove(&settings.editors[remove], &settings.editors[remove + 1], sizeof(FileEditor) * (settings.editor_count - remove - 1));
                 settings.editor_count--;
             }
-            if (settings.editor_count < 16 && ImGui::Button("Add")) {
+            if (settings.editor_count < 16 && ImGui::Button("Add an extension")) {
                 FileEditor& e = settings.editors[settings.editor_count++];
                 snprintf(e.extension, sizeof(e.extension), ".ext");
                 snprintf(e.program, sizeof(e.program), "0:/programs/");

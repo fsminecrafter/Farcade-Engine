@@ -108,6 +108,24 @@ int main(int argc, char** argv) {
         double ms = (real_seconds() - t0) * 1000.0 / n;
         printf("frame %.2f ms when idle (a full viewport render: %.2f ms, %d triangles, %dx%d)\n", ms, view / n, ed.view_triangles, (int)ed.view_rect[2],
                (int)ed.view_rect[3]);
+        // What a frame costs while dragging: the camera moves every frame and
+        // the view renders without supersampling and shadows.
+        bool ss = ed.settings.view_supersample, sh = ed.settings.view_shadows;
+        ed.settings.view_supersample = false;
+        ed.settings.view_shadows = false;
+        double view_fast = 0;
+        t0 = real_seconds();
+        for (int i = 0; i < n; i++) {
+            ed.camera.yaw += 0.5f;
+            ed.frame();
+            view_fast += ed.view_ms;
+        }
+        ms = (real_seconds() - t0) * 1000.0 / n;
+        printf("frame %.2f ms while dragging (viewport %.2f ms)\n", ms, view_fast / n);
+        ed.camera.yaw -= 0.5f * n;
+        ed.settings.view_supersample = ss;
+        ed.settings.view_shadows = sh;
+        ed.frame();
     }
     char path[600];
     snprintf(path, sizeof(path), "%s/editor-dark.png", out);
@@ -118,6 +136,46 @@ int main(int argc, char** argv) {
     ed.apply_theme();
     for (int i = 14; i < 17; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }
     snprintf(path, sizeof(path), "%s/editor-light.png", out);
+    if (!platform::headless_save_png(path)) return 1;
+    printf("wrote %s\n", path);
+
+    // Play mode with the Console in front and nothing selected (the empty
+    // inspector), in both themes; then the renderer menu open.
+    ed.scene.clear_selection();
+    ed.play();
+    ImGui::SetWindowFocus("Console");
+    for (int t = 0; t < 2; t++) {
+        ed.settings.dark_theme = t == 0;
+        ed.apply_theme();
+        for (int i = 0; i < 40; i++) { platform::headless_set_time((20 + t * 40 + i) / 60.0); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-play-%s.png", out, t == 0 ? "dark" : "light");
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+    ed.stop();
+    ed.settings.dark_theme = true;
+    ed.apply_theme();
+    ed.frame();
+    if (const Editor::UiRect* r = ed.find_rect("run:renderer")) {
+        float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
+        platform::Event e;
+        e.type = platform::EventType::MouseMove; e.x = x; e.y = y;
+        platform::headless_push(e); ed.frame();
+        e.type = platform::EventType::MouseButton; e.button = 0; e.down = true;
+        platform::headless_push(e); ed.frame();
+        e.down = false;
+        platform::headless_push(e); ed.frame();
+        e.type = platform::EventType::MouseMove; e.x = x - 200; e.y = y + 400;
+        platform::headless_push(e); ed.frame(); ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-renderer-menu.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+    // The settings window, on its Viewport tab.
+    ed.show_settings = true;
+    ed.frame();
+    ed.frame();
+    snprintf(path, sizeof(path), "%s/editor-settings.png", out);
     if (!platform::headless_save_png(path)) return 1;
     printf("wrote %s\n", path);
     ed.shutdown();

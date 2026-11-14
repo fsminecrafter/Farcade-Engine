@@ -219,7 +219,7 @@ Framebuffer& framebuffer() { return g_fb; }
 
 void present() {
     mos_graphics_blit_surface(g_fb.pixels, (uint32_t)g_fb.width, (uint32_t)g_fb.height, (uint32_t)g_fb.pitch * 4, 0, 0,
-                              g_fb.width, g_fb.height, 0, 0, 0);
+                              g_fb.width, g_fb.height, 0, 0, SYS_GRAPHICS_BLIT_OPAQUE);
     mos_graphics_present(0, 0, g_fb.width, g_fb.height);
 }
 

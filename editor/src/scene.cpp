@@ -13,6 +13,25 @@ Scene::~Scene() {
     free(selection_);
 }
 
+void Scene::copy_from(const Scene& other) {
+    if (&other == this) return;
+    clear();
+    if (cap_ < other.count_) {
+        objects_ = (Object**)realloc(objects_, sizeof(Object*) * (other.count_ ? other.count_ : 1));
+        cap_ = other.count_;
+    }
+    for (int i = 0; i < other.count_; i++) objects_[i] = new Object(*other.objects_[i]);
+    count_ = other.count_;
+    next_id_ = other.next_id_;
+    if (sel_cap_ < other.sel_count_) {
+        selection_ = (ObjectId*)realloc(selection_, sizeof(ObjectId) * other.sel_count_);
+        sel_cap_ = other.sel_count_;
+    }
+    if (other.sel_count_) memcpy(selection_, other.selection_, sizeof(ObjectId) * other.sel_count_);
+    sel_count_ = other.sel_count_;
+    active_ = other.active_;
+}
+
 ObjectId Scene::create(const char* name, MeshKind mesh) {
     if (count_ == cap_) {
         int ncap = cap_ ? cap_ * 2 : 32;
@@ -30,6 +49,19 @@ ObjectId Scene::create(const char* name, MeshKind mesh) {
 }
 
 void Scene::remove(ObjectId id) {
+    // The object and everything below it: list them while the parent links
+    // still exist, then delete.
+    if (!get(id)) return;
+    ObjectId* doomed = (ObjectId*)malloc(sizeof(ObjectId) * count_);
+    if (!doomed) return;
+    int n = 0;
+    for (int i = 0; i < count_; i++)
+        if (objects_[i]->id == id || is_ancestor(id, objects_[i]->id)) doomed[n++] = objects_[i]->id;
+    for (int k = 0; k < n; k++) remove_one(doomed[k]);
+    free(doomed);
+}
+
+void Scene::remove_one(ObjectId id) {
     for (int i = 0; i < count_; i++) {
         if (objects_[i]->id != id) continue;
         delete objects_[i];
@@ -38,6 +70,138 @@ void Scene::remove(ObjectId id) {
         break;
     }
     if (is_selected(id)) toggle(id);
+    // Script inputs that linked to it now link to nothing.
+    for (int i = 0; i < count_; i++)
+        for (int s = 0; s < objects_[i]->script_count; s++) {
+            ScriptSlot& sl = objects_[i]->scripts[s];
+            for (int k = 0; k < sl.prop_count; k++)
+                if (sl.props[k].type == PropType::Object && sl.props[k].object == id) sl.props[k].object = kNoObject;
+        }
+}
+
+int Scene::add_script(ObjectId id, const char* path) {
+    Object* o = get(id);
+    if (!o || o->script_count >= kMaxScripts || !path || !*path) return -1;
+    ScriptSlot& s = o->scripts[o->script_count];
+    s = ScriptSlot();
+    strncpy(s.path, path, sizeof(s.path) - 1);
+    return o->script_count++;
+}
+
+void Scene::remove_script(ObjectId id, int index) {
+    Object* o = get(id);
+    if (!o || index < 0 || index >= o->script_count) return;
+    for (int i = index; i < o->script_count - 1; i++) o->scripts[i] = o->scripts[i + 1];
+    o->script_count--;
+    o->scripts[o->script_count] = ScriptSlot();
+}
+
+void Scene::move_script(ObjectId id, int from, int to) {
+    Object* o = get(id);
+    if (!o || from < 0 || to < 0 || from >= o->script_count || to >= o->script_count || from == to) return;
+    ScriptSlot tmp = o->scripts[from];
+    int step = to > from ? 1 : -1;
+    for (int i = from; i != to; i += step) o->scripts[i] = o->scripts[i + step];
+    o->scripts[to] = tmp;
+}
+
+ScriptSlot* Scene::find_script(ObjectId id, const char* name) {
+    Object* o = get(id);
+    if (!o || !name) return nullptr;
+    for (int i = 0; i < o->script_count; i++)
+        if (o->scripts[i].name_is(name)) return &o->scripts[i];
+    return nullptr;
+}
+
+ScriptProp* Scene::script_prop(ObjectId id, const char* script, const char* prop) {
+    ScriptSlot* s = find_script(id, script);
+    return s ? s->prop(prop) : nullptr;
+}
+
+int Scene::links_to(ObjectId id) {
+    int n = 0;
+    for (int i = 0; i < count_; i++)
+        for (int s = 0; s < objects_[i]->script_count; s++) {
+            const ScriptSlot& sl = objects_[i]->scripts[s];
+            for (int k = 0; k < sl.prop_count; k++) n += sl.props[k].type == PropType::Object && sl.props[k].object == id;
+        }
+    return n;
+}
+
+Mat4 Scene::parent_world_matrix(const Object& o) {
+    Object* p = o.parent ? get(o.parent) : nullptr;
+    return p ? world_matrix(*p) : Mat4();
+}
+
+Mat4 Scene::world_matrix(const Object& o) {
+    Mat4 m = o.matrix();
+    const Object* cur = &o;
+    for (int guard = 0; guard < 64 && cur->parent; guard++) {
+        Object* p = get(cur->parent);
+        if (!p) break;
+        m = p->matrix() * m;
+        cur = p;
+    }
+    return m;
+}
+
+bool Scene::visible_in_tree(const Object& o) {
+    const Object* cur = &o;
+    for (int guard = 0; guard < 64 && cur; guard++) {
+        if (!cur->visible) return false;
+        cur = cur->parent ? get(cur->parent) : nullptr;
+    }
+    return true;
+}
+
+bool Scene::is_ancestor(ObjectId ancestor, ObjectId id) {
+    if (ancestor == kNoObject) return false;
+    Object* cur = get(id);
+    for (int guard = 0; guard < 64 && cur && cur->parent; guard++) {
+        if (cur->parent == ancestor) return true;
+        cur = get(cur->parent);
+    }
+    return false;
+}
+
+bool Scene::has_children(ObjectId id) const {
+    for (int i = 0; i < count_; i++)
+        if (objects_[i]->parent == id) return true;
+    return false;
+}
+
+int Scene::depth(const Object& o) {
+    int d = 0;
+    const Object* cur = &o;
+    while (d < 64 && cur->parent) {
+        cur = get(cur->parent);
+        if (!cur) break;
+        d++;
+    }
+    return d;
+}
+
+bool Scene::set_parent(ObjectId id, ObjectId parent) {
+    Object* o = get(id);
+    if (!o) return false;
+    if (parent == id || (parent != kNoObject && (!get(parent) || is_ancestor(id, parent)))) return false;
+    if (o->parent == parent) return true;
+    Mat4 world = world_matrix(*o);
+    Mat4 pw, inv;
+    if (parent != kNoObject) pw = world_matrix(*get(parent));
+    if (!invert(pw, &inv)) return false;
+    o->parent = parent;
+    o->set_matrix(inv * world);
+    return true;
+}
+
+bool Scene::has_selected_ancestor(ObjectId id) {
+    Object* cur = get(id);
+    for (int guard = 0; guard < 64 && cur && cur->parent; guard++) {
+        if (is_selected(cur->parent)) return true;
+        cur = get(cur->parent);
+    }
+    return false;
 }
 
 void Scene::clear() {
@@ -192,8 +356,8 @@ ObjectId Scene::pick(const Ray& ray, float* distance) {
     float best_t = 1e30f;
     for (int i = 0; i < count_; i++) {
         Object& o = *objects_[i];
-        if (!o.visible) continue;
-        Mat4 m = o.matrix(), inv;
+        if (!visible_in_tree(o)) continue;
+        Mat4 m = world_matrix(o), inv;
         if (!invert(m, &inv)) continue;
         // Into object space; t stays comparable because the direction is
         // transformed without normalizing.

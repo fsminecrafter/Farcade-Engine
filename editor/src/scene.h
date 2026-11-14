@@ -6,6 +6,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "script.h"
 #include <stdint.h>
 
 namespace fe {
@@ -26,18 +27,20 @@ struct MeshData {
 struct Object {
     ObjectId id = kNoObject;
     char name[64] = {};
-    ObjectId parent = kNoObject;    // not used by the tools yet; kept for the hierarchy
+    ObjectId parent = kNoObject;    // kNoObject = at the root; the transform is relative to the parent
+    bool expanded = true;           // children shown in the hierarchy
     Vec3 position;
     Quat rotation;
     Vec3 scale = Vec3(1, 1, 1);
     MeshKind mesh = MeshKind::Cube;
     char model_path[256] = {};      // MeshKind::Model: the .mof file
     char texture_path[256] = {};    // a texture dropped on the object
-    char script_path[256] = {};     // a script dropped on the object
+    ScriptSlot scripts[kMaxScripts];    // the scripts on the object, in the order they run
+    int script_count = 0;
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);
     bool visible = true;
 
-    Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }
+    Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
     void set_matrix(const Mat4& m) { decompose(m, &position, &rotation, &scale); }
 };
 
@@ -45,9 +48,20 @@ class Scene {
 public:
     Scene();
     ~Scene();
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+
+    // Makes this scene an exact copy of `other`: objects (with their ids),
+    // the next id, the selection and the active object. Play mode uses it to
+    // put the scene back when play stops.
+    void copy_from(const Scene& other);
+    // The id the next created object gets; ids are never handed out twice
+    // (Stop keeps the higher of the two, see Editor::stop).
+    ObjectId next_id() const { return next_id_; }
+    void keep_ids_above(ObjectId next) { if (next > next_id_) next_id_ = next; }
 
     ObjectId create(const char* name, MeshKind mesh);
-    void remove(ObjectId id);
+    void remove(ObjectId id);           // with all its children
     void clear();
 
     Object* get(ObjectId id);
@@ -65,6 +79,35 @@ public:
     ObjectId selected(int i) const { return selection_[i]; }
     ObjectId active() const { return active_; }
 
+    // ---- the tree: an object's position, rotation and scale are relative
+    // to its parent.
+    Mat4 world_matrix(const Object& o);
+    Mat4 parent_world_matrix(const Object& o);      // identity at the root
+    bool visible_in_tree(const Object& o);          // it and all its parents are visible
+    bool is_ancestor(ObjectId ancestor, ObjectId id);   // ancestor is above id (not id itself)
+    bool has_children(ObjectId id) const;
+    int depth(const Object& o);
+    // Moves id under parent (kNoObject: to the root), keeping where it is in
+    // the world. Fails when parent is id itself or one of its descendants.
+    bool set_parent(ObjectId id, ObjectId parent);
+    // True when one of the object's parents is selected (it moves with it).
+    bool has_selected_ancestor(ObjectId id);
+
+    // ---- scripts. An object holds up to kMaxScripts; the same file may sit
+    // on it more than once.
+    // Adds a script (no inputs yet: Editor::reload_script reads them).
+    // Returns its index, or -1 when the object is full.
+    int add_script(ObjectId id, const char* path);
+    void remove_script(ObjectId id, int index);
+    void move_script(ObjectId id, int from, int to);
+    // The first script on `id` called `name` ("door" or "door.lua"), or null:
+    // what a script's target:script("door") finds at run time.
+    ScriptSlot* find_script(ObjectId id, const char* name);
+    // An input of a script on another object, or null.
+    ScriptProp* script_prop(ObjectId id, const char* script, const char* prop);
+    // How many script inputs (on any object) link to `id`.
+    int links_to(ObjectId id);
+
     // The built-in mesh of an object (primitives are generated once).
     static const MeshData& mesh_for(const Object& o);
 
@@ -72,6 +115,7 @@ public:
     ObjectId pick(const Ray& ray, float* distance = nullptr);
 
 private:
+    void remove_one(ObjectId id);
     Object** objects_ = nullptr;
     int count_ = 0, cap_ = 0;
     ObjectId next_id_ = 1;

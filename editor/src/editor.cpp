@@ -8,6 +8,7 @@
 #include "imguizmo/ImGuizmo.h"
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -80,177 +81,149 @@ Mat4 Camera::projection(float aspect) const { return Mat4::perspective(radians(f
 
 // ---------------------------------------------------------------- theme
 //
-// Modern and quiet: flat surfaces a few shades apart instead of borders,
-// one accent color for selection and focus, rounded corners, room around
-// things.
+// Quiet and dense: panels are flat cards a few shades apart on a darker
+// background, one accent color for selection and focus, small rounding,
+// medium-weight type for headings. Every custom widget takes its colors
+// from the palette, so the light theme follows.
+
+namespace {
+ImVec4 rgb(uint32_t hex, float a = 1.0f) {
+    return ImVec4(((hex >> 16) & 0xFF) / 255.0f, ((hex >> 8) & 0xFF) / 255.0f, (hex & 0xFF) / 255.0f, a);
+}
+ImU32 rgbu(uint32_t hex, float a = 1.0f) { return ImGui::ColorConvertFloat4ToU32(rgb(hex, a)); }
+}  // namespace
 
 void Editor::apply_theme() {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();
-    st.WindowPadding = ImVec2(10, 10);
-    st.FramePadding = ImVec2(8, 5);
-    st.ItemSpacing = ImVec2(8, 6);
-    st.ItemInnerSpacing = ImVec2(6, 4);
-    st.CellPadding = ImVec2(6, 4);
+    st.WindowPadding = ImVec2(8, 8);
+    st.FramePadding = ImVec2(7, 4);
+    st.ItemSpacing = ImVec2(6, 5);
+    st.ItemInnerSpacing = ImVec2(5, 4);
+    st.CellPadding = ImVec2(6, 3);
     st.IndentSpacing = 14;
-    st.ScrollbarSize = 10;
-    st.GrabMinSize = 10;
+    st.ScrollbarSize = 8;
+    st.GrabMinSize = 8;
     st.WindowBorderSize = 0;
     st.ChildBorderSize = 0;
     st.PopupBorderSize = 1;
     st.FrameBorderSize = 0;
     st.TabBorderSize = 0;
-    st.TabBarBorderSize = 0;
-    st.WindowRounding = 8;
+    st.TabBarBorderSize = 1;
+    st.TabBarOverlineSize = 2;
+    st.WindowRounding = 6;
     st.ChildRounding = 6;
-    st.FrameRounding = 6;
-    st.PopupRounding = 8;
-    st.ScrollbarRounding = 6;
-    st.GrabRounding = 6;
-    st.TabRounding = 6;
+    st.FrameRounding = 4;
+    st.PopupRounding = 6;
+    st.ScrollbarRounding = 4;
+    st.GrabRounding = 3;
+    st.TabRounding = 4;
     st.WindowTitleAlign = ImVec2(0.0f, 0.5f);
     st.WindowMenuButtonPosition = ImGuiDir_None;
     st.SeparatorTextBorderSize = 1;
-    st.DockingSeparatorSize = 3;
+    st.DockingSeparatorSize = 2;
+    st.SelectableTextAlign = ImVec2(0.0f, 0.5f);
     st.AntiAliasedLines = true;
     st.AntiAliasedFill = true;
 
-    ImVec4* c = st.Colors;
-    auto rgb = [](int hex, float a = 1.0f) {
-        return ImVec4(((hex >> 16) & 0xFF) / 255.0f, ((hex >> 8) & 0xFF) / 255.0f, (hex & 0xFF) / 255.0f, a);
-    };
-    ImVec4 accent = rgb(0x4C8DFF);
+    Palette& p = pal;
+    uint32_t accent = 0x4C8DFF;
+    p.accent = rgbu(accent);
+    p.axis[0] = rgbu(0xE5534B);
+    p.axis[1] = rgbu(0x6CC24A);
+    p.axis[2] = rgbu(0x4C8DFF);
+    uint32_t bg0, bg1, bg2, bg3, bg4, head, border, text, dim, faint;
     if (settings.dark_theme) {
-        ImVec4 bg0 = rgb(0x16171A), bg1 = rgb(0x1E1F23), bg2 = rgb(0x26282D), bg3 = rgb(0x2F3238), bg4 = rgb(0x3A3D44);
-        c[ImGuiCol_Text] = rgb(0xE6E7EA);
-        c[ImGuiCol_TextDisabled] = rgb(0x7D828C);
-        c[ImGuiCol_WindowBg] = bg1;
-        c[ImGuiCol_ChildBg] = rgb(0x000000, 0);
-        c[ImGuiCol_PopupBg] = bg2;
-        c[ImGuiCol_Border] = rgb(0x34373D);
-        c[ImGuiCol_BorderShadow] = rgb(0x000000, 0);
-        c[ImGuiCol_FrameBg] = bg2;
-        c[ImGuiCol_FrameBgHovered] = bg3;
-        c[ImGuiCol_FrameBgActive] = bg4;
-        c[ImGuiCol_TitleBg] = bg0;
-        c[ImGuiCol_TitleBgActive] = bg0;
-        c[ImGuiCol_TitleBgCollapsed] = bg0;
-        c[ImGuiCol_MenuBarBg] = bg0;
-        c[ImGuiCol_ScrollbarBg] = rgb(0x000000, 0);
-        c[ImGuiCol_ScrollbarGrab] = bg3;
-        c[ImGuiCol_ScrollbarGrabHovered] = bg4;
-        c[ImGuiCol_ScrollbarGrabActive] = rgb(0x4A4E57);
-        c[ImGuiCol_CheckMark] = accent;
-        c[ImGuiCol_SliderGrab] = accent;
-        c[ImGuiCol_SliderGrabActive] = rgb(0x6AA1FF);
-        c[ImGuiCol_Button] = bg2;
-        c[ImGuiCol_ButtonHovered] = bg3;
-        c[ImGuiCol_ButtonActive] = bg4;
-        c[ImGuiCol_Header] = rgb(0x4C8DFF, 0.22f);
-        c[ImGuiCol_HeaderHovered] = rgb(0xFFFFFF, 0.06f);
-        c[ImGuiCol_HeaderActive] = rgb(0x4C8DFF, 0.32f);
-        c[ImGuiCol_Separator] = rgb(0x2C2E33);
-        c[ImGuiCol_SeparatorHovered] = accent;
-        c[ImGuiCol_SeparatorActive] = accent;
-        c[ImGuiCol_ResizeGrip] = rgb(0x000000, 0);
-        c[ImGuiCol_ResizeGripHovered] = rgb(0x4C8DFF, 0.5f);
-        c[ImGuiCol_ResizeGripActive] = accent;
-        c[ImGuiCol_Tab] = bg0;
-        c[ImGuiCol_TabHovered] = bg2;
-        c[ImGuiCol_TabSelected] = bg1;
-        c[ImGuiCol_TabSelectedOverline] = accent;
-        c[ImGuiCol_TabDimmed] = bg0;
-        c[ImGuiCol_TabDimmedSelected] = bg1;
-        c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0x000000, 0);
-        c[ImGuiCol_DockingPreview] = rgb(0x4C8DFF, 0.45f);
-        c[ImGuiCol_DockingEmptyBg] = bg0;
-        c[ImGuiCol_TableHeaderBg] = bg2;
-        c[ImGuiCol_TableBorderStrong] = rgb(0x2C2E33);
-        c[ImGuiCol_TableBorderLight] = rgb(0x25272B);
-        c[ImGuiCol_TableRowBg] = rgb(0x000000, 0);
-        c[ImGuiCol_TableRowBgAlt] = rgb(0xFFFFFF, 0.02f);
-        c[ImGuiCol_TextSelectedBg] = rgb(0x4C8DFF, 0.35f);
-        c[ImGuiCol_DragDropTarget] = accent;
-        c[ImGuiCol_NavCursor] = accent;
-        c[ImGuiCol_ModalWindowDimBg] = rgb(0x000000, 0.45f);
-        c[ImGuiCol_CheckboxSelectedBg] = rgb(0x4C8DFF, 0.25f);
-        c[ImGuiCol_InputTextCursor] = rgb(0xE6E7EA);
-        c[ImGuiCol_TextLink] = accent;
-        c[ImGuiCol_TreeLines] = rgb(0x3A3D44);
-        c[ImGuiCol_DragDropTargetBg] = rgb(0x4C8DFF, 0.12f);
-        c[ImGuiCol_UnsavedMarker] = rgb(0xE6E7EA);
-        c[ImGuiCol_NavWindowingHighlight] = accent;
-        c[ImGuiCol_NavWindowingDimBg] = rgb(0x000000, 0.35f);
-        c[ImGuiCol_PlotLines] = accent;
-        c[ImGuiCol_PlotLinesHovered] = rgb(0x6AA1FF);
-        c[ImGuiCol_PlotHistogram] = accent;
-        c[ImGuiCol_PlotHistogramHovered] = rgb(0x6AA1FF);
+        bg0 = 0x101215; bg1 = 0x191B20; bg2 = 0x22252B; bg3 = 0x2A2E35; bg4 = 0x343941;
+        head = 0x1F2227; border = 0x2A2E35; text = 0xDCDFE4; dim = 0x8D949E; faint = 0x5E656F;
+        p.accent_soft = rgbu(accent, 0.22f);
+        p.accent_text = rgbu(0x6EA3FF);
+        p.play = rgbu(0x3FBF7F);
+        p.warning = rgbu(0xE8B04B);
+        p.error = rgbu(0xEF6461);
+        p.overlay = rgbu(0x191B20, 0.90f);
+        p.shadow = rgbu(0x000000, 0.35f);
     } else {
-        ImVec4 bg0 = rgb(0xE9EAEE), bg1 = rgb(0xF6F7F9), bg2 = rgb(0xFFFFFF), bg3 = rgb(0xE4E6EA), bg4 = rgb(0xD7DAE0);
-        c[ImGuiCol_Text] = rgb(0x1E2024);
-        c[ImGuiCol_TextDisabled] = rgb(0x8A8F99);
-        c[ImGuiCol_WindowBg] = bg1;
-        c[ImGuiCol_ChildBg] = rgb(0x000000, 0);
-        c[ImGuiCol_PopupBg] = bg2;
-        c[ImGuiCol_Border] = rgb(0xD5D8DE);
-        c[ImGuiCol_BorderShadow] = rgb(0x000000, 0);
-        c[ImGuiCol_FrameBg] = bg2;
-        c[ImGuiCol_FrameBgHovered] = bg3;
-        c[ImGuiCol_FrameBgActive] = bg4;
-        c[ImGuiCol_TitleBg] = bg0;
-        c[ImGuiCol_TitleBgActive] = bg0;
-        c[ImGuiCol_TitleBgCollapsed] = bg0;
-        c[ImGuiCol_MenuBarBg] = bg0;
-        c[ImGuiCol_ScrollbarBg] = rgb(0x000000, 0);
-        c[ImGuiCol_ScrollbarGrab] = bg4;
-        c[ImGuiCol_ScrollbarGrabHovered] = rgb(0xC5C9D0);
-        c[ImGuiCol_ScrollbarGrabActive] = rgb(0xB3B8C1);
-        c[ImGuiCol_CheckMark] = accent;
-        c[ImGuiCol_SliderGrab] = accent;
-        c[ImGuiCol_SliderGrabActive] = rgb(0x2F75F0);
-        c[ImGuiCol_Button] = bg3;
-        c[ImGuiCol_ButtonHovered] = bg4;
-        c[ImGuiCol_ButtonActive] = rgb(0xC9CDD4);
-        c[ImGuiCol_Header] = rgb(0x4C8DFF, 0.18f);
-        c[ImGuiCol_HeaderHovered] = rgb(0x000000, 0.05f);
-        c[ImGuiCol_HeaderActive] = rgb(0x4C8DFF, 0.28f);
-        c[ImGuiCol_Separator] = rgb(0xDDE0E5);
-        c[ImGuiCol_SeparatorHovered] = accent;
-        c[ImGuiCol_SeparatorActive] = accent;
-        c[ImGuiCol_ResizeGrip] = rgb(0x000000, 0);
-        c[ImGuiCol_ResizeGripHovered] = rgb(0x4C8DFF, 0.5f);
-        c[ImGuiCol_ResizeGripActive] = accent;
-        c[ImGuiCol_Tab] = bg0;
-        c[ImGuiCol_TabHovered] = bg2;
-        c[ImGuiCol_TabSelected] = bg1;
-        c[ImGuiCol_TabSelectedOverline] = accent;
-        c[ImGuiCol_TabDimmed] = bg0;
-        c[ImGuiCol_TabDimmedSelected] = bg1;
-        c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0x000000, 0);
-        c[ImGuiCol_DockingPreview] = rgb(0x4C8DFF, 0.35f);
-        c[ImGuiCol_DockingEmptyBg] = bg0;
-        c[ImGuiCol_TableHeaderBg] = bg3;
-        c[ImGuiCol_TableBorderStrong] = rgb(0xDDE0E5);
-        c[ImGuiCol_TableBorderLight] = rgb(0xE6E8EC);
-        c[ImGuiCol_TableRowBg] = rgb(0x000000, 0);
-        c[ImGuiCol_TableRowBgAlt] = rgb(0x000000, 0.025f);
-        c[ImGuiCol_TextSelectedBg] = rgb(0x4C8DFF, 0.3f);
-        c[ImGuiCol_DragDropTarget] = accent;
-        c[ImGuiCol_NavCursor] = accent;
-        c[ImGuiCol_ModalWindowDimBg] = rgb(0x000000, 0.25f);
-        c[ImGuiCol_CheckboxSelectedBg] = rgb(0x4C8DFF, 0.18f);
-        c[ImGuiCol_InputTextCursor] = rgb(0x1E2024);
-        c[ImGuiCol_TextLink] = accent;
-        c[ImGuiCol_TreeLines] = rgb(0xCDD1D8);
-        c[ImGuiCol_DragDropTargetBg] = rgb(0x4C8DFF, 0.10f);
-        c[ImGuiCol_UnsavedMarker] = rgb(0x1E2024);
-        c[ImGuiCol_NavWindowingHighlight] = accent;
-        c[ImGuiCol_NavWindowingDimBg] = rgb(0x000000, 0.20f);
-        c[ImGuiCol_PlotLines] = accent;
-        c[ImGuiCol_PlotLinesHovered] = rgb(0x2F75F0);
-        c[ImGuiCol_PlotHistogram] = accent;
-        c[ImGuiCol_PlotHistogramHovered] = rgb(0x2F75F0);
+        bg0 = 0xD9DCE1; bg1 = 0xF4F5F7; bg2 = 0xFFFFFF; bg3 = 0xE8EAEE; bg4 = 0xDADDE3;
+        head = 0xEBEDF0; border = 0xD3D7DD; text = 0x1C1F24; dim = 0x5D646E; faint = 0x9AA1AA;
+        p.accent_soft = rgbu(accent, 0.18f);
+        p.accent_text = rgbu(0x2F6FE4);
+        p.play = rgbu(0x1E9E5E);
+        p.warning = rgbu(0xC4860F);
+        p.error = rgbu(0xD64541);
+        p.overlay = rgbu(0xFFFFFF, 0.92f);
+        p.shadow = rgbu(0x000000, 0.12f);
     }
+    p.app_bg = rgbu(bg0); p.panel = rgbu(bg1); p.frame = rgbu(bg2); p.hover = rgbu(bg3); p.active = rgbu(bg4);
+    p.header = rgbu(head); p.border = rgbu(border); p.text = rgbu(text); p.text_dim = rgbu(dim); p.text_faint = rgbu(faint);
+    set_ui_palette(pal, font_medium);
+
+    ImVec4* c = st.Colors;
+    ImVec4 acc = rgb(accent);
+    bool dark = settings.dark_theme;
+    c[ImGuiCol_Text] = rgb(text);
+    c[ImGuiCol_TextDisabled] = rgb(faint);
+    c[ImGuiCol_WindowBg] = rgb(bg1);
+    c[ImGuiCol_ChildBg] = rgb(0, 0);
+    c[ImGuiCol_PopupBg] = dark ? rgb(0x15171B) : rgb(0xF4F5F7);
+    c[ImGuiCol_Border] = rgb(border);
+    c[ImGuiCol_BorderShadow] = rgb(0, 0);
+    c[ImGuiCol_FrameBg] = rgb(bg2);
+    c[ImGuiCol_FrameBgHovered] = rgb(bg3);
+    c[ImGuiCol_FrameBgActive] = rgb(bg4);
+    c[ImGuiCol_TitleBg] = rgb(bg0);
+    c[ImGuiCol_TitleBgActive] = rgb(bg0);
+    c[ImGuiCol_TitleBgCollapsed] = rgb(bg0);
+    c[ImGuiCol_MenuBarBg] = rgb(bg0);
+    c[ImGuiCol_ScrollbarBg] = rgb(0, 0);
+    c[ImGuiCol_ScrollbarGrab] = rgb(bg3);
+    c[ImGuiCol_ScrollbarGrabHovered] = rgb(bg4);
+    c[ImGuiCol_ScrollbarGrabActive] = dark ? rgb(0x454B54) : rgb(0xC3C8CF);
+    c[ImGuiCol_CheckMark] = acc;
+    c[ImGuiCol_SliderGrab] = acc;
+    c[ImGuiCol_SliderGrabActive] = rgb(0x6EA3FF);
+    c[ImGuiCol_Button] = rgb(bg3);
+    c[ImGuiCol_ButtonHovered] = rgb(bg4);
+    c[ImGuiCol_ButtonActive] = dark ? rgb(0x3E444D) : rgb(0xCDD1D8);
+    c[ImGuiCol_Header] = rgb(accent, dark ? 0.22f : 0.18f);
+    c[ImGuiCol_HeaderHovered] = dark ? rgb(0xFFFFFF, 0.05f) : rgb(0x000000, 0.045f);
+    c[ImGuiCol_HeaderActive] = rgb(accent, 0.30f);
+    c[ImGuiCol_Separator] = rgb(border);
+    c[ImGuiCol_SeparatorHovered] = acc;
+    c[ImGuiCol_SeparatorActive] = acc;
+    c[ImGuiCol_ResizeGrip] = rgb(0, 0);
+    c[ImGuiCol_ResizeGripHovered] = rgb(accent, 0.5f);
+    c[ImGuiCol_ResizeGripActive] = acc;
+    c[ImGuiCol_InputTextCursor] = rgb(text);
+    c[ImGuiCol_Tab] = rgb(bg0, 0);
+    c[ImGuiCol_TabHovered] = rgb(bg3);
+    c[ImGuiCol_TabSelected] = rgb(bg1);
+    c[ImGuiCol_TabSelectedOverline] = acc;
+    c[ImGuiCol_TabDimmed] = rgb(bg0, 0);
+    c[ImGuiCol_TabDimmedSelected] = rgb(bg1);
+    c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0, 0);
+    c[ImGuiCol_DockingPreview] = rgb(accent, 0.40f);
+    c[ImGuiCol_DockingEmptyBg] = rgb(bg0);
+    c[ImGuiCol_PlotLines] = acc;
+    c[ImGuiCol_PlotLinesHovered] = rgb(0x6EA3FF);
+    c[ImGuiCol_PlotHistogram] = acc;
+    c[ImGuiCol_PlotHistogramHovered] = rgb(0x6EA3FF);
+    c[ImGuiCol_TableHeaderBg] = rgb(head);
+    c[ImGuiCol_TableBorderStrong] = rgb(border);
+    c[ImGuiCol_TableBorderLight] = rgb(border, 0.6f);
+    c[ImGuiCol_TableRowBg] = rgb(0, 0);
+    c[ImGuiCol_TableRowBgAlt] = dark ? rgb(0xFFFFFF, 0.02f) : rgb(0x000000, 0.025f);
+    c[ImGuiCol_TextLink] = acc;
+    c[ImGuiCol_TextSelectedBg] = rgb(accent, 0.35f);
+    c[ImGuiCol_TreeLines] = rgb(bg4);
+    c[ImGuiCol_DragDropTarget] = acc;
+    c[ImGuiCol_DragDropTargetBg] = rgb(accent, 0.12f);
+    c[ImGuiCol_UnsavedMarker] = rgb(text);
+    c[ImGuiCol_NavCursor] = acc;
+    c[ImGuiCol_NavWindowingHighlight] = acc;
+    c[ImGuiCol_NavWindowingDimBg] = rgb(0x000000, dark ? 0.35f : 0.20f);
+    c[ImGuiCol_ModalWindowDimBg] = rgb(0x000000, dark ? 0.45f : 0.25f);
+    c[ImGuiCol_CheckboxSelectedBg] = rgb(accent, 0.22f);
     st.ScaleAllSizes(settings.ui_scale);
 }
 
@@ -274,9 +247,11 @@ bool Editor::init(int width, int height) {
     cfg.FontDataOwnedByAtlas = false;
     cfg.OversampleH = 1;
     cfg.OversampleV = 1;
-    font_ui = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_regular, (int)fe_font_inter_regular_size, 15.0f * settings.ui_scale, &cfg);
-    font_mono = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_roboto_mono, (int)fe_font_roboto_mono_size, 13.5f * settings.ui_scale, &cfg);
+    font_ui = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_regular, (int)fe_font_inter_regular_size, 14.0f * settings.ui_scale, &cfg);
+    font_medium = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_medium, (int)fe_font_inter_medium_size, 14.0f * settings.ui_scale, &cfg);
+    font_mono = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_roboto_mono, (int)fe_font_roboto_mono_size, 13.0f * settings.ui_scale, &cfg);
     if (!font_ui) font_ui = io.Fonts->AddFontDefault();
+    if (!font_medium) font_medium = font_ui;
     if (!font_mono) font_mono = font_ui;
     io.FontDefault = font_ui;
 
@@ -297,8 +272,32 @@ bool Editor::init(int width, int height) {
 }
 
 void Editor::shutdown() {
+    delete play_backup_;
+    play_backup_ = nullptr;
     ImGui::DestroyContext();
     platform::shutdown();
+}
+
+Editor::~Editor() { delete play_backup_; }
+
+// ---------------------------------------------------------------- UI rects
+
+void Editor::track_rect(const char* key, float x, float y, float w, float h) {
+    if (ui_rect_count >= kMaxUiRects) return;
+    UiRect& r = ui_rects[ui_rect_count++];
+    snprintf(r.key, sizeof(r.key), "%s", key);
+    r.x = x; r.y = y; r.w = w; r.h = h;
+}
+
+void Editor::track(const char* key) {
+    ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    track_rect(key, a.x, a.y, b.x - a.x, b.y - a.y);
+}
+
+const Editor::UiRect* Editor::find_rect(const char* key) const {
+    for (int i = ui_rect_count - 1; i >= 0; i--)
+        if (!strcmp(ui_rects[i].key, key)) return &ui_rects[i];
+    return nullptr;
 }
 
 // ---------------------------------------------------------------- log
@@ -336,35 +335,136 @@ ObjectId Editor::create_object(const char* name, MeshKind mesh, const Vec3& at) 
 }
 
 void Editor::delete_selection() {
-    int n = scene.selected_count();
-    while (scene.selected_count()) scene.remove(scene.selected(0));
+    // Removing an object removes its children too (Scene::remove).
+    int n = 0;
+    while (scene.selected_count()) {
+        ObjectId id = scene.selected(0);
+        if (!scene.has_selected_ancestor(id)) n++;
+        scene.remove(id);
+    }
     if (n) log(LogLevel::Info, "Deleted %d object%s", n, n == 1 ? "" : "s");
+}
+
+ObjectId Editor::duplicate_tree(ObjectId src_id, ObjectId parent, bool offset) {
+    // Pairs (original, copy) of everything copied, so that script inputs
+    // linking inside the copied tree link to the copies (a switch and its
+    // door duplicated together stay a pair).
+    ObjectId from[256], to[256];
+    int pairs = 0;
+    ObjectId id = duplicate_one(src_id, parent, offset, from, to, &pairs);
+    for (int i = 0; i < pairs; i++) {
+        Object* o = scene.get(to[i]);
+        if (!o) continue;
+        for (int s = 0; s < o->script_count; s++)
+            for (int k = 0; k < o->scripts[s].prop_count; k++) {
+                ScriptProp& p = o->scripts[s].props[k];
+                if (p.type != PropType::Object) continue;
+                for (int j = 0; j < pairs; j++)
+                    if (p.object == from[j]) { p.object = to[j]; break; }
+            }
+    }
+    return id;
+}
+
+ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, ObjectId* from, ObjectId* to, int* pairs) {
+    Object* src = scene.get(src_id);
+    if (!src) return kNoObject;
+    ObjectId id = create_object(src->name, src->mesh, src->position);
+    src = scene.get(src_id);                    // objects are separate allocations, but look it up again anyway
+    Object* o = scene.get(id);
+    char name[64];
+    memcpy(name, o->name, sizeof(name));
+    *o = *src;                                  // everything but the id, the name and the parent
+    o->id = id;
+    memcpy(o->name, name, sizeof(name));
+    o->parent = parent;
+    if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    if (*pairs < 256) { from[*pairs] = src_id; to[*pairs] = id; (*pairs)++; }
+    // The children, in their order (the list grows while copying).
+    int n = scene.count();
+    ObjectId kids[256];
+    int nk = 0;
+    for (int i = 0; i < n && nk < 256; i++)
+        if (scene.at(i).parent == src_id) kids[nk++] = scene.at(i).id;
+    for (int k = 0; k < nk; k++) duplicate_one(kids[k], id, false, from, to, pairs);
+    return id;
+}
+
+int Editor::add_script(ObjectId id, const char* path) {
+    Object* o = scene.get(id);
+    if (!o) return -1;
+    int i = scene.add_script(id, path);
+    if (i < 0) {
+        log(LogLevel::Warning, "%s already has %d scripts (the most an object can hold)", o->name, kMaxScripts);
+        return -1;
+    }
+    reload_script(id, i);
+    return i;
+}
+
+bool Editor::reload_script(ObjectId id, int index) {
+    Object* o = scene.get(id);
+    if (!o || index < 0 || index >= o->script_count) return false;
+    ScriptSlot& slot = o->scripts[index];
+    // Paths from the Files panel are full; others are relative to the project.
+    size_t size = 0;
+    char* text = (char*)platform::read_file(slot.path, &size);
+    if (!text && project_dir[0] && slot.path[0] != '/') {
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", project_dir, slot.path);
+        text = (char*)platform::read_file(full, &size);
+    }
+    if (!text) {
+        if (!slot.missing) log(LogLevel::Warning, "%s: cannot read %s; its inputs keep their values", o->name, slot.path);
+        slot.missing = true;
+        return false;
+    }
+    slot.missing = false;
+    ScriptProp declared[kMaxProps];
+    int bad = 0;
+    int n = parse_script_props(text, (uint32_t)size, declared, kMaxProps, &bad);
+    free(text);
+    merge_script_props(&slot, declared, n);
+    if (bad) log(LogLevel::Warning, "%s: %d @prop line%s could not be read", path_filename(slot.path), bad, bad == 1 ? "" : "s");
+    return true;
+}
+
+int Editor::reload_all_scripts() {
+    int failed = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        for (int s = 0; s < o.script_count; s++) failed += !reload_script(o.id, s);
+    }
+    return failed;
 }
 
 void Editor::duplicate_selection() {
     int n = scene.selected_count();
     if (!n) return;
     ObjectId src_ids[64], new_ids[64];
-    if (n > 64) n = 64;
-    for (int i = 0; i < n; i++) src_ids[i] = scene.selected(i);
+    int ns = 0;
+    for (int i = 0; i < n && ns < 64; i++)
+        if (!scene.has_selected_ancestor(scene.selected(i))) src_ids[ns++] = scene.selected(i);
     int made = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < ns; i++) {
         Object* src = scene.get(src_ids[i]);
         if (!src) continue;
-        Object copy = *src;
-        ObjectId id = create_object(copy.name, copy.mesh, copy.position);
-        Object* o = scene.get(id);
-        char name[64];
-        memcpy(name, o->name, sizeof(name));
-        *o = copy;                              // everything but the id and the name
-        o->id = id;
-        memcpy(o->name, name, sizeof(name));
-        o->position = copy.position + Vec3(0.5f, 0, 0.5f);
-        new_ids[made++] = id;
+        ObjectId id = duplicate_tree(src_ids[i], src->parent, true);
+        if (id) new_ids[made++] = id;
     }
     scene.clear_selection();
     for (int i = 0; i < made; i++) scene.toggle(new_ids[i]);
     log(LogLevel::Info, "Duplicated %d object%s", made, made == 1 ? "" : "s");
+}
+
+ObjectId Editor::create_child(const char* name, MeshKind mesh, ObjectId parent) {
+    ObjectId id = create_object(name, mesh, Vec3(0, 0, 0));
+    if (Object* o = scene.get(id)) {
+        o->parent = parent;
+        o->position = Vec3(0, mesh == MeshKind::Plane ? 0.0f : 1.0f, 0);   // just above the parent's origin
+        if (Object* p = scene.get(parent)) p->expanded = true;
+    }
+    return id;
 }
 
 void Editor::frame_selection() {
@@ -374,7 +474,7 @@ void Editor::frame_selection() {
         Object* o = scene.get(scene.selected(i));
         if (!o) continue;
         const MeshData& m = Scene::mesh_for(*o);
-        Mat4 mm = o->matrix();
+        Mat4 mm = scene.world_matrix(*o);
         for (int c = 0; c < 8; c++) {
             Vec3 p((c & 1) ? m.bounds_max.x : m.bounds_min.x, (c & 2) ? m.bounds_max.y : m.bounds_min.y,
                    (c & 4) ? m.bounds_max.z : m.bounds_min.z);
@@ -386,6 +486,32 @@ void Editor::frame_selection() {
     camera.target = (lo + hi) * 0.5f;
     float r = length(hi - lo) * 0.5f;
     camera.distance = fmaxf_(2.0f, r / ftan(radians(camera.fov) * 0.5f) * 1.2f);
+}
+
+void Editor::set_view(float yaw, float pitch) {
+    camera.yaw = yaw;
+    camera.pitch = fclamp(pitch, -89.9f, 89.9f);
+}
+
+void Editor::play() {
+    if (playing()) return;
+    // Script inputs follow the files as they are now (the values set in the
+    // editor stay).
+    reload_all_scripts();
+    play_backup_ = new Scene();
+    play_backup_->copy_from(scene);
+    play_time = 0.0;
+    log(LogLevel::Info, "Play: the scene is saved and comes back on Stop. Scripts do not run yet (they need the Lua runtime).");
+}
+
+void Editor::stop() {
+    if (!playing()) return;
+    ObjectId next = scene.next_id();
+    scene.copy_from(*play_backup_);
+    scene.keep_ids_above(next);         // objects made while playing keep their ids retired
+    delete play_backup_;
+    play_backup_ = nullptr;
+    log(LogLevel::Info, "Stop: scene restored (%.1f s of play)", play_time);
 }
 
 void Editor::open_file(const char* path) {
@@ -409,8 +535,9 @@ void Editor::apply_file_to_object(const char* path, ObjectId id) {
         snprintf(o->model_path, sizeof(o->model_path), "%s", path);
         log(LogLevel::Info, "%s: model %s", o->name, path_filename(path));
     } else if (path_is_script(path)) {
-        snprintf(o->script_path, sizeof(o->script_path), "%s", path);
-        log(LogLevel::Info, "%s: script %s", o->name, path_filename(path));
+        int i = add_script(id, path);
+        if (i >= 0) log(LogLevel::Info, "%s: added script %s (%d input%s)", o->name, path_filename(path), o->scripts[i].prop_count,
+                        o->scripts[i].prop_count == 1 ? "" : "s");
     } else {
         log(LogLevel::Warning, "%s cannot be put on an object", path_filename(path));
     }
@@ -466,6 +593,12 @@ bool Editor::frame() {
                     case platform::KEY_RALT: k = ImGuiKey_RightAlt; break;
                     case platform::KEY_F1: k = ImGuiKey_F1; break;
                     case platform::KEY_F2: k = ImGuiKey_F2; break;
+                    case platform::KEY_F3: k = ImGuiKey_F3; break;
+                    case platform::KEY_F4: k = ImGuiKey_F4; break;
+                    case platform::KEY_F5: k = ImGuiKey_F5; break;
+                    case platform::KEY_F6: k = ImGuiKey_F6; break;
+                    case platform::KEY_F7: k = ImGuiKey_F7; break;
+                    case platform::KEY_F8: k = ImGuiKey_F8; break;
                     default: break;
                 }
                 if (k != ImGuiKey_None) io.AddKeyEvent(k, e.down);
@@ -478,7 +611,9 @@ bool Editor::frame() {
         }
     }
     io.DisplaySize = ImVec2((float)platform::width(), (float)platform::height());
+    if (playing()) play_time += io.DeltaTime;
 
+    ui_rect_count = 0;
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
     build_ui();
@@ -486,7 +621,7 @@ bool Editor::frame() {
 
     static SwRenderer renderer;
     Framebuffer& fb = platform::framebuffer();
-    SwRenderer::clear(fb, settings.dark_theme ? 0x16171A : 0xE9EAEE);
+    SwRenderer::clear(fb, settings.dark_theme ? 0x101215 : 0xD9DCE1);
     renderer.render(ImGui::GetDrawData(), fb);
     platform::present();
     return !quit;
@@ -496,10 +631,11 @@ bool Editor::frame() {
 
 void Editor::build_ui() {
     main_menu();
-    float menu_h = ImGui::GetFrameHeight();
-    float bar_h = 40.0f * settings.ui_scale;
-    toolbar(menu_h, bar_h);
-    dockspace(menu_h + bar_h);
+    ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
+    float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
+    float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
+    status_bar(bar_h);
+    dockspace(top, bar_h);
     panel_hierarchy();
     panel_inspector();
     panel_viewport();
@@ -514,110 +650,232 @@ void Editor::build_ui() {
     shortcuts();
 }
 
+// A menu item that also records where it was drawn ("menu:<label>").
+bool Editor::menu_item(const char* label, const char* shortcut, bool selected, bool enabled) {
+    bool r = ImGui::MenuItem(label, shortcut, selected, enabled);
+    char key[48];
+    snprintf(key, sizeof(key), "menu:%s", label);
+    track(key);
+    return r;
+}
+
 void Editor::main_menu() {
-    if (!ImGui::BeginMainMenuBar()) return;
-    ImGui::TextColored(ImVec4(0.30f, 0.55f, 1.0f, 1.0f), "Farcade");
-    ImGui::Spacing();
+    // The top bar: the mark and the menus on the left, the project in the
+    // middle, run controls and the renderer on the right.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4 + 4.0f * settings.ui_scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 6));
+    bool open = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleVar(2);
+    if (!open) return;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 6));
+    ImGuiWindow* bar = ImGui::GetCurrentWindow();
+    float bar_h = bar->Size.y;
+    float fs = ImGui::GetFontSize();
+
+    // The mark.
+    ImVec2 lp = ImGui::GetCursorScreenPos();
+    float ls = fs + 4;
+    draw_logo(ImGui::GetWindowDrawList(), ImVec2(lp.x + 2, bar->Pos.y + (bar_h - ls) * 0.5f), ls, pal.accent);
+    ImGui::Dummy(ImVec2(ls + 8, 1));
+    ImGui::SameLine();
+
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New scene")) { scene.clear(); log(LogLevel::Info, "New scene"); }
-        ImGui::MenuItem("Open project...", nullptr, false, false);
-        ImGui::MenuItem("Save", "Ctrl+S", false, false);
+        if (menu_item("New scene")) { scene.clear(); log(LogLevel::Info, "New scene"); }
+        menu_item("Open project...", nullptr, false, false);
+        menu_item("Save", "Ctrl+S", false, false);
         ImGui::Separator();
-        ImGui::MenuItem("Export game...", nullptr, false, false);
+        menu_item("Export game...", nullptr, false, false);
         ImGui::Separator();
-        if (ImGui::MenuItem("Quit")) quit = true;
+        if (menu_item("Quit")) quit = true;
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        ImGui::MenuItem("Undo", "Ctrl+Z", false, false);
-        ImGui::MenuItem("Redo", "Ctrl+Y", false, false);
+        menu_item("Undo", "Ctrl+Z", false, false);
+        menu_item("Redo", "Ctrl+Y", false, false);
         ImGui::Separator();
-        if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, scene.selected_count() > 0)) duplicate_selection();
-        if (ImGui::MenuItem("Delete", "Del", false, scene.selected_count() > 0)) delete_selection();
+        if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0)) duplicate_selection();
+        if (menu_item("Delete", "Del", false, scene.selected_count() > 0)) delete_selection();
         ImGui::Separator();
-        if (ImGui::MenuItem("Settings...")) show_settings = true;
+        if (menu_item("Settings...")) show_settings = true;
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Create")) {
         Vec3 at = camera.target;
         at.y = 0.5f;
-        if (ImGui::MenuItem("Cube")) create_object("Cube", MeshKind::Cube, at);
-        if (ImGui::MenuItem("Sphere")) create_object("Sphere", MeshKind::Sphere, at);
-        if (ImGui::MenuItem("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, at);
-        if (ImGui::MenuItem("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
+        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, at);
+        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, at);
+        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, at);
+        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
-        ImGui::MenuItem("Grid", "G", &settings.show_grid);
+        if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
+        if (menu_item("Grid", "G", settings.show_grid)) settings.show_grid = !settings.show_grid;
         ImGui::Separator();
-        if (ImGui::MenuItem("Reset layout")) want_reset_layout = true;
-        if (ImGui::MenuItem("Dark theme", nullptr, settings.dark_theme)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
+        if (menu_item("Reset layout")) want_reset_layout = true;
+        if (menu_item("Dark theme", nullptr, settings.dark_theme)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        ImGui::MenuItem("ImGui demo", nullptr, &show_demo);
+        if (menu_item("ImGui demo", nullptr, show_demo)) show_demo = !show_demo;
         ImGui::EndMenu();
     }
+
+    // The project, centered.
+    {
+        const char* name = path_filename(project_dir);
+        char title[160];
+        snprintf(title, sizeof(title), "%s", *name ? name : "No project");
+        float tw = ImGui::CalcTextSize(title).x;
+        float x = (bar->Size.x - tw) * 0.5f;
+        if (x > ImGui::GetCursorPosX() + 20) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            float ty = bar->Pos.y + (bar_h - fs) * 0.5f;
+            if (font_medium) ImGui::PushFont(font_medium, 0.0f);
+            dl->AddText(ImVec2(bar->Pos.x + x, ty), pal.text_dim, title);
+            if (font_medium) ImGui::PopFont();
+        }
+    }
+    run_controls();
+    ImGui::PopStyleVar(2);
     ImGui::EndMainMenuBar();
 }
 
-void Editor::toolbar(float y, float h) {
+void Editor::run_controls() {
+    // Right side of the top bar: [Play Stop]  [renderer chip]  [settings].
+    ImGuiWindow* bar = ImGui::GetCurrentWindow();
+    float bar_h = bar->Size.y;
+    float bs = ImGui::GetFrameHeight();
+    char chip_label[64];
+    snprintf(chip_label, sizeof(chip_label), "CPU preview  %.1f ms", view_ms);
+    float chip_w = ImGui::CalcTextSize("CPU preview  000.0 ms").x + bs + 14;
+    float group_w = bs * 2 + 8;
+    float total = group_w + 10 + chip_w + 6 + bs + 8;
+    float x = bar->Size.x - total;
+    if (x < ImGui::GetCursorPosX() + 10) return;
+    float y = (bar_h - bs) * 0.5f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Run group on a pill.
+    ImVec2 gp(bar->Pos.x + x, bar->Pos.y + y);
+    dl->AddRectFilled(ImVec2(gp.x - 1, gp.y - 1), ImVec2(gp.x + group_w + 1, gp.y + bs + 1), pal.frame, ImGui::GetStyle().FrameRounding + 1);
+    ImGui::SetCursorPos(ImVec2(x + 2, y));
+    if (playing()) {
+        ImVec2 pp = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(pp, ImVec2(pp.x + bs, pp.y + bs), (pal.play & 0x00FFFFFF) | 0x40000000, ImGui::GetStyle().FrameRounding);
+    }
+    if (icon_button(Icon::Play, playing() ? "Playing (Stop puts the scene back)" : "Play the scene (F5)", false, bs, pal.play))
+        if (!playing()) play();
+    track("run:play");
+    ImGui::SameLine(0, 2);
+    ImGui::SetCursorPosY(y);
+    ImGui::BeginDisabled(!playing());
+    if (icon_button(Icon::Stop, "Stop and restore the scene (F5)", false, bs)) stop();
+    ImGui::EndDisabled();
+    track("run:stop");
+
+    // The renderer chip: what draws the viewport, with its settings.
+    ImGui::SameLine(0, 10);
+    ImGui::SetCursorPosY(y);
+    ImVec2 cp = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##renderer", ImVec2(chip_w, bs))) ImGui::OpenPopup("##renderer_popup");
+    track("run:renderer");
+    bool hov = ImGui::IsItemHovered();
+    dl->AddRectFilled(cp, ImVec2(cp.x + chip_w, cp.y + bs), hov ? pal.hover : pal.frame, ImGui::GetStyle().FrameRounding);
+    float fs = ImGui::GetFontSize();
+    draw_icon(dl, Icon::Monitor, ImVec2(cp.x + 8, cp.y + (bs - fs) * 0.5f), fs, pal.accent_text);
+    dl->AddText(ImVec2(cp.x + 14 + fs, cp.y + (bs - fs) * 0.5f), pal.text, chip_label);
+    draw_icon(dl, Icon::ChevronDown, ImVec2(cp.x + chip_w - fs - 4, cp.y + (bs - fs) * 0.5f), fs * 0.9f, pal.text_faint);
+    if (hov) ImGui::SetItemTooltip("Viewport renderer and display mode");
+    ImGui::SetNextWindowPos(ImVec2(cp.x + chip_w, cp.y + bs + 4), ImGuiCond_Always, ImVec2(1, 0));
+    if (ImGui::BeginPopup("##renderer_popup")) {
+        heading("Viewport renderer");
+        ImGui::TextDisabled("CPU preview: a stand-in until the FarcadeGL renderer");
+        ImGui::Separator();
+        ImGui::TextDisabled("Display");
+        if (ImGui::RadioButton("Lit", view_mode == ViewMode::Lit)) view_mode = ViewMode::Lit;
+        track("menu:Lit");
+        if (ImGui::RadioButton("Unlit", view_mode == ViewMode::Unlit)) view_mode = ViewMode::Unlit;
+        track("menu:Unlit");
+        if (ImGui::RadioButton("Wireframe", view_mode == ViewMode::Wireframe)) view_mode = ViewMode::Wireframe;
+        track("menu:Wireframe");
+        ImGui::Separator();
+        ImGui::TextDisabled("Quality");
+        ImGui::Checkbox("Smooth edges (2x2 supersampling)", &settings.view_supersample);
+        track("menu:Smooth edges");
+        ImGui::Checkbox("Ground shadows", &settings.view_shadows);
+        track("menu:Ground shadows");
+        ImGui::Checkbox("Grid", &settings.show_grid);
+        ImGui::Separator();
+        ImGui::TextDisabled("%d x %d   %d triangles   %.2f ms", (int)view_rect[2], (int)view_rect[3], view_triangles, view_ms);
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(0, 6);
+    ImGui::SetCursorPosY(y);
+    if (icon_button(Icon::Gear, "Settings", show_settings, bs)) show_settings = !show_settings;
+    track("run:settings");
+}
+
+void Editor::status_bar(float h) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + y));
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vp->Size.y - h));
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, h));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
-                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 6));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
-    ImGui::Begin("##toolbar", nullptr, flags);
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                             ImGuiWindowFlags_NoNavFocus;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(pal.app_bg));
+    ImGui::Begin("##statusbar", nullptr, flags);
     ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-
-    float bs = h - 12;
-    struct ToolDef { Tool tool; Icon icon; const char* tip; };
-    static const ToolDef tools[] = {
-        { Tool::Select, Icon::Pointer, "Select (Q)" }, { Tool::Move, Icon::Move, "Move (W)" },
-        { Tool::Rotate, Icon::Rotate, "Rotate (E)" }, { Tool::Scale, Icon::Scale, "Scale (R)" },
-    };
-    for (const ToolDef& t : tools) {
-        if (icon_button(t.icon, t.tip, tool == t.tool, bs)) tool = t.tool;
-        ImGui::SameLine(0, 2);
+    ImGui::PopStyleVar(2);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetWindowPos();
+    float fs = ImGui::GetFontSize();
+    float ty = p.y + (h - fs) * 0.5f;
+    float x = p.x + 10;
+    if (playing()) {
+        // A colored segment while playing.
+        char t[48];
+        snprintf(t, sizeof(t), "Playing  %d:%02d", (int)play_time / 60, (int)play_time % 60);
+        float w = ImGui::CalcTextSize(t).x + fs + 22;
+        dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + w, p.y + h), pal.play);
+        draw_icon(dl, Icon::Play, ImVec2(x, ty), fs, IM_COL32(255, 255, 255, 255));
+        dl->AddText(ImVec2(x + fs + 6, ty), IM_COL32(255, 255, 255, 255), t);
+        x = p.x + w + 10;
     }
-    ImGui::SameLine(0, 14);
-    if (icon_button(gizmo_local ? Icon::Local : Icon::World, gizmo_local ? "Local axes (click for world)" : "World axes (click for local)", false, bs))
-        gizmo_local = !gizmo_local;
-    ImGui::SameLine(0, 14);
-    if (icon_button(Icon::Magnet, "Snap (hold Ctrl to invert)", settings.snap, bs)) settings.snap = !settings.snap;
-    ImGui::SameLine(0, 6);
-    ImGui::SetNextItemWidth(64 * settings.ui_scale);
-    ImGui::SetCursorPosY((h - ImGui::GetFrameHeight()) * 0.5f);
-    float* snapv = tool == Tool::Rotate ? &settings.snap_rotate : (tool == Tool::Scale ? &settings.snap_scale : &settings.snap_move);
-    ImGui::DragFloat("##snapv", snapv, tool == Tool::Rotate ? 1.0f : 0.05f, 0.01f, 360.0f, tool == Tool::Rotate ? "%.0f deg" : "%.2f");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Snap step for the current tool");
-    ImGui::SameLine(0, 14);
-    if (icon_button(Icon::Grid, "Grid (G)", settings.show_grid, bs)) settings.show_grid = !settings.show_grid;
-
-    // Play controls in the middle.
-    float mid = vp->Size.x * 0.5f - bs;
-    ImGui::SameLine(mid);
-    ImGui::BeginDisabled();
-    icon_button(Icon::Play, "Play (coming with the Lua runtime)", false, bs);
-    ImGui::SameLine(0, 2);
-    icon_button(Icon::Pause, "Pause", false, bs);
-    ImGui::EndDisabled();
+    // The newest log line.
+    if (log_count > 0) {
+        const LogLine& l = log_lines[(log_head + log_count - 1) % kLogLines];
+        static const Icon icons[3] = { Icon::Info, Icon::Warning, Icon::Error };
+        ImU32 col = l.level == LogLevel::Error ? pal.error : (l.level == LogLevel::Warning ? pal.warning : pal.text_faint);
+        draw_icon(dl, icons[(int)l.level], ImVec2(x, ty + 1), fs - 2, col);
+        dl->PushClipRect(ImVec2(x, p.y), ImVec2(p.x + vp->Size.x * 0.6f, p.y + h), true);
+        dl->AddText(ImVec2(x + fs + 4, ty), pal.text_dim, l.text);
+        dl->PopClipRect();
+    }
+    // Right side: counts and the renderer.
+    char right[128];
+    const char* space = tool == Tool::Select ? "" : (gizmo_local || tool == Tool::Scale) ? ", local axes" : ", world axes";
+    snprintf(right, sizeof(right), "%d object%s   %d selected   |   %s%s   |   %d x %d", scene.count(), scene.count() == 1 ? "" : "s",
+             scene.selected_count(), tool == Tool::Select ? "Select" : tool == Tool::Move ? "Move" : tool == Tool::Rotate ? "Rotate" : "Scale",
+             space, platform::width(), platform::height());
+    float rw = ImGui::CalcTextSize(right).x;
+    dl->AddText(ImVec2(p.x + vp->Size.x - rw - 12, ty), pal.text_faint, right);
     ImGui::End();
 }
 
-void Editor::dockspace(float top) {
+void Editor::dockspace(float top, float bottom) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 pos(vp->Pos.x, vp->Pos.y + top), size(vp->Size.x, vp->Size.y - top);
+    ImVec2 pos(vp->Pos.x, vp->Pos.y + top), size(vp->Size.x, vp->Size.y - top - bottom);
     ImGui::SetNextWindowPos(pos);
     ImGui::SetNextWindowSize(size);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                              ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 2));
     ImGui::Begin("##dockhost", nullptr, flags);
     ImGui::PopStyleVar();
     ImGuiID id = ImGui::GetID("MainDock");
@@ -625,15 +883,15 @@ void Editor::dockspace(float top) {
         want_reset_layout = false;
         ImGui::DockBuilderRemoveNode(id);
         ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(id, ImVec2(size.x - 8, size.y - 8));
-        ImGuiID center = id, left, right, bottom;
-        left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.18f, nullptr, &center);
-        right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, nullptr, &center);
-        bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, nullptr, &center);
+        ImGui::DockBuilderSetNodeSize(id, ImVec2(size.x - 8, size.y - 4));
+        ImGuiID center = id, left, right, bottom_id;
+        left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
+        right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+        bottom_id = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, nullptr, &center);
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
-        ImGui::DockBuilderDockWindow("Files", bottom);
-        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Files", bottom_id);
+        ImGui::DockBuilderDockWindow("Console", bottom_id);
         ImGui::DockBuilderDockWindow("Viewport", center);
         if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(center)) n->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
         ImGui::DockBuilderFinish(id);
@@ -650,10 +908,12 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_E, false)) tool = Tool::Rotate;
     if (ImGui::IsKeyPressed(ImGuiKey_R, false)) tool = Tool::Scale;
     if (ImGui::IsKeyPressed(ImGuiKey_G, false) && !io.KeyCtrl) settings.show_grid = !settings.show_grid;
+    if (ImGui::IsKeyPressed(ImGuiKey_X, false) && !io.KeyCtrl) gizmo_local = !gizmo_local;
     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) delete_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
+    if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
 }
 
 }  // namespace fe

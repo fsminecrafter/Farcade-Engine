@@ -27,3 +27,36 @@ make host      # Linux: tools, tests, headless editor
 make test      # run the host tests
 make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 ```
+
+## Models: `.mof`
+
+`.mof` is the engine's model file: meshes (positions, normals, tangents,
+two UV sets, colors), materials, textures (raw RGBA8 with mips, PNG or
+JPEG), a skeleton (bones with inverse bind matrices, joints and weights)
+and a node tree, in one little-endian file of 16-byte aligned chunks. The
+byte-level specification is `docs/mof-format.md`; the reader and writer
+are `engine/mof/mof.h` (the reader is freestanding and zero-copy).
+
+```sh
+build/host/bin/mofconv model.glb model.mof     # from glTF 2.0 (.gltf/.glb) or OBJ (+MTL)
+build/host/bin/mofconv --info model.mof        # what is inside
+make mof-samples                               # rebuild assets/samples/*.mof
+make test-mof-asan                             # the .mof tests under ASan/UBSan
+```
+
+## On Minimal-OS
+
+`make os` builds `build/os/bin/farcade-editor.run` (the editor, full
+screen) and `build/os/bin/imgui_smoke.run` (a self-test), linked with the
+engine's own C/C++ runtime (`runtime/minimalos`, see `docs/runtime.md`).
+`tools/ci/run_os.sh` puts a program into a Minimal-OS boot image, runs it in
+QEMU and waits for a line on the serial port:
+
+```sh
+SCREENDUMP=$PWD/build/os/editor.png ARGS="--frames 200" \
+  tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 121' 'FE EDITOR FAIL'
+tools/ci/run_os.sh build/os/bin/imgui_smoke.run 'FE SMOKE PASS' 'FE SMOKE FAIL'
+```
+
+It builds in a Minimal-OS checkout (`MINIMAL_OS_DIR`, default
+`/home/user/wt-mos-rt`); the variables are listed at the top of the script.

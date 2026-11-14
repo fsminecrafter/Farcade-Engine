@@ -1,6 +1,7 @@
 #include "icons.h"
 
 #include "core/math.h"
+#include "widgets.h"
 
 namespace fe {
 
@@ -151,10 +152,72 @@ void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
             dl->AddLine(P(5.5f, 5.5f), P(10.5f, 10.5f), IM_COL32(0, 0, 0, 200), t);
             dl->AddLine(P(10.5f, 5.5f), P(5.5f, 10.5f), IM_COL32(0, 0, 0, 200), t);
             break;
+        case Icon::Stop: dl->AddRectFilled(P(4, 4), P(12, 12), c, 1.5f * k); break;
+        case Icon::Eye:
+        case Icon::EyeOff: {
+            dl->AddEllipse(P(8, 8), ImVec2(6.5f * k, 4.0f * k), c, 0, 20, t);
+            dl->AddCircleFilled(P(8, 8), 2.0f * k, c, 12);
+            if (icon == Icon::EyeOff) dl->AddLine(P(2.5f, 13.5f), P(13.5f, 2.5f), c, t);
+            break;
+        }
+        case Icon::Plus:
+            dl->AddLine(P(8, 3), P(8, 13), c, t * 1.1f);
+            dl->AddLine(P(3, 8), P(13, 8), c, t * 1.1f);
+            break;
+        case Icon::Search:
+            dl->AddCircle(P(7, 7), 4.2f * k, c, 16, t);
+            dl->AddLine(P(10.2f, 10.2f), P(13.5f, 13.5f), c, t * 1.2f);
+            break;
+        case Icon::Gear: {
+            const int teeth = 8;
+            for (int i = 0; i < teeth; i++) {
+                float a = 2 * kPi * i / teeth;
+                ImVec2 d(fcos(a), fsin(a));
+                dl->AddLine(P(8 + d.x * 4.5f, 8 + d.y * 4.5f), P(8 + d.x * 6.6f, 8 + d.y * 6.6f), c, 2.2f * k);
+            }
+            dl->AddCircle(P(8, 8), 4.6f * k, c, 16, t);
+            dl->AddCircle(P(8, 8), 1.8f * k, c, 10, t);
+            break;
+        }
+        case Icon::ChevronDown:
+            dl->AddLine(P(4, 6), P(8, 10), c, t);
+            dl->AddLine(P(8, 10), P(12, 6), c, t);
+            break;
+        case Icon::ChevronRight:
+            dl->AddLine(P(6, 4), P(10, 8), c, t);
+            dl->AddLine(P(10, 8), P(6, 12), c, t);
+            break;
+        case Icon::Close:
+            dl->AddLine(P(4.5f, 4.5f), P(11.5f, 11.5f), c, t);
+            dl->AddLine(P(11.5f, 4.5f), P(4.5f, 11.5f), c, t);
+            break;
+        case Icon::Sun: {
+            dl->AddCircleFilled(P(8, 8), 3.0f * k, c, 12);
+            for (int i = 0; i < 8; i++) {
+                float a = 2 * kPi * i / 8;
+                dl->AddLine(P(8 + fcos(a) * 4.8f, 8 + fsin(a) * 4.8f), P(8 + fcos(a) * 6.6f, 8 + fsin(a) * 6.6f), c, t);
+            }
+            break;
+        }
+        case Icon::Monitor:
+            dl->AddRect(P(1.5f, 2.5f), P(14.5f, 11), c, 1.5f * k, 0, t);
+            dl->AddLine(P(8, 11), P(8, 13.5f), c, t);
+            dl->AddLine(P(5, 13.8f), P(11, 13.8f), c, t);
+            break;
+        case Icon::Layers: {
+            ImVec2 a[] = { P(8, 2.5f), P(14, 5.5f), P(8, 8.5f), P(2, 5.5f) };
+            dl->AddPolyline(a, 4, c, ImDrawFlags_Closed, t);
+            ImVec2 b[] = { P(2, 8.5f), P(8, 11.5f), P(14, 8.5f) };
+            dl->AddPolyline(b, 3, c, 0, t);
+            ImVec2 d[] = { P(2, 11.5f), P(8, 14.5f), P(14, 11.5f) };
+            dl->AddPolyline(d, 3, c, 0, t);
+            break;
+        }
     }
 }
 
-bool icon_button(Icon icon, const char* tooltip, bool active, float size) {
+bool icon_button(Icon icon, const char* tooltip, bool active, float size, uint32_t tint) {
+    const Palette& pal = ui_palette();
     ImGui::PushID((int)icon);
     ImGui::PushID(tooltip);
     ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -163,19 +226,31 @@ bool icon_button(Icon icon, const char* tooltip, bool active, float size) {
     bool held = ImGui::IsItemActive();
     bool disabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImGuiStyle& st = ImGui::GetStyle();
+    float rounding = ImGui::GetStyle().FrameRounding;
     ImU32 bg = 0;
-    if (active) bg = ImGui::GetColorU32(ImVec4(0.30f, 0.55f, 1.0f, held ? 0.40f : 0.25f));
-    else if (held) bg = ImGui::GetColorU32(ImGuiCol_ButtonActive);
-    else if (hovered && !disabled) bg = ImGui::GetColorU32(ImGuiCol_ButtonHovered);
-    if (bg) dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), bg, st.FrameRounding);
-    ImU32 fg = active ? ImGui::GetColorU32(ImVec4(0.45f, 0.65f, 1.0f, 1.0f)) : ImGui::GetColorU32(disabled ? ImGuiCol_TextDisabled : ImGuiCol_Text);
-    float pad = size * 0.2f;
+    if (active) bg = pal.accent_soft;
+    else if (held) bg = pal.active;
+    else if (hovered && !disabled) bg = pal.hover;
+    if (bg) dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), bg, rounding);
+    ImU32 fg = active ? pal.accent_text : (disabled ? pal.text_faint : (tint ? tint : (hovered ? pal.text : pal.text_dim)));
+    float pad = (float)(int)(size * 0.22f);
     draw_icon(dl, icon, ImVec2(pos.x + pad, pos.y + pad), size - pad * 2, fg);
     if (hovered && tooltip && *tooltip) ImGui::SetItemTooltip("%s", tooltip);
     ImGui::PopID();
     ImGui::PopID();
     return clicked;
+}
+
+void draw_logo(ImDrawList* dl, ImVec2 p, float s, ImU32 accent) {
+    float k = s / 16.0f;
+    auto P = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
+    dl->AddRectFilled(P(0, 0), P(16, 16), accent, 4.0f * k);
+    ImU32 w = IM_COL32(255, 255, 255, 255);
+    // An "F" leaning forward, with a speed line under the top bar.
+    dl->AddQuadFilled(P(5.2f, 3.5f), P(12.6f, 3.5f), P(12.0f, 5.6f), P(4.6f, 5.6f), w);
+    dl->AddQuadFilled(P(4.6f, 5.6f), P(6.8f, 5.6f), P(5.0f, 12.5f), P(2.8f, 12.5f), w);
+    dl->AddQuadFilled(P(5.9f, 7.2f), P(10.8f, 7.2f), P(10.3f, 9.2f), P(5.4f, 9.2f), w);
+    dl->AddLine(P(11.6f, 8.2f), P(13.4f, 8.2f), IM_COL32(255, 255, 255, 150), 1.2f * k);
 }
 
 }  // namespace fe

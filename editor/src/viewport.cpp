@@ -8,6 +8,7 @@
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "platform/platform.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -74,6 +75,92 @@ Quat conjugate(const Quat& q) { return { -q.x, -q.y, -q.z, q.w }; }
 
 }  // namespace
 
+// Everything the viewport image depends on, hashed (FNV-1a).
+uint64_t Editor::view_hash(int w, int h) const {
+    uint64_t hsh = 1469598103934665603ull;
+    auto mix = [&](const void* data, size_t n) {
+        const uint8_t* b = (const uint8_t*)data;
+        for (size_t i = 0; i < n; i++) { hsh ^= b[i]; hsh *= 1099511628211ull; }
+    };
+    mix(&w, sizeof(w));
+    mix(&h, sizeof(h));
+    mix(&camera, sizeof(camera));
+    mix(&view_mode, sizeof(view_mode));
+    bool flags[4] = { settings.show_grid, view_shadows_now(), view_supersample_now(), settings.dark_theme };
+    mix(flags, sizeof(flags));
+    mix(&settings.grid_size, sizeof(settings.grid_size));
+    Scene& sc = const_cast<Scene&>(scene);
+    for (int i = 0; i < sc.count(); i++) {
+        const Object& o = sc.at(i);
+        mix(&o.id, sizeof(o.id));
+        mix(&o.position, sizeof(o.position));
+        mix(&o.rotation, sizeof(o.rotation));
+        mix(&o.scale, sizeof(o.scale));
+        mix(&o.color, sizeof(o.color));
+        mix(&o.mesh, sizeof(o.mesh));
+        mix(&o.visible, sizeof(o.visible));
+        mix(&o.parent, sizeof(o.parent));
+    }
+    for (int i = 0; i < sc.selected_count(); i++) { ObjectId id = sc.selected(i); mix(&id, sizeof(id)); }
+    ObjectId act = sc.active();
+    mix(&act, sizeof(act));
+    return hsh;
+}
+
+void Editor::render_view(View3D& view3d, const void* view_ptr) {
+    const View& v = *(const View*)view_ptr;
+    double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+    double t0 = clock();
+
+    uint32_t top = settings.dark_theme ? 0x2B3038 : 0xC9D0DA;
+    uint32_t bottom = settings.dark_theme ? 0x16181C : 0xEEF1F5;
+    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
+    bool wire = view_mode == ViewMode::Wireframe;
+    {
+        uint16_t sel_ids[256];
+        int nsel = 0;
+        for (int s2 = 0; s2 < scene.selected_count() && nsel < 256; s2++) sel_ids[nsel++] = (uint16_t)scene.selected(s2);
+        view3d.select(sel_ids, wire ? 0 : nsel, wire ? 0 : (uint16_t)scene.active());
+    }
+    int wire_tris = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        if (!scene.visible_in_tree(o)) continue;
+        const MeshData& mesh = Scene::mesh_for(o);
+        Mat4 model = scene.world_matrix(o);
+        if (!wire) {
+            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
+            continue;
+        }
+        bool sel = scene.is_selected(o.id);
+        uint32_t wc = sel ? 0x6EA3FF : (settings.dark_theme ? 0xC8CDD5 : 0x3A3F47);
+        for (uint32_t t = 0; t + 2 < mesh.vertex_count; t += 3) {
+            Vec3 a = transform_point(model, mesh.positions[t]);
+            Vec3 b = transform_point(model, mesh.positions[t + 1]);
+            Vec3 c = transform_point(model, mesh.positions[t + 2]);
+            wire_tris++;
+            view3d.line(a, b, wc, 190);
+            view3d.line(b, c, wc, 190);
+            view3d.line(c, a, wc, 190);
+        }
+    }
+    // Shadows on the ground from everything that is not flat on it.
+    if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
+        for (int i = 0; i < scene.count(); i++) {
+            Object& o = scene.at(i);
+            if (!scene.visible_in_tree(o) || o.mesh == MeshKind::Plane) continue;
+            const MeshData& mesh = Scene::mesh_for(o);
+            view3d.shadow(mesh.positions, mesh.vertex_count, scene.world_matrix(o));
+        }
+    }
+    if (settings.show_grid) view3d.grid(settings.grid_size, settings.dark_theme);
+    // Shadows, smoothing, and the selection outline (the active object brighter).
+    view3d.finish(0xFFB13B, 0xD98A1C, settings.dark_theme ? 0.42f : 0.30f);
+    view_triangles = view3d.triangles() + wire_tris;
+    view_ms = (float)((clock() - t0) * 1000.0);
+
+}
+
 void Editor::panel_viewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -91,58 +178,16 @@ void Editor::panel_viewport() {
     ImVec2 end(v.pos.x + v.size.x, v.pos.y + v.size.y);
     dl->PushClipRect(v.pos, end, true);
 
-    // The scene into the viewport image: gradient background, grid, objects.
+    // The scene into the viewport image, redrawn only when something it
+    // shows has changed (the CPU preview is not cheap; idle frames are free).
     static View3D view3d;
-    uint32_t top = settings.dark_theme ? 0x2C2F36 : 0xD6DCE6;
-    uint32_t bottom = settings.dark_theme ? 0x1B1D21 : 0xEEF1F5;
-    view3d.begin((int)v.size.x, (int)v.size.y, v.viewproj, top, bottom);
-    Vec3 light_dir = normalize(Vec3(0.45f, 0.85f, 0.35f));
-    for (int i = 0; i < scene.count(); i++) {
-        Object& o = scene.at(i);
-        if (!o.visible) continue;
-        const MeshData& mesh = Scene::mesh_for(o);
-        Mat4 model = o.matrix();
-        bool sel = scene.is_selected(o.id);
-        for (uint32_t t = 0; t + 2 < mesh.vertex_count; t += 3) {
-            Vec3 a = transform_point(model, mesh.positions[t]);
-            Vec3 b = transform_point(model, mesh.positions[t + 1]);
-            Vec3 c = transform_point(model, mesh.positions[t + 2]);
-            Vec3 n = normalize(cross(b - a, c - a));
-            float lit = 0.35f + 0.65f * fmaxf_(0.0f, dot(n, light_dir));
-            view3d.triangle(a, b, c, shade(o.color, lit, sel));
-        }
-    }
-    if (settings.show_grid) {
-        float g = settings.grid_size;
-        int n = settings.grid_lines;
-        float ext = g * n;
-        uint32_t gc = settings.dark_theme ? 0xFFFFFF : 0x000000;
-        for (int i = -n; i <= n; i++) {
-            if (i == 0) continue;
-            int alpha = (i % 10 == 0) ? 48 : 20;
-            view3d.line(Vec3(i * g, 0, -ext), Vec3(i * g, 0, ext), gc, alpha);
-            view3d.line(Vec3(-ext, 0, i * g), Vec3(ext, 0, i * g), gc, alpha);
-        }
-        view3d.line(Vec3(-ext, 0, 0), Vec3(ext, 0, 0), 0xDC5050, 170);
-        view3d.line(Vec3(0, 0, -ext), Vec3(0, 0, ext), 0x5082E6, 170);
+    static uint64_t last_hash = 0;
+    uint64_t hash = view_hash((int)v.size.x, (int)v.size.y);
+    if (hash != last_hash || !view3d.width()) {
+        last_hash = hash;
+        render_view(view3d, &v);
     }
     dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
-
-    // Selection: the bounding box of each selected object in the accent color.
-    for (int s = 0; s < scene.selected_count(); s++) {
-        Object* o = scene.get(scene.selected(s));
-        if (!o) continue;
-        const MeshData& m = Scene::mesh_for(*o);
-        Mat4 mm = o->matrix();
-        Vec3 c[8];
-        for (int k = 0; k < 8; k++)
-            c[k] = transform_point(mm, Vec3((k & 1) ? m.bounds_max.x : m.bounds_min.x, (k & 2) ? m.bounds_max.y : m.bounds_min.y,
-                                            (k & 4) ? m.bounds_max.z : m.bounds_min.z));
-        static const int edges[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 },
-                                          { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
-        ImU32 col = o->id == scene.active() ? IM_COL32(90, 150, 255, 255) : IM_COL32(90, 150, 255, 140);
-        for (auto& e : edges) line3(dl, v, c[e[0]], c[e[1]], col, 1.5f);
-    }
 
     // Gizmo on the active object. It comes before the input area: ImGuizmo
     // only starts a drag when no other item is hovered, so the input area is
@@ -163,35 +208,60 @@ void Editor::panel_viewport() {
         gs.ScaleLineThickness = 3.0f;
         gs.ScaleLineCircleSize = 6.5f;
         gs.CenterCircleSize = 5.0f;
+        gs.Colors[ImGuizmo::DIRECTION_X] = ImGui::ColorConvertU32ToFloat4(pal.axis[0]);
+        gs.Colors[ImGuizmo::DIRECTION_Y] = ImGui::ColorConvertU32ToFloat4(pal.axis[1]);
+        gs.Colors[ImGuizmo::DIRECTION_Z] = ImGui::ColorConvertU32ToFloat4(pal.axis[2]);
+        gs.Colors[ImGuizmo::PLANE_X] = ImGui::ColorConvertU32ToFloat4(pal.axis[0] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::PLANE_Y] = ImGui::ColorConvertU32ToFloat4(pal.axis[1] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::PLANE_Z] = ImGui::ColorConvertU32ToFloat4(pal.axis[2] & 0x80FFFFFF);
+        gs.Colors[ImGuizmo::SELECTION] = ImVec4(1.0f, 0.78f, 0.25f, 0.9f);
         ImGuizmo::OPERATION op = tool == Tool::Move ? ImGuizmo::TRANSLATE : (tool == Tool::Rotate ? ImGuizmo::ROTATE : ImGuizmo::SCALE);
         ImGuizmo::MODE mode = (gizmo_local || tool == Tool::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
         bool snap = settings.snap != gio.KeyCtrl;
         float step = tool == Tool::Move ? settings.snap_move : (tool == Tool::Rotate ? settings.snap_rotate : settings.snap_scale);
         float snap3[3] = { step, step, step };
-        Mat4 m = act->matrix();
-        Vec3 old_pos = act->position, old_scale = act->scale;
-        Quat old_rot = act->rotation;
+        // The gizmo works on world matrices; the result goes back into each
+        // object's transform relative to its parent.
+        Mat4 old_world = scene.world_matrix(*act);
+        Mat4 m = old_world;
+        Vec3 old_scale = act->scale;
+        // The other selected objects that are not under a selected parent
+        // (those move with their parent), with their world matrices now.
+        ObjectId others[256];
+        Mat4 others_world[256];
+        int n_others = 0;
+        for (int s = 0; s < scene.selected_count() && n_others < 256; s++) {
+            ObjectId id = scene.selected(s);
+            Object* o = scene.get(id);
+            if (!o || o == act || scene.has_selected_ancestor(id)) continue;
+            others[n_others] = id;
+            others_world[n_others++] = scene.world_matrix(*o);
+        }
         if (ImGuizmo::Manipulate(v.view.m, v.proj.m, op, mode, m.m, nullptr, snap ? snap3 : nullptr)) {
-            act->set_matrix(m);
-            if (tool == Tool::Move && snap && !gizmo_local) {
-                // Keep positions on the snap grid, not just the steps.
+            if (tool == Tool::Move && snap && mode == ImGuizmo::WORLD) {
+                // Keep world positions on the snap grid, not just the steps.
                 auto q = [&](float x) { float k = x / step; long n = (long)(k + (k >= 0 ? 0.5f : -0.5f)); return n * step; };
-                act->position = Vec3(q(act->position.x), q(act->position.y), q(act->position.z));
+                m.m[12] = q(m.m[12]); m.m[13] = q(m.m[13]); m.m[14] = q(m.m[14]);
             }
-            // The rest of the selection follows the active object.
-            Vec3 dpos = act->position - old_pos;
-            Quat drot = normalize(act->rotation * conjugate(old_rot));
-            Vec3 ratio(old_scale.x != 0 ? act->scale.x / old_scale.x : 1, old_scale.y != 0 ? act->scale.y / old_scale.y : 1,
-                       old_scale.z != 0 ? act->scale.z / old_scale.z : 1);
-            for (int s = 0; s < scene.selected_count(); s++) {
-                Object* o = scene.get(scene.selected(s));
-                if (!o || o == act) continue;
-                if (tool == Tool::Move) o->position += dpos;
-                else if (tool == Tool::Rotate) {
-                    o->position = old_pos + rotate(drot, o->position - old_pos);
-                    o->rotation = normalize(drot * o->rotation);
-                } else o->scale = mul(o->scale, ratio);
+            Mat4 inv_old, delta;
+            if (invert(old_world, &inv_old)) delta = m * inv_old;      // the change, in world space
+            // The rest of the selection follows: moved and rotated about the
+            // active object; scaled along their own axes.
+            Mat4 local_new, inv_parent;
+            bool ok = invert(scene.parent_world_matrix(*act), &inv_parent);
+            Vec3 tpos; Quat trot; Vec3 new_scale = old_scale;
+            if (ok) { local_new = inv_parent * m; decompose(local_new, &tpos, &trot, &new_scale); }
+            Vec3 ratio(old_scale.x != 0 ? new_scale.x / old_scale.x : 1, old_scale.y != 0 ? new_scale.y / old_scale.y : 1,
+                       old_scale.z != 0 ? new_scale.z / old_scale.z : 1);
+            for (int k = 0; k < n_others; k++) {
+                Object* o = scene.get(others[k]);
+                if (!o) continue;
+                if (tool == Tool::Scale) { o->scale = mul(o->scale, ratio); continue; }
+                Mat4 ip;
+                if (invert(scene.parent_world_matrix(*o), &ip)) o->set_matrix(ip * (delta * others_world[k]));
             }
+            // The active object last: its parent may have just moved with the selection.
+            if (invert(scene.parent_world_matrix(*act), &inv_parent)) act->set_matrix(inv_parent * m);
         }
         gizmo_active = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
     }
@@ -226,8 +296,10 @@ void Editor::panel_viewport() {
     if (hovered && !gizmo_active) {
         if (io.MouseWheel != 0) camera.distance = fclamp(camera.distance * (io.MouseWheel > 0 ? 0.85f : 1.18f), 0.5f, 400.0f);
     }
+    bool camera_drag = false;
     if (!gizmo_active && ImGui::IsItemActive()) {
         ImVec2 d = io.MouseDelta;
+        camera_drag = ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseDown(ImGuiMouseButton_Middle);
         bool pan = ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (ImGui::IsMouseDown(ImGuiMouseButton_Right) && io.KeyShift);
         if (pan) {
             float k = camera.distance * 0.0016f;
@@ -252,31 +324,240 @@ void Editor::panel_viewport() {
         else scene.select_only(hit);
     }
 
-    // Overlay: what is shown and the axes.
-    ImU32 dimc = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    char info[96];
-    snprintf(info, sizeof(info), "Perspective   %d object%s   %d selected", scene.count(), scene.count() == 1 ? "" : "s",
-             scene.selected_count());
-    dl->AddText(ImVec2(v.pos.x + 12, v.pos.y + 10), dimc, info);
-    {
-        ImVec2 o(v.pos.x + 40, end.y - 40);
-        struct Ax { Vec3 d; ImU32 c; const char* n; } axes[3] = {
-            { { 1, 0, 0 }, IM_COL32(230, 80, 80, 255), "X" }, { { 0, 1, 0 }, IM_COL32(110, 200, 90, 255), "Y" },
-            { { 0, 0, 1 }, IM_COL32(80, 140, 240, 255), "Z" } };
-        for (auto& a : axes) {
-            Vec3 d = transform_dir(v.view, a.d);
-            ImVec2 tip(o.x + d.x * 24, o.y - d.y * 24);
-            dl->AddLine(o, tip, a.c, 2.0f);
-            dl->AddText(ImVec2(tip.x - 3, tip.y - 7), a.c, a.n);
-        }
+    // Play mode: a frame around the view.
+    if (playing()) {
+        dl->AddRect(ImVec2(v.pos.x + 1, v.pos.y + 1), ImVec2(end.x - 1, end.y - 1), pal.play, 0, 0, 2.0f);
     }
     if (scene.count() == 0) {
         const char* hint = "Create > Cube to add an object, or drop a .mof file here";
         ImVec2 ts = ImGui::CalcTextSize(hint);
-        dl->AddText(ImVec2(v.pos.x + (v.size.x - ts.x) * 0.5f, v.pos.y + v.size.y * 0.5f), dimc, hint);
+        dl->AddText(ImVec2(v.pos.x + (v.size.x - ts.x) * 0.5f, v.pos.y + v.size.y * 0.5f), pal.text_dim, hint);
     }
     dl->PopClipRect();
+
+    // While the camera or an object is being dragged, the next frames render
+    // at full speed (no supersampling or shadows); the full image comes back
+    // when the drag ends (the setting is part of the hash).
+    view_interacting_ = (!gizmo_active && camera_drag) || ImGuizmo::IsUsing();
+
+    // Floating toolbars and the orientation gizmo, on top of the view.
+    viewport_overlays(v.pos.x, v.pos.y, v.size.x, v.size.y);
     ImGui::End();
+}
+
+// ---------------------------------------------------------------- overlays
+
+namespace {
+
+// A floating rounded panel at (x, y) of size (w, h), as a child window so
+// that clicks on it never reach the view below.
+bool begin_overlay(const char* id, float x, float y, float w, float h) {
+    const Palette& pal = ui_palette();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(x + 1, y + 2), ImVec2(x + w + 1, y + h + 3), pal.shadow, 8.0f);
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(pal.overlay));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(pal.border));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 2));
+    bool open = ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(2);
+    return open;
+}
+
+void overlay_separator(float h) {
+    ImGui::SameLine(0, 4);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + 4), ImVec2(p.x, p.y + h - 4), ui_palette().border, 1.0f);
+    ImGui::Dummy(ImVec2(1, h));
+    ImGui::SameLine(0, 4);
+}
+
+}  // namespace
+
+void Editor::viewport_overlays(float x, float y, float w, float h) {
+    float bs = ImGui::GetFrameHeight() + 2;
+    float pad = 4;
+    float margin = 10;
+
+    // Tools: select, move, rotate, scale | world/local | snap | grid.
+    float snap_w = 58 * settings.ui_scale;
+    float fs = ImGui::GetFontSize();
+    float space_w = ImGui::CalcTextSize("World").x + ImGui::CalcTextSize("Local").x + 2 * (fs + 18);
+    float tools_w = pad * 2 + bs * 4 + 2 * 3 + 9 + space_w + 9 + bs + 2 + snap_w + 9 + bs;
+    if (w > tools_w + 140 && begin_overlay("##tools", x + margin, y + margin, tools_w, bs + pad * 2)) {
+        struct ToolDef { Tool tool; Icon icon; const char* tip; const char* key; };
+        static const ToolDef tools[] = {
+            { Tool::Select, Icon::Pointer, "Select (Q)", "tool:select" }, { Tool::Move, Icon::Move, "Move (W)", "tool:move" },
+            { Tool::Rotate, Icon::Rotate, "Rotate (E)", "tool:rotate" }, { Tool::Scale, Icon::Scale, "Scale (R)", "tool:scale" },
+        };
+        for (int i = 0; i < 4; i++) {
+            if (i) ImGui::SameLine(0, 2);
+            if (icon_button(tools[i].icon, tools[i].tip, tool == tools[i].tool, bs)) tool = tools[i].tool;
+            track(tools[i].key);
+        }
+        overlay_separator(bs);
+        {
+            // World | Local: which axes the gizmo uses (X toggles). Scale is
+            // always along the object's own axes.
+            bool scale = tool == Tool::Scale;
+            bool local = gizmo_local || scale;
+            ImGui::BeginDisabled(scale);
+            for (int k = 0; k < 2; k++) {
+                if (k) ImGui::SameLine(0, 0);
+                const char* label = k ? "Local" : "World";
+                bool on = (k == 1) == local;
+                ImVec2 bp = ImGui::GetCursorScreenPos();
+                float fs = ImGui::GetFontSize();
+                float bw = ImGui::CalcTextSize(label).x + fs + 18;
+                if (ImGui::InvisibleButton(k ? "##local" : "##world", ImVec2(bw, bs))) gizmo_local = k == 1;
+                bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+                if (hov) ImGui::SetTooltip(scale ? "Scale always uses the object's own axes" :
+                                           (k ? "Move and rotate along the object's own axes (X)" : "Move and rotate along the world axes (X)"));
+                track(k ? "tool:local" : "tool:world");
+                ImDrawList* odl = ImGui::GetWindowDrawList();
+                if (on) odl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bs), pal.accent_soft, 4.0f);
+                else if (hov && !scale) odl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bs), pal.hover, 4.0f);
+                ImU32 col = on ? pal.accent_text : (scale ? pal.text_faint : pal.text_dim);
+                draw_icon(odl, k ? Icon::Local : Icon::World, ImVec2(bp.x + 7, bp.y + (bs - fs) * 0.5f), fs, col);
+                odl->AddText(ImVec2(bp.x + fs + 11, bp.y + (bs - fs) * 0.5f), on ? pal.text : col, label);
+            }
+            ImGui::EndDisabled();
+        }
+        overlay_separator(bs);
+        if (icon_button(Icon::Magnet, "Snap (hold Ctrl to invert)", settings.snap, bs)) settings.snap = !settings.snap;
+        track("tool:snap");
+        ImGui::SameLine(0, 2);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (bs - ImGui::GetFrameHeight()) * 0.5f);
+        ImGui::SetNextItemWidth(snap_w);
+        float* snapv = tool == Tool::Rotate ? &settings.snap_rotate : (tool == Tool::Scale ? &settings.snap_scale : &settings.snap_move);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(pal.frame));
+        ImGui::DragFloat("##snapv", snapv, tool == Tool::Rotate ? 1.0f : 0.05f, 0.01f, 360.0f, tool == Tool::Rotate ? "%.0f\xC2\xB0" : "%.2f");
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Snap step for the current tool");
+        overlay_separator(bs);
+        if (icon_button(Icon::Grid, "Grid (G)", settings.show_grid, bs)) settings.show_grid = !settings.show_grid;
+        track("tool:grid");
+        ImGui::EndChild();
+    }
+
+    // View menu: fixed views of the scene.
+    {
+        const char* label = "Perspective";
+        float lw = ImGui::CalcTextSize(label).x + ImGui::GetFontSize() + 22;
+        float vx = x + margin + tools_w + 8;
+        if (w > tools_w + lw + 140 && begin_overlay("##viewmenu", vx, y + margin, lw, bs + pad * 2)) {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##view", ImVec2(lw - pad * 2, bs))) ImGui::OpenPopup("##viewpopup");
+            track("view:menu");
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (ImGui::IsItemHovered()) dl->AddRectFilled(p, ImVec2(p.x + lw - pad * 2, p.y + bs), pal.hover, 4.0f);
+            float fs = ImGui::GetFontSize();
+            dl->AddText(ImVec2(p.x + 7, p.y + (bs - fs) * 0.5f), pal.text, label);
+            draw_icon(dl, Icon::ChevronDown, ImVec2(p.x + lw - pad * 2 - fs - 4, p.y + (bs - fs) * 0.5f), fs * 0.9f, pal.text_faint);
+            if (ImGui::BeginPopup("##viewpopup")) {
+                struct V { const char* n; float yaw, pitch; } views[] = {
+                    { "Top", camera.yaw, 89.9f }, { "Bottom", camera.yaw, -89.9f }, { "Front", 0, 0 },
+                    { "Back", 180, 0 }, { "Right", 90, 0 }, { "Left", -90, 0 },
+                };
+                for (const V& vw : views) {
+                    if (menu_item(vw.n)) set_view(vw.yaw, vw.pitch);
+                }
+                ImGui::Separator();
+                if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
+                if (menu_item("Reset view")) camera = Camera();
+                ImGui::EndPopup();
+            }
+            ImGui::EndChild();
+        }
+    }
+
+    // Orientation gizmo in the top-right corner.
+    float gsz = 84 * settings.ui_scale;
+    if (w > gsz * 3 && h > gsz * 2) orientation_gizmo(x + w - gsz - margin * 0.5f, y + margin * 0.5f, gsz);
+}
+
+void Editor::orientation_gizmo(float x, float y, float size) {
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    bool open = ImGui::BeginChild("##orient", ImVec2(size, size), ImGuiChildFlags_None,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar();
+    if (!open) { ImGui::EndChild(); return; }
+    ImVec2 c(x + size * 0.5f, y + size * 0.5f);
+    float r = size * 0.5f - 11;         // axis length
+    float br = 8.5f * settings.ui_scale; // bubble radius
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::InvisibleButton("##orient_btn", ImVec2(size, size), ImGuiButtonFlags_MouseButtonLeft);
+    bool hovered = ImGui::IsItemHovered();
+    bool active = ImGui::IsItemActive();
+    if (active) view_interacting_ = true;
+    ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered || active) dl->AddCircleFilled(c, size * 0.5f - 1, pal.overlay, 32);
+
+    // The six axis ends in view space, drawn back to front.
+    Mat4 view = camera.view();
+    struct End { Vec3 d; int axis; bool positive; ImVec2 p; float depth; };
+    End ends[6];
+    for (int i = 0; i < 6; i++) {
+        Vec3 dir(0, 0, 0);
+        (&dir.x)[i / 2] = (i & 1) ? -1.0f : 1.0f;
+        Vec3 d = transform_dir(view, dir);
+        ends[i] = { dir, i / 2, (i & 1) == 0, ImVec2(c.x + d.x * r, c.y - d.y * r), d.z };
+    }
+    for (int i = 0; i < 6; i++)
+        for (int j = i + 1; j < 6; j++)
+            if (ends[j].depth < ends[i].depth) { End t = ends[i]; ends[i] = ends[j]; ends[j] = t; }
+    static const char* names[3] = { "X", "Y", "Z" };
+    static const char* keys[6] = { "axis:+x", "axis:-x", "axis:+y", "axis:-y", "axis:+z", "axis:-z" };
+    int hit = -1;
+    for (int i = 5; i >= 0 && hovered; i--) {      // front-most first
+        float dx = io.MousePos.x - ends[i].p.x, dy = io.MousePos.y - ends[i].p.y;
+        if (dx * dx + dy * dy <= br * br) { hit = i; break; }
+    }
+    for (int i = 0; i < 6; i++) {
+        const End& e = ends[i];
+        ImU32 col = pal.axis[e.axis];
+        if (e.positive) dl->AddLine(c, e.p, col, 2.0f);
+        if (e.positive) {
+            dl->AddCircleFilled(e.p, br, col, 20);
+            ImVec2 ts = ImGui::CalcTextSize(names[e.axis]);
+            dl->AddText(ImVec2(e.p.x - ts.x * 0.5f, e.p.y - ts.y * 0.5f), IM_COL32(16, 18, 21, 255), names[e.axis]);
+        } else {
+            dl->AddCircleFilled(e.p, br * 0.8f, (col & 0x00FFFFFF) | 0x50000000, 20);
+            dl->AddCircle(e.p, br * 0.8f, col, 20, 1.5f);
+        }
+        if (i == hit) dl->AddCircle(e.p, br + 2, IM_COL32(255, 255, 255, 220), 20, 1.5f);
+        int k = e.axis * 2 + (e.positive ? 0 : 1);
+        track_rect(keys[k], e.p.x - br, e.p.y - br, br * 2, br * 2);
+    }
+    if (hit >= 0) {
+        const End& e = ends[hit];
+        static const char* tips[6] = { "View from +X (right)", "View from -X (left)", "View from +Y (top)", "View from -Y (bottom)",
+                                       "View from +Z (front)", "View from -Z (back)" };
+        ImGui::SetTooltip("%s", tips[e.axis * 2 + (e.positive ? 0 : 1)]);
+    }
+    // A click on an axis looks along it; dragging the gizmo orbits.
+    if (ImGui::IsItemDeactivated() && hit >= 0) {
+        ImVec2 dd = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0);
+        if (dd.x * dd.x + dd.y * dd.y < 16) {
+            const End& e = ends[hit];
+            float s = e.positive ? 1.0f : -1.0f;
+            if (e.axis == 0) set_view(90 * s, 0);
+            else if (e.axis == 1) set_view(camera.yaw, 89.9f * s);
+            else set_view(e.positive ? 0 : 180, 0);
+        }
+    }
+    if (active && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
+        camera.yaw -= io.MouseDelta.x * 0.4f;
+        camera.pitch = fclamp(camera.pitch + io.MouseDelta.y * 0.4f, -89.9f, 89.9f);
+    }
+    ImGui::EndChild();
 }
 
 }  // namespace fe

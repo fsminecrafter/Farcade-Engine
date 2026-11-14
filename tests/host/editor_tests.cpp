@@ -7,6 +7,7 @@
 #include "imgui/imgui_internal.h"
 #include "imguizmo/ImGuizmo.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -96,6 +97,15 @@ static bool to_screen(const Vec3& p, float* sx, float* sy) {
 static void object_screen(ObjectId id, float* sx, float* sy) {
     Object* o = E->scene.get(id);
     to_screen(o->position, sx, sy);
+}
+
+static const Editor::UiRect* ui(const char* key) { return E->find_rect(key); }
+
+static bool click_ui(const char* key, int b = 0) {
+    const Editor::UiRect* r = ui(key);
+    if (!r) return false;
+    click(r->x + r->w * 0.5f, r->y + r->h * 0.5f, b);
+    return true;
 }
 
 static const Editor::TileRect* tile(const char* name) {
@@ -202,16 +212,38 @@ int main() {
     // ---- hierarchy: click and shift-click rows
     ImGuiWindow* hw = ImGui::FindWindowByName("Hierarchy");
     CHECK(hw != nullptr, "hierarchy window exists");
-    if (hw) {
-        float row_h = ImGui::GetTextLineHeight() + 8 + ImGui::GetStyle().ItemSpacing.y;
-        float x = hw->InnerRect.Min.x + 40;
-        float y0 = hw->InnerRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y * 2 + 8;
+    {
         ed.scene.clear_selection();
         frames(1);
-        click(x, y0 + row_h * 0.5f);
-        CHECK(ed.scene.selected_count() == 1 && ed.scene.is_selected(a), "clicking the first row selects A");
-        shift_click(x, y0 + row_h * 1.5f);
-        CHECK(ed.scene.selected_count() == 2, "shift-clicking the second row adds B (count %d)", ed.scene.selected_count());
+        char ka[32], kb[32];
+        snprintf(ka, sizeof(ka), "hier:%u", a);
+        snprintf(kb, sizeof(kb), "hier:%u", b);
+        const Editor::UiRect* ra = ui(ka);
+        const Editor::UiRect* rb = ui(kb);
+        CHECK(ra && rb, "hierarchy rows for A and B are drawn");
+        if (ra && rb) {
+            float x = ra->x + 40, ya = ra->y + ra->h * 0.5f, yb = rb->y + rb->h * 0.5f;
+            click(x, ya);
+            CHECK(ed.scene.selected_count() == 1 && ed.scene.is_selected(a), "clicking the first row selects A");
+            shift_click(x, yb);
+            CHECK(ed.scene.selected_count() == 2, "shift-clicking the second row adds B (count %d)", ed.scene.selected_count());
+        }
+        // The eye at the end of a row hides the object without selecting it.
+        ed.scene.clear_selection();
+        frames(1);
+        char ke[32];
+        snprintf(ke, sizeof(ke), "eye:%u", b);
+        const Editor::UiRect* re = ui(ke);
+        CHECK(re != nullptr, "B's row has a visibility button");
+        if (re) {
+            float ex = re->x + re->w * 0.5f, ey = re->y + re->h * 0.5f;
+            ev_move(ex, ey); frames(2);
+            click(ex, ey);
+            CHECK(!ed.scene.get(b)->visible, "the eye hides B");
+            CHECK(ed.scene.selected_count() == 0, "and does not select it (count %d)", ed.scene.selected_count());
+            click(ex, ey);
+            CHECK(ed.scene.get(b)->visible, "a second click shows B again");
+        }
     }
 
     // ---- files: double-click opens in the configured editor
@@ -231,11 +263,10 @@ int main() {
         click(png->x + png->w * 0.5f, png->y + png->h * 0.5f, 1);
         ImGuiContext& g = *ImGui::GetCurrentContext();
         CHECK(g.OpenPopupStack.Size == 1, "right-click opens a menu (%d)", g.OpenPopupStack.Size);
-        if (g.OpenPopupStack.Size == 1 && g.OpenPopupStack[0].Window) {
-            ImGuiWindow* pw = g.OpenPopupStack[0].Window;
-            float lh = ImGui::GetTextLineHeight(), sp = ImGui::GetStyle().ItemSpacing.y;
-            float iy = pw->Pos.y + ImGui::GetStyle().WindowPadding.y + (lh + sp) * 1 + lh * 0.5f;
-            click(pw->Pos.x + 40, iy);
+        const Editor::UiRect* item = ui("menu:Open in file manager");
+        CHECK(item != nullptr, "the menu has \"Open in file manager\"");
+        if (item) {
+            click(item->x + 30, item->y + item->h * 0.5f);
             CHECK(strstr(platform::headless_last_reveal(), "crate.png") != nullptr, "Open in file manager asks for crate.png (\"%s\")",
                   platform::headless_last_reveal());
         }
@@ -260,6 +291,392 @@ int main() {
         CHECK(ed.scene.count() == before + 1, "a .mof dropped on the ground makes a new object (%d -> %d)", before, ed.scene.count());
         Object* last = &ed.scene.at(ed.scene.count() - 1);
         CHECK(last->mesh == MeshKind::Model && strstr(last->model_path, "ship.mof"), "the new object uses ship.mof");
+    }
+
+    // ---- the floating tool pill switches tools
+    ed.tool = Tool::Select;
+    frames(2);
+    CHECK(click_ui("tool:rotate"), "the tool pill has a rotate button");
+    CHECK(ed.tool == Tool::Rotate, "clicking it selects the rotate tool");
+    CHECK(click_ui("tool:move") && ed.tool == Tool::Move, "and the move button the move tool");
+    {
+        bool grid = ed.settings.show_grid;
+        click_ui("tool:grid");
+        CHECK(ed.settings.show_grid != grid, "the grid button toggles the grid");
+        click_ui("tool:grid");
+    }
+    // World | Local; a click on the pill does not reach the view below.
+    ed.scene.select_only(a);
+    ed.gizmo_local = false;
+    frames(1);
+    CHECK(click_ui("tool:local") && ed.gizmo_local, "the Local button switches the gizmo to local axes");
+    CHECK(ed.scene.selected_count() == 1, "the pill eats its clicks (selection kept)");
+    CHECK(click_ui("tool:world") && !ed.gizmo_local, "the World button switches back");
+    ev_key(platform::KEY_A + ('x' - 'a'), true); frames(1); ev_key(platform::KEY_A + ('x' - 'a'), false); frames(1);
+    CHECK(ed.gizmo_local, "X toggles local axes");
+    ev_key(platform::KEY_A + ('x' - 'a'), true); frames(1); ev_key(platform::KEY_A + ('x' - 'a'), false); frames(1);
+    CHECK(!ed.gizmo_local, "X again goes back to world axes");
+
+    // ---- local gizmo: an object turned 45 degrees about y moves along its own x
+    {
+        ed.tool = Tool::Move;
+        ed.settings.snap = false;
+        Object* oa2 = ed.scene.get(a);
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        // Turned so that its x points towards the camera (ImGuizmo flips an
+        // axis that points away to its other side).
+        oa2->rotation = Quat::euler_deg(Vec3(0, -45, 0));
+        ed.scene.select_only(a);
+        ed.gizmo_local = true;
+        frames(2);
+        Vec3 local_x = rotate(oa2->rotation, Vec3(1, 0, 0));     // diagonal in x and z
+        Vec3 p0 = oa2->position;
+        float cx2, cy2, ax2, ay2;
+        to_screen(p0, &cx2, &cy2);
+        to_screen(p0 + local_x * 0.6f, &ax2, &ay2);
+        float gx = cx2 + (ax2 - cx2) * 0.9f, gy = cy2 + (ay2 - cy2) * 0.9f;
+        float dxs = ax2 - cx2, dys = ay2 - cy2;
+        float len = sqrtf(dxs * dxs + dys * dys);
+        drag(gx, gy, gx + dxs / len * 60, gy + dys / len * 60);
+        Vec3 moved = oa2->position - p0;
+        float ml = length(moved);
+        float along = ml > 0 ? dot(moved, local_x) / ml : 0;
+        CHECK(ml > 0.15f && along > 0.999f && fabsf(moved.y) < 1e-3f,
+              "with local axes the X arrow moves A along its own x (moved %.3f, %.3f, %.3f; along %.4f)", moved.x, moved.y, moved.z, along);
+        ed.gizmo_local = false;
+        oa2->rotation = Quat();
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        frames(2);
+    }
+
+    // ---- parenting: the tree, drag to parent, world transforms
+    {
+        ed.tool = Tool::Select;
+        ed.scene.clear_selection();
+        Object* oa2 = ed.scene.get(a);
+        Object* ob2 = ed.scene.get(b);
+        oa2->position = Vec3(-1.5f, 0.5f, 0);
+        ob2->position = Vec3(1.5f, 0.5f, 0);
+        frames(2);
+        char ka[32], kb[32];
+        snprintf(ka, sizeof(ka), "hier:%u", a);
+        snprintf(kb, sizeof(kb), "hier:%u", b);
+        const Editor::UiRect* rb = ui(kb);
+        const Editor::UiRect* ra = ui(ka);
+        CHECK(ra && rb, "rows for A and B");
+        if (ra && rb) {
+            // Drag B's row onto A's row: B becomes A's child, staying where it is.
+            drag(rb->x + 60, rb->y + rb->h * 0.5f, ra->x + 60, ra->y + ra->h * 0.5f, 0, 10);
+            CHECK(ob2->parent == a, "dragging B's row onto A makes B a child of A (parent %u)", ob2->parent);
+            Mat4 wb = ed.scene.world_matrix(*ob2);
+            CHECK(fabsf(wb.m[12] - 1.5f) < 1e-3f && fabsf(wb.m[14]) < 1e-3f, "B stays where it was in the world (%.3f, %.3f)", wb.m[12], wb.m[14]);
+            CHECK(fabsf(ob2->position.x - 3.0f) < 1e-3f, "and its position is now relative to A (%.3f)", ob2->position.x);
+            frames(2);
+            ra = ui(ka);
+            rb = ui(kb);
+            CHECK(ra && rb && rb->y > ra->y, "B's row is under A's");
+            char kf[32];
+            snprintf(kf, sizeof(kf), "fold:%u", a);
+            const Editor::UiRect* rf = ui(kf);
+            CHECK(rf != nullptr, "A has a fold arrow");
+            // Moving the parent moves the child.
+            oa2->position.y += 1.0f;
+            frames(1);
+            wb = ed.scene.world_matrix(*ob2);
+            CHECK(fabsf(wb.m[13] - 1.5f) < 1e-3f, "moving A moves B (world y %.3f)", wb.m[13]);
+            oa2->position.y -= 1.0f;
+            // Clicking where B is in the viewport picks B through its parent.
+            frames(2);
+            float sx2, sy2;
+            to_screen(Vec3(1.5f, 0.5f, 0), &sx2, &sy2);
+            click(sx2, sy2);
+            CHECK(ed.scene.is_selected(b) && ed.scene.selected_count() == 1, "B can be picked in the viewport");
+            // Folding hides the child row.
+            if (rf) {
+                click(rf->x + rf->w * 0.5f, rf->y + rf->h * 0.5f);
+                CHECK(!oa2->expanded && ui(kb) == nullptr, "the fold arrow hides A's children");
+                click(rf->x + rf->w * 0.5f, rf->y + rf->h * 0.5f);
+                CHECK(oa2->expanded && ui(kb) != nullptr, "and shows them again");
+            }
+            // A cannot go under its own child.
+            CHECK(!ed.scene.set_parent(a, b), "a parent cannot become its child's child");
+            // Hiding A hides B in the viewport (it is not picked).
+            oa2->visible = false;
+            frames(2);
+            ed.scene.clear_selection();
+            click(sx2, sy2);
+            CHECK(ed.scene.selected_count() == 0, "hiding A hides its child B");
+            oa2->visible = true;
+            // Dropping B's row on "Scene" takes it out again.
+            frames(2);
+            rb = ui(kb);
+            const Editor::UiRect* rr = ui("hier:root");
+            if (rb && rr) drag(rb->x + 80, rb->y + rb->h * 0.5f, rr->x + 60, rr->y + rr->h * 0.5f, 0, 10);
+            CHECK(ob2->parent == kNoObject, "dropping B on Scene moves it to the top (parent %u)", ob2->parent);
+            CHECK(fabsf(ob2->position.x - 1.5f) < 1e-3f, "keeping its world position (%.3f)", ob2->position.x);
+            // Deleting a parent deletes its children; duplicating copies them.
+            ed.scene.set_parent(b, a);
+            ed.scene.select_only(a);
+            int before = ed.scene.count();
+            ed.duplicate_selection();
+            CHECK(ed.scene.count() == before + 2, "duplicating A copies its child too (%d -> %d)", before, ed.scene.count());
+            ObjectId a_copy = ed.scene.active();
+            int kids = 0;
+            for (int i = 0; i < ed.scene.count(); i++) if (ed.scene.at(i).parent == a_copy) kids++;
+            CHECK(kids == 1, "the copy has one child (%d)", kids);
+            ed.delete_selection();
+            CHECK(ed.scene.count() == before, "deleting the copy deletes its child (%d)", ed.scene.count());
+            ed.scene.set_parent(b, kNoObject);
+            ed.scene.clear_selection();
+            frames(2);
+        }
+    }
+
+    // ---- orientation gizmo: clicking an axis looks along it
+    frames(2);
+    CHECK(ui("axis:+y") && ui("axis:+x") && ui("axis:-z"), "the orientation gizmo shows its axes");
+    {
+        const Editor::UiRect* r = ui("axis:+x");
+        if (r) {
+            float gx = r->x + r->w * 0.5f, gy = r->y + r->h * 0.5f;
+            ev_move(gx, gy); frames(2);
+            click(gx, gy);
+            CHECK(ed.camera.yaw > 89.0f && ed.camera.yaw < 91.0f && ed.camera.pitch > -1 && ed.camera.pitch < 1,
+                  "clicking +X views from the right (yaw %.1f pitch %.1f)", ed.camera.yaw, ed.camera.pitch);
+        }
+        frames(1);
+        r = ui("axis:+y");
+        if (r) {
+            float gx = r->x + r->w * 0.5f, gy = r->y + r->h * 0.5f;
+            ev_move(gx, gy); frames(2);
+            click(gx, gy);
+            CHECK(ed.camera.pitch > 89.0f, "clicking +Y views from the top (pitch %.1f)", ed.camera.pitch);
+        }
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 20;
+        frames(2);
+    }
+
+    // ---- view menu
+    if (click_ui("view:menu")) {
+        frames(1);
+        CHECK(click_ui("menu:Right"), "the view menu lists Right");
+        CHECK(ed.camera.yaw > 89.0f && ed.camera.yaw < 91.0f, "View > Right looks from +X (yaw %.1f)", ed.camera.yaw);
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 20;
+        frames(2);
+    } else {
+        CHECK(false, "the viewport has a view menu");
+    }
+
+    // ---- renderer chip: display modes
+    if (click_ui("run:renderer")) {
+        frames(1);
+        CHECK(click_ui("menu:Wireframe") && ed.view_mode == ViewMode::Wireframe, "the renderer menu switches to wireframe");
+        frames(2);
+        CHECK(ed.view_triangles > 0, "wireframe still draws the scene (%d triangles)", ed.view_triangles);
+        click(ed.view_rect[0] + 300, ed.view_rect[1] + 10);    // closes the popup (lands on the view: clears selection)
+        ed.view_mode = ViewMode::Lit;
+        frames(2);
+    } else {
+        CHECK(false, "the top bar has a renderer chip");
+    }
+
+    // ---- play mode: Play saves the scene, Stop restores it exactly
+    {
+        ed.scene.select_only(a);
+        ed.scene.toggle(b);
+        int count0 = ed.scene.count();
+        Vec3 pos_a = ed.scene.get(a)->position;
+        ObjectId active0 = ed.scene.active();
+        frames(1);
+        CHECK(click_ui("run:play") && ed.playing(), "Play starts play mode");
+        frames(30);
+        CHECK(ed.play_time > 0.3, "play time runs (%.2f s)", ed.play_time);
+        // Change things while playing.
+        ed.scene.get(a)->position = Vec3(5, 5, 5);
+        ed.delete_selection();
+        ObjectId c = ed.create_object("C", MeshKind::Sphere, Vec3(0, 1, 0));
+        frames(2);
+        CHECK(ed.scene.count() == count0 - 1, "objects can change while playing (%d)", ed.scene.count());
+        CHECK(click_ui("run:stop") && !ed.playing(), "Stop ends play mode");
+        CHECK(ed.scene.count() == count0, "Stop brings back the deleted objects (%d)", ed.scene.count());
+        CHECK(ed.scene.get(a) && ed.scene.get(a)->position.x == pos_a.x && ed.scene.get(a)->position.y == pos_a.y,
+              "and A's position");
+        CHECK(ed.scene.get(c) == nullptr, "and removes what was made while playing");
+        CHECK(ed.scene.selected_count() == 2 && ed.scene.active() == active0, "and the selection (count %d, active %u)",
+              ed.scene.selected_count(), ed.scene.active());
+        ObjectId d = ed.create_object("D", MeshKind::Cube, Vec3(0, 0.5f, 3));
+        CHECK(d != c && d > c, "ids are not reused after Stop (%u after %u)", d, c);
+        ed.scene.remove(d);
+        // F5 toggles too.
+        ev_key(platform::KEY_F5, true); frames(1); ev_key(platform::KEY_F5, false); frames(1);
+        CHECK(ed.playing(), "F5 starts play mode");
+        ev_key(platform::KEY_F5, true); frames(1); ev_key(platform::KEY_F5, false); frames(1);
+        CHECK(!ed.playing(), "F5 again stops it");
+    }
+
+    // ---- console chips filter by level
+    {
+        ImGuiWindow* cw = ImGui::FindWindowByName("Console");
+        if (cw && cw->DockNode && cw->DockNode->TabBar) {
+            ImGuiTabItem* t = ImGui::TabBarFindTabByID(cw->DockNode->TabBar, cw->TabId);
+            if (t) click(cw->DockNode->TabBar->BarRect.Min.x + t->Offset + t->Width * 0.5f, cw->DockNode->TabBar->BarRect.GetCenter().y);
+        }
+        frames(2);
+        CHECK(ui("console:warnings") != nullptr, "the console shows level chips");
+        CHECK(click_ui("console:clear") && ed.log_count == 0, "the trash button clears the console");
+    }
+
+    // ---- scripts: declared inputs (parsed without running Lua)
+    {
+        const char* src =
+            "-- A door.\n"
+            "-- @prop speed  number = 5  range 0 20   -- how fast\n"
+            "--- @prop label text = \"Front door\"\n"
+            "-- @prop note   text = plain words here\n"
+            "-- @prop open   toggle = true\n"
+            "-- @prop mode   list(closed, open, locked) = locked\n"
+            "-- @prop target object\n"
+            "-- @prop big    number = 50 range 0 10\n"
+            "-- @prop bad    vector = 1\n"
+            "-- @prop worse  list() \n"
+            "-- @prop speed  number = 1\n"
+            "local x = 1 -- @prop not_a_decl number\n";
+        ScriptProp props[kMaxProps];
+        int bad = 0;
+        int n = parse_script_props(src, (uint32_t)strlen(src), props, kMaxProps, &bad);
+        CHECK(n == 7, "7 inputs declared (got %d)", n);
+        CHECK(bad == 3, "3 bad lines: unknown type, empty list, a repeated name (got %d)", bad);
+        if (n == 7) {
+            CHECK(!strcmp(props[0].name, "speed") && props[0].type == PropType::Number && props[0].number == 5 && props[0].min == 0 && props[0].max == 20,
+                  "number with a range (%s %g [%g %g])", props[0].name, props[0].number, props[0].min, props[0].max);
+            CHECK(props[1].type == PropType::Text && !strcmp(props[1].text, "Front door"), "quoted text (\"%s\")", props[1].text);
+            CHECK(!strcmp(props[2].text, "plain words here"), "bare text is the rest of the line (\"%s\")", props[2].text);
+            CHECK(props[3].type == PropType::Toggle && props[3].toggle, "toggle = true");
+            CHECK(props[4].type == PropType::List && props[4].choice_count == 3 && props[4].choice == 2 && !strcmp(props[4].choices[2], "locked"),
+                  "list with a default choice (%d choices, choice %d)", props[4].choice_count, props[4].choice);
+            CHECK(props[5].type == PropType::Object && props[5].object == 0, "object link, empty");
+            CHECK(props[6].number == 10, "a default outside the range is clamped (%g)", props[6].number);
+        }
+
+        // Merging after the file changed: kept values, new defaults, dropped inputs.
+        ScriptSlot slot;
+        merge_script_props(&slot, props, n);
+        slot.prop("speed")->number = 12;
+        slot.prop("mode")->choice = 1;                 // "open"
+        snprintf(slot.prop("label")->text, sizeof(slot.prop("label")->text), "%s", "Back door");
+        const char* src2 =
+            "-- @prop mode  list(locked, open) = locked\n"
+            "-- @prop speed number = 1 range 0 10\n"
+            "-- @prop label toggle = false\n"
+            "-- @prop extra number = 3\n";
+        ScriptProp p2[kMaxProps];
+        int n2 = parse_script_props(src2, (uint32_t)strlen(src2), p2, kMaxProps);
+        merge_script_props(&slot, p2, n2);
+        CHECK(slot.prop_count == 4 && !slot.prop("note") && !slot.prop("target"), "inputs no longer declared are dropped (%d)", slot.prop_count);
+        CHECK(slot.prop("speed")->number == 10, "a kept number is clamped to the new range (%g)", slot.prop("speed")->number);
+        CHECK(slot.prop("mode")->choice == 1, "a list choice is found again by its text (%d)", slot.prop("mode")->choice);
+        CHECK(slot.prop("label")->type == PropType::Toggle && !slot.prop("label")->toggle, "an input whose type changed starts from its default");
+        CHECK(slot.prop("extra")->number == 3, "a new input gets its default");
+        CHECK(!strcmp(slot.props[0].name, "mode"), "inputs follow the file's order");
+    }
+
+    // ---- scripts on objects: several per object, linked to each other
+    {
+        const char* door1 = "-- @prop speed number = 2 range 0 5\n-- @prop locked toggle = true\n";
+        platform::write_file("build/host/test-project/door.lua", door1, strlen(door1));
+        const char* sw = "-- @prop door object\n-- @prop mode list(press, hold) = press\n-- @prop label text = \"Switch\"\n";
+        platform::write_file("build/host/test-project/switch.lua", sw, strlen(sw));
+        ObjectId door = ed.create_object("Door", MeshKind::Cube, Vec3(0, 0.5f, -3));
+        ObjectId lever = ed.create_object("Lever", MeshKind::Cylinder, Vec3(1, 0.5f, -3));
+        ObjectId knob = ed.create_child("Knob", MeshKind::Sphere, lever);
+        ed.apply_file_to_object("build/host/test-project/door.lua", door);
+        ed.apply_file_to_object("build/host/test-project/player.lua", door);
+        Object* od = ed.scene.get(door);
+        CHECK(od->script_count == 2, "dropping a second script adds it (count %d)", od->script_count);
+        CHECK(od->scripts[0].prop_count == 2 && od->scripts[0].prop("locked")->toggle, "door.lua's inputs are read when it is added");
+        CHECK(od->scripts[1].prop_count == 0 && !od->scripts[1].missing, "a script without @prop lines has no inputs");
+        CHECK(ed.scene.find_script(door, "door") == &od->scripts[0] && ed.scene.find_script(door, "door.lua") == &od->scripts[0],
+              "find_script by name, with or without the extension");
+        CHECK(ed.scene.find_script(door, "do") == nullptr && ed.scene.find_script(door, "switch") == nullptr, "find_script: no partial or absent names");
+
+        ed.add_script(lever, "build/host/test-project/switch.lua");
+        ed.add_script(knob, "build/host/test-project/switch.lua");
+        ScriptProp* link = ed.scene.script_prop(lever, "switch", "door");
+        CHECK(link && link->type == PropType::Object, "the lever's switch has a door link");
+        if (link) link->object = door;
+        // The knob's switch links to the lever, inside the tree that is duplicated below.
+        if (ScriptProp* k = ed.scene.script_prop(knob, "switch", "door")) k->object = lever;
+        // What a switch script does at run time: follow the link to the door's script and use its inputs.
+        ScriptProp* through = link ? ed.scene.script_prop(link->object, "door", "locked") : nullptr;
+        CHECK(through && through->toggle, "a script reaches another object's script through a link");
+        CHECK(ed.scene.links_to(door) == 1 && ed.scene.links_to(lever) == 1, "links_to counts links (%d, %d)", ed.scene.links_to(door), ed.scene.links_to(lever));
+
+        // Duplicating the lever (with its knob): the copy's links inside the
+        // copied tree go to the copies, links outside stay.
+        ed.scene.select_only(lever);
+        int before = ed.scene.count();
+        ed.duplicate_selection();
+        CHECK(ed.scene.count() == before + 2, "lever and knob duplicated");
+        ObjectId lever2 = ed.scene.active();
+        ObjectId knob2 = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) if (ed.scene.at(i).parent == lever2) knob2 = ed.scene.at(i).id;
+        ScriptProp* l2 = ed.scene.script_prop(lever2, "switch", "door");
+        ScriptProp* k2 = ed.scene.script_prop(knob2, "switch", "door");
+        CHECK(l2 && l2->object == door, "a link out of the copied tree stays (%u)", l2 ? l2->object : 0);
+        CHECK(k2 && k2->object == lever2, "a link inside the copied tree goes to the copy (%u, copy %u)", k2 ? k2->object : 0, lever2);
+
+        // Play keeps editor values and puts back what play changed.
+        ed.scene.script_prop(door, "door", "speed")->number = 4;
+        ed.play();
+        ed.scene.script_prop(door, "door", "speed")->number = 1;
+        ed.stop();
+        CHECK(ed.scene.script_prop(door, "door", "speed")->number == 4, "Stop puts script inputs back (%g)", ed.scene.script_prop(door, "door", "speed")->number);
+
+        // The file changes: Reload keeps the value and adds the new input.
+        const char* door2 = "-- @prop speed number = 2 range 0 5\n-- @prop locked toggle = true\n-- @prop sound text = creak\n";
+        platform::write_file("build/host/test-project/door.lua", door2, strlen(door2));
+        CHECK(ed.reload_script(door, 0), "reload reads the file again");
+        od = ed.scene.get(door);
+        CHECK(od->scripts[0].prop_count == 3 && od->scripts[0].prop("speed")->number == 4 && !strcmp(od->scripts[0].prop("sound")->text, "creak"),
+              "reload keeps values and adds new inputs");
+
+        // Deleting the door clears the links to it.
+        ed.scene.select_only(door);
+        ed.delete_selection();
+        CHECK(ed.scene.script_prop(lever, "switch", "door")->object == kNoObject && ed.scene.links_to(door) == 0, "links to a deleted object are cleared");
+
+        // ---- the Inspector: one section per script, inputs, add and remove
+        ed.scene.select_only(lever);
+        // Scroll the Inspector down so the scripts are in view.
+        frames(2);
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
+        frames(2);
+        if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
+        frames(2);
+        CHECK(ui("script:0") && ui("script:0:mode") && ui("script:0:label") && ui("script:0:door"), "the Inspector shows the switch and its inputs");
+        CHECK(ui("inspector:add_script") != nullptr, "an Add script button");
+        if (ui("inspector:add_script")) {
+            click_ui("inspector:add_script");
+            frames(2);
+            CHECK(ui("addscript:door.lua") != nullptr, "Add script lists the project's scripts");
+            if (ui("addscript:door.lua")) click_ui("addscript:door.lua");
+            Object* ol = ed.scene.get(lever);
+            CHECK(ol->script_count == 2 && ol->scripts[1].name_is("door") && ol->scripts[1].prop_count == 3, "picking one adds it with its inputs (count %d)",
+                  ol->script_count);
+            if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
+            CHECK(click_ui("script:1:up") && ed.scene.get(lever)->scripts[0].name_is("door"), "the up button moves a script earlier");
+            if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
+            CHECK(click_ui("script:0:remove") && ed.scene.get(lever)->script_count == 1 && ed.scene.get(lever)->scripts[0].name_is("switch"),
+                  "the trash button removes a script");
+        }
+        // Filling the slots: at most kMaxScripts.
+        for (int i = 0; i < kMaxScripts + 2; i++) ed.scene.add_script(knob, "build/host/test-project/player.lua");
+        CHECK(ed.scene.get(knob)->script_count == kMaxScripts, "an object holds at most %d scripts", kMaxScripts);
+        ed.scene.select_only(kNoObject);
+        frames(2);
     }
 
     // ---- panels can be dragged out of the dock

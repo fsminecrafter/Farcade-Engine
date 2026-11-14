@@ -15,8 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 using namespace fe;
+
+static double real_seconds() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 
 static void touch(const char* dir, const char* name, const char* text) {
     char path[512];
@@ -26,8 +33,8 @@ static void touch(const char* dir, const char* name, const char* text) {
 
 static void demo_scene(Editor& ed) {
     ObjectId ground = ed.create_object("Ground", MeshKind::Plane, Vec3(0, 0, 0));
-    ed.scene.get(ground)->scale = Vec3(8, 1, 8);
-    ed.scene.get(ground)->color = Vec3(0.42f, 0.45f, 0.50f);
+    ed.scene.get(ground)->scale = Vec3(5, 1, 5);
+    ed.scene.get(ground)->color = Vec3(0.30f, 0.32f, 0.36f);
     ObjectId cube = ed.create_object("Crate", MeshKind::Cube, Vec3(-1.6f, 0.5f, 0.4f));
     ed.scene.get(cube)->color = Vec3(0.86f, 0.58f, 0.32f);
     ed.scene.get(cube)->rotation = Quat::euler_deg(Vec3(0, 20, 0));
@@ -40,8 +47,22 @@ static void demo_scene(Editor& ed) {
     ObjectId small = ed.create_object("Crate", MeshKind::Cube, Vec3(-2.4f, 0.3f, -1.6f));
     ed.scene.get(small)->scale = Vec3(0.6f, 0.6f, 0.6f);
     ed.scene.get(small)->color = Vec3(0.55f, 0.75f, 0.45f);
+    // A small tree: the green crate sits on the big one, as its child, and
+    // the lamp is a child of the pillar.
+    ed.scene.set_parent(small, cube);
+    ObjectId lamp = ed.create_child("Lamp", MeshKind::Sphere, pillar);
+    ed.scene.get(lamp)->position = Vec3(0, 0.65f, 0);
+    ed.scene.get(lamp)->scale = Vec3(0.6f, 0.15f, 0.6f);
+    ed.scene.get(lamp)->color = Vec3(0.98f, 0.85f, 0.45f);
     snprintf(ed.scene.get(cube)->texture_path, 256, "%s", "assets/crate.png");
-    snprintf(ed.scene.get(sphere)->script_path, 256, "%s", "scripts/ball.lua");
+    // Two scripts on the ball, with inputs set in the editor; the lamp's
+    // script links to the ball (its "follow" input) to reach its scripts.
+    ed.add_script(sphere, "scripts/ball.lua");
+    ed.add_script(sphere, "scripts/hover.lua");
+    if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "speed")) p->number = 7.5f;
+    if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "mode")) p->choice = 1;
+    ed.add_script(lamp, "scripts/lamp.lua");
+    if (ScriptProp* p = ed.scene.script_prop(lamp, "lamp", "follow")) p->object = sphere;
     // Crate selected, then shift-click on the ball: two selected, the ball active.
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
@@ -67,7 +88,29 @@ int main(int argc, char** argv) {
     snprintf(sub, sizeof(sub), "%s/scenes", project); mkdir(sub, 0755);
     touch(project, "project.fe", "name = \"Demo\"\n");
     touch(project, "crate.mof", "MOF");
-    touch(project, "ball.lua", "function on_update(dt) end\n");
+    touch(project, "scripts/ball.lua",
+          "-- Rolls the ball around.\n"
+          "-- @prop speed  number = 5  range 0 20\n"
+          "-- @prop mode   list(roll, bounce, idle) = roll\n"
+          "-- @prop label  text = \"Player ball\"\n"
+          "-- @prop sticky toggle = false\n"
+          "\n"
+          "function on_update(self, dt)\n"
+          "  if self.mode == \"idle\" then return end\n"
+          "  self.object:move(self.speed * dt, 0, 0)\n"
+          "end\n");
+    touch(project, "scripts/hover.lua",
+          "-- @prop height number = 0.4\n"
+          "-- @prop enabled toggle = true\n"
+          "function on_update(self, dt) end\n");
+    touch(project, "scripts/lamp.lua",
+          "-- Lights up when the ball rolls fast.\n"
+          "-- @prop follow object\n"
+          "-- @prop threshold number = 6\n"
+          "function on_update(self, dt)\n"
+          "  local ball = self.follow and self.follow:script(\"ball\")\n"
+          "  self.on = ball ~= nil and ball.speed > self.threshold\n"
+          "end\n");
     touch(project, "crate.png", "PNG");
     touch(project, "grass.jpg", "JPG");
     touch(project, "notes.txt", "todo\n");
@@ -76,6 +119,7 @@ int main(int argc, char** argv) {
     if (!ed.init(w, h)) { fprintf(stderr, "init failed\n"); return 1; }
     snprintf(ed.project_dir, sizeof(ed.project_dir), "%s", project);
     snprintf(ed.files_dir, sizeof(ed.files_dir), "%s", project);
+    ed.perf_clock = real_seconds;
     demo_scene(ed);
 
     platform::headless_set_time(0.0);
@@ -88,6 +132,37 @@ int main(int argc, char** argv) {
         platform::headless_push(mv);
         ed.frame();
     }
+    // Timing: a few more frames, the whole frame and the viewport alone.
+    {
+        const int n = 10;
+        double t0 = real_seconds(), view = 0;
+        for (int i = 0; i < n; i++) {
+            platform::headless_set_time((4 + i) / 60.0);
+            ed.frame();
+            view += ed.view_ms;
+        }
+        double ms = (real_seconds() - t0) * 1000.0 / n;
+        printf("frame %.2f ms when idle (a full viewport render: %.2f ms, %d triangles, %dx%d)\n", ms, view / n, ed.view_triangles, (int)ed.view_rect[2],
+               (int)ed.view_rect[3]);
+        // What a frame costs while dragging: the camera moves every frame and
+        // the view renders without supersampling and shadows.
+        bool ss = ed.settings.view_supersample, sh = ed.settings.view_shadows;
+        ed.settings.view_supersample = false;
+        ed.settings.view_shadows = false;
+        double view_fast = 0;
+        t0 = real_seconds();
+        for (int i = 0; i < n; i++) {
+            ed.camera.yaw += 0.5f;
+            ed.frame();
+            view_fast += ed.view_ms;
+        }
+        ms = (real_seconds() - t0) * 1000.0 / n;
+        printf("frame %.2f ms while dragging (viewport %.2f ms)\n", ms, view_fast / n);
+        ed.camera.yaw -= 0.5f * n;
+        ed.settings.view_supersample = ss;
+        ed.settings.view_shadows = sh;
+        ed.frame();
+    }
     char path[600];
     snprintf(path, sizeof(path), "%s/editor-dark.png", out);
     if (!platform::headless_save_png(path)) { fprintf(stderr, "cannot write %s\n", path); return 1; }
@@ -95,8 +170,48 @@ int main(int argc, char** argv) {
 
     ed.settings.dark_theme = false;
     ed.apply_theme();
-    for (int i = 4; i < 7; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }
+    for (int i = 14; i < 17; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }
     snprintf(path, sizeof(path), "%s/editor-light.png", out);
+    if (!platform::headless_save_png(path)) return 1;
+    printf("wrote %s\n", path);
+
+    // Play mode with the Console in front and nothing selected (the empty
+    // inspector), in both themes; then the renderer menu open.
+    ed.scene.clear_selection();
+    ed.play();
+    ImGui::SetWindowFocus("Console");
+    for (int t = 0; t < 2; t++) {
+        ed.settings.dark_theme = t == 0;
+        ed.apply_theme();
+        for (int i = 0; i < 40; i++) { platform::headless_set_time((20 + t * 40 + i) / 60.0); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-play-%s.png", out, t == 0 ? "dark" : "light");
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+    ed.stop();
+    ed.settings.dark_theme = true;
+    ed.apply_theme();
+    ed.frame();
+    if (const Editor::UiRect* r = ed.find_rect("run:renderer")) {
+        float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
+        platform::Event e;
+        e.type = platform::EventType::MouseMove; e.x = x; e.y = y;
+        platform::headless_push(e); ed.frame();
+        e.type = platform::EventType::MouseButton; e.button = 0; e.down = true;
+        platform::headless_push(e); ed.frame();
+        e.down = false;
+        platform::headless_push(e); ed.frame();
+        e.type = platform::EventType::MouseMove; e.x = x - 200; e.y = y + 400;
+        platform::headless_push(e); ed.frame(); ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-renderer-menu.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+    // The settings window, on its Viewport tab.
+    ed.show_settings = true;
+    ed.frame();
+    ed.frame();
+    snprintf(path, sizeof(path), "%s/editor-settings.png", out);
     if (!platform::headless_save_png(path)) return 1;
     printf("wrote %s\n", path);
     ed.shutdown();

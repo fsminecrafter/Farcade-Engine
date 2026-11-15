@@ -8,10 +8,10 @@ and through that link a script reaches the other object's scripts. That is
 how scripts on different objects work together.
 
 Status: the editor side is done (the data model, reading declarations, the
-Inspector, links that survive duplicate and delete, Play/Stop). Scripts do
-not *run* yet: that needs the Lua 5.4 runtime (plan C5). The run-time API
-below is the design the runtime will implement. Its editor-side parts
-already exist in C++ (`Scene::find_script`, `Scene::script_prop`).
+Inspector, links that survive duplicate and delete, Play/Stop), and so is the
+Lua 5.4 runtime (`engine/script/runtime.h`, tests in `tests/host/script_tests.cpp`,
+on Minimal-OS `script_smoke`). Wiring it into Play is the editor's part (see
+"Running scripts from C++" at the end).
 
 ## Declaring inputs
 
@@ -63,10 +63,14 @@ Inputs are matched by name:
 - **Deleting:** removing an object clears every link to it.
 - **Play and Stop:** Stop puts all inputs back as they were before Play.
 
-## At run time (planned, with the Lua runtime)
+## At run time
 
 Each script on each object gets its own instance table `self`. Its inputs
-are fields of `self`, and `self.object` is the object it sits on.
+are fields of `self`, `self.object` is the object it sits on and `self.name`
+is the script's name ("door"). The script file runs once per instance, in an
+environment of its own: the functions and globals it defines belong to that
+instance, and `self` falls back to them, so another script can call
+`door:open()`.
 
 ```lua
 -- switch.lua
@@ -92,13 +96,106 @@ function open(self) self.opening = true end
 function on_used_by(self, who) print(who.name .. " used me") end
 ```
 
-The API scripts use to reach each other:
-- `obj:script(name)`: the first script called `name` (`"door"` or `"door.lua"`) on `obj`, or nil. Through it you read and change its inputs and state and call its functions.
-- `obj:scripts()`: all of them, in order.
-- `obj:send(event, ...)`: calls `on_<event>(self, ...)` on every script of `obj` that defines it.
-- `fe.broadcast(event, ...)`: does the same on every object (the shared event bus of plan C5).
-- `fe.find(name)`: an object by name, for the cases an `object` input doesn't cover.
+### Callbacks
 
-Scripts on one object run in Inspector order each frame, and objects run in
-Hierarchy order. A message sent with `send` is delivered right away, inside
-the sending script's call.
+All optional, `self` first. Scripts on one object run in Inspector order each
+frame, objects in the order their instances were added (Hierarchy order).
+
+| Function | When |
+| --- | --- |
+| `on_start(self)` | once, before the first `on_update`; every `on_start` of a frame runs before any `on_update` (a script added later starts on the next frame) |
+| `on_update(self, dt)` | every frame (ECS phase Update) |
+| `on_<name>(self, ...)` | `obj:send("<name>", ...)` or `fe.broadcast("<name>", ...)` |
+| `on_event(self, name, ...)` | the same events, after `on_<name>`; an event called `event` only reaches `on_event` |
+| `on_trigger_enter(self, other)`, `on_trigger_exit(self, other)` | an object entered or left a trigger collider on this object |
+| `on_collision(self, other)` | this object's body hit another one (called on both objects) |
+
+Inputs: Number is a number (an integral value is a Lua integer), Text a
+string, Toggle a boolean, List the chosen string, Object a handle or nil.
+What a script stores in `self` stays there.
+
+### Objects
+
+`self.object`, `other` in the collision callbacks, `fe.find`, `obj.parent`
+and `obj:children()` give handles. One handle exists per object, so `==` and
+using a handle as a table key work.
+
+| | |
+| --- | --- |
+| `obj.name` | read/write; renaming to a sibling's name is an error |
+| `obj.position`, `obj.rotation`, `obj.scale` | local, read/write. `rotation` is Euler degrees (X, then Y, then Z, like the Inspector); `scale` also takes a number |
+| `obj.world_position` | read only, as of the last transform update (the end of the previous frame) |
+| `obj.parent` | handle or nil |
+| `obj:children()` | array of handles (order unspecified) |
+| `obj:script(name)` | `self` of the first script on `obj` called `name` (`"door"` or `"door.lua"`), or nil |
+| `obj:scripts()` | array of all their `self` |
+| `obj:send(event, ...)` | delivers right away, inside the call |
+| `obj:move(dx, dy, dz)` | adds to `position` (also `obj:move(vec3)`) |
+| `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
+| `obj.alive` | false once destroyed |
+| `obj.<module>` | `rigidbody3d`, `collider3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `camera`, `skylight`, `sky`, `post_process` (see modules.md): the module, or nil if the object has none |
+
+A module's fields read and write through the ECS (`World::get_field` /
+`set_field`): numbers are clamped to the field's range, enums are their name
+strings (`light.type == "Spot"`), colors and vectors are vec3. Writing an
+unknown field or a value of the wrong type raises an error that names the
+module and the field. `camera.current = true` goes through the one-current
+rule; inside a frame the world applies that rule at the end of the Update
+phase, so `fe.current("camera")` may still return the old camera until then
+(from `trigger_enter` & co., called outside a frame, it is immediate).
+
+Positions, rotations and colors come back as new vec3 values: assign the
+changed vector (`obj.position = obj.position + v`), changing `.x` of the copy
+does nothing.
+
+### vec3
+
+`fe.vec3(x, y, z)` (also `vec3(...)`, and `fe.vec3(t)` from a table) is a
+table with `.x .y .z` and a metatable: `+`, `-`, `*` (by a number, or
+component-wise by another vec3), `/` (by a number), unary `-`, `==`,
+`tostring`, `v:length()`, `v:normalized()`, `v:dot(w)`, `v:cross(w)`,
+`fe.dot(a, b)`, `fe.cross(a, b)`. Wherever a vec3 is assigned you can also
+give `{x=, y=, z=}` or `{1, 2, 3}`.
+
+### The `fe` library
+
+| | |
+| --- | --- |
+| `fe.find(name)` | the root object called `name`, else the match nearest the roots; nil if none |
+| `fe.current(module)` | the current camera/sky/skylight/post_process/listener object, or nil |
+| `fe.broadcast(event, ...)` | `on_<event>` and `on_event` on every script instance |
+| `fe.time()` | seconds since the runtime started |
+| `fe.dt` | the dt of the frame being run |
+| `fe.log(...)`, `print(...)` | to the console (Info), arguments as text separated by tabs |
+| `fe.warn(...)`, `fe.error(...)` | to the console as Warning / Error |
+
+Scripts see the base functions (`pairs`, `pcall`, `setmetatable`, ...), `coroutine`,
+`table`, `string`, `math` and `utf8`. There is no `io`, `os`, `package`,
+`debug`, `require`, `dofile`, `loadfile` or `load`, and `collectgarbage`
+only knows "collect", "count" and "step". Globals a script sets are its
+instance's own, they are not shared with other scripts.
+
+### Errors
+
+Errors at load or run time are logged as `path:line: message` plus a traceback.
+An instance that fails at run time gets no more callbacks (the others keep
+running); one that fails to load is not added. A destroyed object's scripts
+never run again.
+
+### Running scripts from C++
+
+```cpp
+World world; world.init();
+ScriptRuntime scripts; scripts.init(&world, host);       // adds its systems to the world
+int id = scripts.add_instance(entity, "scripts/door.lua", text, size, props, nprops, linked_entities);
+// each frame: world.progress(dt);  (physics calls scripts.trigger_enter/exit, collision)
+```
+
+The interpreter is Lua 5.4.7 (`external/lua`, unmodified) with a generational
+garbage collector, built for the host and for Minimal-OS (about 200 KB of
+code); the engine's own `setjmp`/`longjmp` shim and a C-locale stub fill the
+gaps of the Minimal-OS C runtime (`engine/script/lua_os_compat.c`,
+`engine/script/os_include`). `mk/script.mk` defines `LUA_SRC` and `SCRIPT_SRC`.
+
+Not done: a limit on how long one callback may run (an endless loop in a
+script hangs the frame).

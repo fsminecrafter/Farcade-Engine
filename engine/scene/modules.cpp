@@ -19,11 +19,11 @@ const char* const kTonemaps[] = { "None", "Reinhard", "ACES", nullptr };
 const FieldInfo kRigidBody[] = {
     FE_F(RigidBody3D, type, "Type", Enum, 0, 0, kBodyTypes),
     FE_F(RigidBody3D, mass, "Mass", Float, 0.001f, 10000.0f, nullptr),
-    FE_F(RigidBody3D, linear_damping, "Linear damping", Float, 0, 10, nullptr),
-    FE_F(RigidBody3D, angular_damping, "Angular damping", Float, 0, 10, nullptr),
+    FE_F(RigidBody3D, linear_damping, "Damping", Float, 0, 10, nullptr),
+    FE_F(RigidBody3D, angular_damping, "Spin damping", Float, 0, 10, nullptr),
     FE_F(RigidBody3D, use_gravity, "Use gravity", Bool, 0, 0, nullptr),
     FE_F(RigidBody3D, gravity_scale, "Gravity scale", Float, -10, 10, nullptr),
-    FE_F(RigidBody3D, freeze_rotation, "Freeze rotation", Bool, 0, 0, nullptr),
+    FE_F(RigidBody3D, freeze_rotation, "Lock rotation", Bool, 0, 0, nullptr),
     FE_F(RigidBody3D, velocity, "Start velocity", Vec3, 0, 0, nullptr),
 };
 
@@ -59,7 +59,7 @@ const FieldInfo kSampler[] = {
     FE_F(AudioSampler, path, "File", Path, 0, 0, nullptr),
     FE_F(AudioSampler, volume, "Volume", Float, 0, 2, nullptr),
     FE_F(AudioSampler, pitch, "Pitch", Float, 0.25f, 4, nullptr),
-    FE_F(AudioSampler, pitch_variation, "Pitch variation", Float, 0, 1, nullptr),
+    FE_F(AudioSampler, pitch_variation, "Pitch random", Float, 0, 1, nullptr),
     FE_F(AudioSampler, voices, "Voices", Int, 1, 32, nullptr),
     FE_F(AudioSampler, spatial, "Spatial", Bool, 0, 0, nullptr),
     FE_F(AudioSampler, min_distance, "Min distance", Float, 0, 1000, nullptr),
@@ -111,7 +111,7 @@ const FieldInfo kPost[] = {
     FE_F(PostProcess, tint, "Tint", Color, 0, 0, nullptr),
     FE_F(PostProcess, vignette, "Vignette", Float, 0, 1, nullptr),
     FE_F(PostProcess, bloom, "Bloom", Float, 0, 1, nullptr),
-    FE_F(PostProcess, bloom_threshold, "Bloom threshold", Float, 0, 10, nullptr),
+    FE_F(PostProcess, bloom_threshold, "Bloom from", Float, 0, 10, nullptr),
 };
 
 #undef FE_F

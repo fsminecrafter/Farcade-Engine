@@ -98,6 +98,10 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.scale, sizeof(o.scale));
         mix(&o.color, sizeof(o.color));
         mix(&o.mesh, sizeof(o.mesh));
+        mix(&o.kind, sizeof(o.kind));
+        mix(&o.modules.present, sizeof(o.modules.present));
+        mix(&o.modules.light, sizeof(o.modules.light));
+        mix(&o.modules.camera, sizeof(o.modules.camera));
         mix(&o.visible, sizeof(o.visible));
         mix(&o.parent, sizeof(o.parent));
     }
@@ -105,6 +109,80 @@ uint64_t Editor::view_hash(int w, int h) const {
     ObjectId act = sc.active();
     mix(&act, sizeof(act));
     return hsh;
+}
+
+// Lines for what has no mesh: a camera's frustum, a light's shape, a small
+// cross for empties and the scene settings objects.
+void Editor::draw_object_shape(View3D& view3d, const Object& o, const Mat4& model) {
+    bool sel = scene.is_selected(o.id);
+    uint32_t col = sel ? 0xFFB13B : (settings.dark_theme ? 0xAEB6C2 : 0x4A515C);
+    int alpha = sel ? 255 : 170;
+    auto P = [&](float x, float y, float z) { return transform_point(model, Vec3(x, y, z)); };
+    auto L = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, col, alpha); };
+    if (o.modules.has(ModuleKind::Light)) {
+        const Light& l = o.modules.light;
+        uint32_t lc = sel ? col : 0xF2C94C;
+        auto LL = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, lc, alpha); };
+        if (l.type == LightType::Directional) {
+            // A few parallel rays along -Z.
+            static const float off[5][2] = { { 0, 0 }, { 0.25f, 0 }, { -0.25f, 0 }, { 0, 0.25f }, { 0, -0.25f } };
+            for (auto& d : off) {
+                LL(P(d[0], d[1], 0), P(d[0], d[1], -1.2f));
+                LL(P(d[0], d[1], -1.2f), P(d[0] + 0.07f, d[1], -1.05f));
+                LL(P(d[0], d[1], -1.2f), P(d[0] - 0.07f, d[1], -1.05f));
+            }
+        } else if (l.type == LightType::Point) {
+            for (int axis = 0; axis < 3; axis++)
+                for (int i = 0; i < 16; i++) {
+                    float a0 = 2 * kPi * i / 16, a1 = 2 * kPi * (i + 1) / 16, r = 0.25f;
+                    float c0 = fcos(a0) * r, s0 = fsin(a0) * r, c1 = fcos(a1) * r, s1 = fsin(a1) * r;
+                    if (axis == 0) LL(P(c0, s0, 0), P(c1, s1, 0));
+                    else if (axis == 1) LL(P(c0, 0, s0), P(c1, 0, s1));
+                    else LL(P(0, c0, s0), P(0, c1, s1));
+                }
+        } else {
+            float d = l.range < 2.0f ? l.range : 2.0f;
+            float r = ftan(radians(l.spot_angle * 0.5f)) * d;
+            Vec3 tip = P(0, 0, 0);
+            for (int i = 0; i < 24; i++) {
+                float a0 = 2 * kPi * i / 24, a1 = 2 * kPi * (i + 1) / 24;
+                LL(P(fcos(a0) * r, fsin(a0) * r, -d), P(fcos(a1) * r, fsin(a1) * r, -d));
+                if (i % 6 == 0) LL(tip, P(fcos(a0) * r, fsin(a0) * r, -d));
+            }
+        }
+    }
+    switch (o.kind) {
+        case ObjectKind::Camera: {
+            const Camera& c = o.modules.camera;
+            float d = 0.8f, hh, hw;
+            if (c.projection == Projection::Perspective) hh = ftan(radians(c.fov * 0.5f)) * d;
+            else hh = 0.45f;
+            hw = hh * (16.0f / 9.0f);
+            uint32_t cc = sel ? col : (c.current ? 0x6EA3FF : col);
+            auto C = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, cc, alpha); };
+            Vec3 e = P(0, 0, 0);
+            Vec3 q[4] = { P(-hw, -hh, -d), P(hw, -hh, -d), P(hw, hh, -d), P(-hw, hh, -d) };
+            if (c.projection == Projection::Orthographic) {
+                Vec3 b[4] = { P(-hw, -hh, 0), P(hw, -hh, 0), P(hw, hh, 0), P(-hw, hh, 0) };
+                for (int i = 0; i < 4; i++) { C(b[i], q[i]); C(b[i], b[(i + 1) % 4]); }
+            } else {
+                for (int i = 0; i < 4; i++) C(e, q[i]);
+            }
+            for (int i = 0; i < 4; i++) C(q[i], q[(i + 1) % 4]);
+            // Which way is up: a small triangle on the top edge.
+            C(P(-hw * 0.3f, hh * 1.1f, -d), P(0, hh * 1.45f, -d));
+            C(P(hw * 0.3f, hh * 1.1f, -d), P(0, hh * 1.45f, -d));
+            C(P(-hw * 0.3f, hh * 1.1f, -d), P(hw * 0.3f, hh * 1.1f, -d));
+            break;
+        }
+        case ObjectKind::Empty:
+            if (o.modules.has(ModuleKind::Light)) break;
+            L(P(-0.25f, 0, 0), P(0.25f, 0, 0));
+            L(P(0, -0.25f, 0), P(0, 0.25f, 0));
+            L(P(0, 0, -0.25f), P(0, 0, 0.25f));
+            break;
+        default: break;
+    }
 }
 
 void Editor::render_view(View3D& view3d, const void* view_ptr) {
@@ -126,8 +204,10 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
         if (!scene.visible_in_tree(o)) continue;
-        const MeshData& mesh = Scene::mesh_for(o);
         Mat4 model = scene.world_matrix(o);
+        draw_object_shape(view3d, o, model);
+        if (o.kind != ObjectKind::Mesh) continue;
+        const MeshData& mesh = Scene::mesh_for(o);
         if (!wire) {
             view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
             continue;
@@ -148,7 +228,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
-            if (!scene.visible_in_tree(o) || o.mesh == MeshKind::Plane) continue;
+            if (!scene.visible_in_tree(o) || o.kind != ObjectKind::Mesh || o.mesh == MeshKind::Plane) continue;
             const MeshData& mesh = Scene::mesh_for(o);
             view3d.shadow(mesh.positions, mesh.vertex_count, scene.world_matrix(o));
         }
@@ -188,6 +268,28 @@ void Editor::panel_viewport() {
         render_view(view3d, &v);
     }
     dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
+    // Icons for objects without a mesh (cameras, lights, sky ...), where
+    // they are: they are picked by clicking near them.
+    {
+        float fs = ImGui::GetFontSize();
+        for (int i = 0; i < scene.count(); i++) {
+            Object& o = scene.at(i);
+            if (o.kind == ObjectKind::Mesh || !scene.visible_in_tree(o)) continue;
+            Mat4 m = scene.world_matrix(o);
+            Vec4 c = v.viewproj * Vec4{ m.m[12], m.m[13], m.m[14], 1.0f };
+            if (c.w <= 0.05f) continue;
+            float sx = v.pos.x + (c.x / c.w * 0.5f + 0.5f) * v.size.x;
+            float sy = v.pos.y + (0.5f - c.y / c.w * 0.5f) * v.size.y;
+            bool sel = scene.is_selected(o.id);
+            float r = fs * 0.85f;
+            dl->AddCircleFilled(ImVec2(sx, sy), r, sel ? pal.accent : (pal.overlay & 0xE0FFFFFFu), 20);
+            dl->AddCircle(ImVec2(sx, sy), r, pal.border, 20);
+            draw_icon(dl, object_icon(o), ImVec2(sx - fs * 0.5f, sy - fs * 0.5f), fs, sel ? IM_COL32(255, 255, 255, 255) : pal.text);
+            char key[32];
+            snprintf(key, sizeof(key), "vicon:%u", o.id);
+            track_rect(key, sx - r, sy - r, r * 2, r * 2);
+        }
+    }
 
     // Gizmo on the active object. It comes before the input area: ImGuizmo
     // only starts a drag when no other item is hovered, so the input area is
@@ -469,7 +571,7 @@ void Editor::viewport_overlays(float x, float y, float w, float h) {
                 }
                 ImGui::Separator();
                 if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
-                if (menu_item("Reset view")) camera = Camera();
+                if (menu_item("Reset view")) camera = ViewCamera();
                 ImGui::EndPopup();
             }
             ImGui::EndChild();

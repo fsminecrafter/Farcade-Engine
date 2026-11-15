@@ -69,15 +69,15 @@ const char* Settings::program_for(const char* path) const {
 
 // ---------------------------------------------------------------- camera
 
-Vec3 Camera::eye() const {
+Vec3 ViewCamera::eye() const {
     float y = radians(yaw), p = radians(pitch);
     Vec3 dir(fcos(p) * fsin(y), fsin(p), fcos(p) * fcos(y));
     return target + dir * distance;
 }
 
-Mat4 Camera::view() const { return Mat4::look_at(eye(), target, Vec3(0, 1, 0)); }
+Mat4 ViewCamera::view() const { return Mat4::look_at(eye(), target, Vec3(0, 1, 0)); }
 
-Mat4 Camera::projection(float aspect) const { return Mat4::perspective(radians(fov), aspect, 0.1f, 500.0f); }
+Mat4 ViewCamera::projection(float aspect) const { return Mat4::perspective(radians(fov), aspect, 0.1f, 500.0f); }
 
 // ---------------------------------------------------------------- theme
 //
@@ -379,6 +379,9 @@ ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, Ob
     memcpy(o->name, name, sizeof(name));
     o->parent = parent;
     if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    // Only one object per kind is current: the copy is not.
+    for (int k = 0; k < kModuleKindCount; k++)
+        if (o->modules.has((ModuleKind)k)) set_current_flag(module_info((ModuleKind)k), o->modules.data((ModuleKind)k), false);
     if (*pairs < 256) { from[*pairs] = src_id; to[*pairs] = id; (*pairs)++; }
     // The children, in their order (the list grows while copying).
     int n = scene.count();
@@ -465,6 +468,65 @@ ObjectId Editor::create_child(const char* name, MeshKind mesh, ObjectId parent) 
         if (Object* p = scene.get(parent)) p->expanded = true;
     }
     return id;
+}
+
+ObjectId Editor::create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent) {
+    ObjectId id = create_object(name, MeshKind::Cube, at);
+    scene.set_kind(id, kind);
+    if (Object* o = scene.get(id)) {
+        if (parent && scene.get(parent)) {
+            o->parent = parent;
+            o->position = Vec3(0, 1, 0);
+            scene.get(parent)->expanded = true;
+        }
+        if (kind == ObjectKind::Camera) {
+            // Looking at the middle of the scene from where the view is.
+            o->rotation = Quat::euler_deg(Vec3(-15, 0, 0));
+        }
+        ModuleKind k = settings_of(kind);
+        if (k != ModuleKind::Count && module_info(k).has_current)
+            log(LogLevel::Info, "%s created%s", o->name, scene.is_current(id, k) ? " (current)" : "");
+    }
+    return id;
+}
+
+ObjectId Editor::create_light(LightType type, const Vec3& at, ObjectId parent) {
+    static const char* names[] = { "Directional Light", "Point Light", "Spot Light" };
+    ObjectId id = create_kind(names[(int)type], ObjectKind::Empty, at, parent);
+    scene.add_module(id, ModuleKind::Light);
+    if (Object* o = scene.get(id)) {
+        o->modules.light.type = type;
+        // Directional and spot lights point down (along their -Z, tipped over).
+        if (type != LightType::Point) o->rotation = Quat::euler_deg(Vec3(type == LightType::Directional ? -50.0f : -90.0f, 30.0f, 0));
+        if (type == LightType::Directional) o->modules.light.intensity = 2.0f;
+    }
+    return id;
+}
+
+void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
+    Vec3 ground(at.x, 0.5f, at.z), flat(at.x, 0, at.z);
+    auto mesh = [&](const char* name, MeshKind k, const Vec3& p) {
+        if (!menu_item(name)) return;
+        if (parent) create_child(name, k, parent);
+        else create_object(name, k, p);
+    };
+    mesh("Cube", MeshKind::Cube, ground);
+    mesh("Sphere", MeshKind::Sphere, ground);
+    mesh("Cylinder", MeshKind::Cylinder, ground);
+    mesh("Plane", MeshKind::Plane, flat);
+    if (menu_item("Empty")) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Light")) {
+        if (menu_item("Directional Light")) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
+        if (menu_item("Point Light")) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
+        if (menu_item("Spot Light")) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
+        ImGui::EndMenu();
+    }
+    if (menu_item("Camera")) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
+    ImGui::Separator();
+    if (menu_item("Sky")) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky Light")) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Post Processing")) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
 }
 
 void Editor::frame_selection() {
@@ -701,12 +763,7 @@ void Editor::main_menu() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Create")) {
-        Vec3 at = camera.target;
-        at.y = 0.5f;
-        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, at);
-        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, at);
-        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, at);
-        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
+        create_menu_items(kNoObject, camera.target);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {

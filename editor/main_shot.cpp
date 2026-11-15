@@ -10,6 +10,7 @@
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,26 @@ static void demo_scene(Editor& ed) {
     if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "mode")) p->choice = 1;
     ed.add_script(lamp, "scripts/lamp.lua");
     if (ScriptProp* p = ed.scene.script_prop(lamp, "lamp", "follow")) p->object = sphere;
+    // Scene objects: a camera (current, with the listener), a sun, sky,
+    // sky light and post processing; physics on the ball and the ground.
+    ObjectId cam = ed.create_kind("Main Camera", ObjectKind::Camera, Vec3(-3.5f, 2.2f, 4.5f));
+    ed.scene.get(cam)->rotation = Quat::euler_deg(Vec3(-18, -35, 0));
+    ed.scene.add_module(cam, ModuleKind::AudioListener);
+    ObjectId cam2 = ed.create_kind("Overview Camera", ObjectKind::Camera, Vec3(4.5f, 5.0f, -4.0f));
+    ed.scene.get(cam2)->rotation = Quat::euler_deg(Vec3(-40, 135, 0));
+    ed.create_light(LightType::Directional, Vec3(-1.5f, 4.0f, -2.5f));
+    ObjectId pl = ed.create_light(LightType::Point, Vec3(0, 0.9f, 0), lamp);
+    ed.scene.get(pl)->modules.light.color = Vec3(1.0f, 0.8f, 0.45f);
+    ed.create_kind("Sky", ObjectKind::Sky, Vec3(-4.2f, 2.2f, -3.0f));
+    ed.create_kind("Sky Light", ObjectKind::SkyLight, Vec3(-3.4f, 2.2f, -3.0f));
+    ed.create_kind("Post Processing", ObjectKind::PostProcess, Vec3(-2.6f, 2.2f, -3.0f));
+    ed.scene.add_module(sphere, ModuleKind::RigidBody3D);
+    ed.scene.add_module(sphere, ModuleKind::Collider3D);
+    ed.scene.get(sphere)->modules.collider3d.shape = ColliderShape::Sphere;
+    ed.scene.add_module(sphere, ModuleKind::AudioSampler);
+    snprintf(ed.scene.get(sphere)->modules.audio_sampler.path, kPathMax, "%s", "sounds/bounce.wav");
+    ed.scene.add_module(ground, ModuleKind::Collider3D);
+    ed.scene.get(ground)->modules.collider3d.size = Vec3(2, 0.1f, 2);
     // Crate selected, then shift-click on the ball: two selected, the ball active.
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
@@ -192,6 +213,24 @@ int main(int argc, char** argv) {
     ed.settings.dark_theme = true;
     ed.apply_theme();
     ed.frame();
+    // The ball's modules (Inspector scrolled down), then the overview
+    // camera selected: its settings and the Current switch.
+    {
+        auto by_name = [&](const char* n) { for (int i = 0; i < ed.scene.count(); i++) if (!strcmp(ed.scene.at(i).name, n)) return ed.scene.at(i).id; return kNoObject; };
+        ObjectId sphere = by_name("Ball"), cam2 = by_name("Overview Camera");
+        ed.scene.select_only(sphere);
+        ed.frame();
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 330); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-modules.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.scene.select_only(cam2);
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 0); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-camera.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
     if (const Editor::UiRect* r = ed.find_rect("run:renderer")) {
         float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
         platform::Event e;

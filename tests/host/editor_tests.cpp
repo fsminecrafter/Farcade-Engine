@@ -679,6 +679,107 @@ int main() {
         frames(2);
     }
 
+    // ---- modules and special objects, the one-current rule
+    {
+        CHECK(module_by_name("camera") == ModuleKind::Camera && module_by_name("rigidbody3d") == ModuleKind::RigidBody3D &&
+              module_by_name("nope") == ModuleKind::Count, "modules are found by their Lua names");
+        int with_current = 0;
+        for (int k = 0; k < kModuleKindCount; k++) {
+            const ModuleInfo& mi = module_info((ModuleKind)k);
+            with_current += mi.has_current;
+            const FieldInfo* cf = find_field(mi, "current");
+            CHECK(mi.has_current == (cf != nullptr), "%s: has_current matches a 'current' field", mi.name);
+            if (cf) CHECK(cf->offset == mi.current_offset && cf->type == FieldType::Bool, "%s: current offset", mi.name);
+        }
+        CHECK(with_current == 5, "camera, sky, sky light, post processing and listener have Current (%d)", with_current);
+
+        int objects0 = ed.scene.count();
+        ObjectId c1 = ed.create_kind("Cam A", ObjectKind::Camera, Vec3(0, 2, 5));
+        CHECK(ed.scene.get(c1)->kind == ObjectKind::Camera && ed.scene.get(c1)->modules.has(ModuleKind::Camera), "a camera object has camera settings");
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "the first camera becomes current");
+        ObjectId c2 = ed.create_kind("Cam B", ObjectKind::Camera, Vec3(3, 2, 5));
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1 && !ed.scene.is_current(c2, ModuleKind::Camera), "a second camera is not current");
+        ed.scene.set_current(c2, ModuleKind::Camera);
+        CHECK(ed.scene.is_current(c2, ModuleKind::Camera) && !ed.scene.get(c1)->modules.camera.current, "setting B current clears A");
+        ed.scene.clear_current(c2, ModuleKind::Camera);
+        CHECK(ed.scene.current(ModuleKind::Camera) == kNoObject, "clearing leaves none current");
+        ed.scene.set_current(c1, ModuleKind::Camera);
+        // Turned on by hand in the data (as a script or a loaded file may do), fix_current keeps one.
+        ed.scene.get(c2)->modules.camera.current = true;
+        ed.scene.fix_current();
+        int cur = ed.scene.get(c1)->modules.camera.current + ed.scene.get(c2)->modules.camera.current;
+        CHECK(cur == 1, "fix_current leaves exactly one current (%d)", cur);
+        ed.scene.set_current(c1, ModuleKind::Camera);
+        // Duplicate: the copy is not current.
+        ed.scene.select_only(c1);
+        ed.duplicate_selection();
+        ObjectId c3 = ed.scene.active();
+        CHECK(c3 != c1 && ed.scene.get(c3)->kind == ObjectKind::Camera && !ed.scene.get(c3)->modules.camera.current &&
+              ed.scene.current(ModuleKind::Camera) == c1, "a duplicated camera is not current");
+        // Play/Stop: the current camera comes back.
+        ed.play();
+        ed.scene.set_current(c3, ModuleKind::Camera);
+        ed.stop();
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "Stop puts the current camera back");
+        // Kinds without the flag ignore it; set_current needs the module.
+        ObjectId e = ed.create_kind("Holder", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.set_current(e, ModuleKind::Camera);
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "set_current on an object without a camera does nothing");
+        CHECK(ed.scene.add_module(e, ModuleKind::RigidBody3D) && !ed.scene.add_module(e, ModuleKind::RigidBody3D), "one module of a kind per object");
+        CHECK(!ed.scene.add_module(e, ModuleKind::Camera), "camera settings are not a module");
+        ed.scene.set_current(e, ModuleKind::RigidBody3D);
+        CHECK(ed.scene.current(ModuleKind::RigidBody3D) == kNoObject, "a rigidbody has no Current");
+        // A listener is a module with Current: the first one added is current.
+        ed.scene.add_module(c1, ModuleKind::AudioListener);
+        ed.scene.add_module(e, ModuleKind::AudioListener);
+        CHECK(ed.scene.current(ModuleKind::AudioListener) == c1, "the first listener is current");
+        // Deleting the current camera leaves none (the others stay as they were).
+        ed.scene.select_only(c1);
+        ed.delete_selection();
+        CHECK(ed.scene.current(ModuleKind::Camera) == kNoObject && ed.scene.current(ModuleKind::AudioListener) == kNoObject,
+              "deleting the current camera leaves no current camera or listener");
+        // Lights are empties with a Light module.
+        ObjectId l = ed.create_light(LightType::Spot, Vec3(0, 3, 0));
+        CHECK(ed.scene.get(l)->kind == ObjectKind::Empty && ed.scene.get(l)->modules.has(ModuleKind::Light) &&
+              ed.scene.get(l)->modules.light.type == LightType::Spot, "a spot light");
+        // Special objects are picked around their origin.
+        ed.scene.clear_selection();
+        frames(2);
+        ed.camera.target = Vec3(0, 0.5f, 0); ed.camera.yaw = 0; ed.camera.pitch = 20; ed.camera.distance = 14;
+        ed.tool = Tool::Select;
+        frames(2);
+        char vk[32];
+        snprintf(vk, sizeof(vk), "vicon:%u", c2);
+        CHECK(ui(vk) != nullptr, "the camera has an icon in the viewport");
+        CHECK(click_ui(vk) && ed.scene.is_selected(c2), "clicking a camera's icon selects it (selected %u)", ed.scene.active());
+
+        // ---- the Inspector: Current switch, Add module, remove
+        ed.scene.select_only(c2);
+        frames(3);
+        CHECK(ui("module:camera") && ui("module:camera:current") && ui("module:camera:fov"), "the Inspector shows the camera's settings");
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == c2, "the Current switch makes it current");
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == kNoObject, "and off again");
+        click_ui("module:camera:current");
+        ed.scene.select_only(c3);
+        frames(3);
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == c3 && !ed.scene.is_current(c2, ModuleKind::Camera),
+              "switching another camera on turns the first off");
+        CHECK(!ui("module:camera:ortho_size"), "perspective cameras don't show the ortho size");
+        CHECK(click_ui("inspector:add_module"), "an Add module button");
+        frames(2);
+        CHECK(click_ui("addmodule:light") && ed.scene.get(c3)->modules.has(ModuleKind::Light), "Add module > Light adds a light");
+        frames(3);
+        ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector");
+        if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
+        CHECK(ui("module:light:intensity") && !ui("module:light:spot_angle"), "a point light shows intensity, not the spot angle");
+        CHECK(click_ui("module:light:remove") && !ed.scene.get(c3)->modules.has(ModuleKind::Light), "the trash button removes the module");
+
+        // Clean up so the rest of the tests see the old scene.
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        ed.scene.clear_selection();
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");

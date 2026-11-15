@@ -44,7 +44,7 @@ struct Settings {
     const char* program_for(const char* path) const;
 };
 
-struct Camera {
+struct ViewCamera {     // the editor's orbit camera (not a scene Camera object)
     Vec3 target = Vec3(0, 0.5f, 0);
     float yaw = 35.0f, pitch = 25.0f;   // degrees
     float distance = 9.0f;
@@ -66,7 +66,7 @@ public:
     // ---- used by the panels
     Scene scene;
     Settings settings;
-    Camera camera;
+    ViewCamera camera;
     Tool tool = Tool::Move;
     bool gizmo_local = false;           // gizmo along the object's axes (X toggles); Scale always is
     ViewMode view_mode = ViewMode::Lit;
@@ -80,6 +80,13 @@ public:
     ObjectId create_object(const char* name, MeshKind mesh, const Vec3& at);
     void delete_selection();                    // with their children
     ObjectId create_child(const char* name, MeshKind mesh, ObjectId parent);
+    // Special objects (Camera, Sky, Sky Light, Post Processing, Empty) and
+    // lights (an Empty with a Light module), under `parent` when given.
+    ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
+    ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
+    // The items of every "add object" menu (Create, the Hierarchy's + and
+    // right-click menus): meshes, empty, lights, camera, sky ...
+    void create_menu_items(ObjectId parent, const Vec3& at);
     ObjectId duplicate_tree(ObjectId src, ObjectId parent, bool offset);    // an object and its children
     // Scripts: adds one to an object and reads the inputs it declares
     // (-- @prop lines, see script.h). Returns its index or -1.
@@ -142,6 +149,9 @@ private:
     void build_ui();
     void script_section(Object* o, int index);
     void add_script_button(Object* o);
+    bool module_section(Object* o, ModuleKind kind);   // false when the module was removed
+    void add_module_button(Object* o);
+    void draw_object_shape(View3D& view3d, const Object& o, const Mat4& model);
     void main_menu();
     void run_controls();
     void status_bar(float height);
@@ -166,6 +176,8 @@ private:
 // File type helpers shared by the panels.
 const char* path_extension(const char* path);
 const char* path_filename(const char* path);
+Icon object_icon(const Object& o);
+Icon module_icon(ModuleKind k);
 bool path_is_image(const char* path);
 bool path_is_model(const char* path);
 bool path_is_script(const char* path);

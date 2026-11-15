@@ -11,6 +11,7 @@ enum class Icon {
     Folder, File, Image, Model, Script, Cube, Sphere, Cylinder, Plane, Up, Refresh, Trash,
     Info, Warning, Error,
     Stop, Eye, EyeOff, Plus, Search, Gear, ChevronDown, ChevronRight, Close, Sun, Monitor, Layers,
+    Camera, Bulb, Cloud, Speaker, Wave, Body, Collider, Ear, Wand, Empty, Star,
 };
 
 // Draws `icon` centered in the box [p, p + size] with the given color.

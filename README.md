@@ -17,6 +17,8 @@ repository.
 | **Light theme**: the same scene; the parent/child tree in the Hierarchy | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
 | ![A camera object and its Current switch](docs/screenshots/editor-camera.png) | ![Play mode](docs/screenshots/editor-play.png) |
 | **Scene objects**: a camera with its Current switch; cameras, lights, sky, sky light and post processing in the tree (current ones starred) | **Play mode**: the scene is saved and comes back on Stop |
+| ![The viewport drawn by FarcadeGL](docs/screenshots/editor-farcadegl.png) | ![Play through the current camera, drawn by FarcadeGL](docs/screenshots/editor-farcadegl-play.png) |
+| **FarcadeGL** draws the viewport: the sun, the sky, the sky light and post processing (renderer menu, top right) | **Play** looks through the current camera (Main Camera) |
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
@@ -31,7 +33,7 @@ renders the editor headless on the PC, and from `tools/ci/run_os.sh` with
 
 | Directory | What |
 |---|---|
-| `engine/` | the engine libraries (core, `.mof` models, scene modules, ...) |
+| `engine/` | the engine libraries: core, `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`) |
 | `editor/` | the editor (Dear ImGui, drawn by a software rasterizer) |
 | `runtime/minimalos/` | the small C/C++ runtime the engine needs on Minimal-OS |
 | `tools/` | PC tools (model converter, CI scripts) |
@@ -46,6 +48,19 @@ git submodule update --init
 make host      # Linux: tools, tests, headless editor
 make test      # run the host tests
 make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
+```
+
+## Rendering and the entity system
+
+- **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows and bloom are not done yet.
+- **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
+- **Modules and scene objects**: `docs/modules.md`. **Scripts**: `docs/scripting.md`.
+
+```sh
+build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene
+tools/ci/run_os.sh build/os/bin/gfx_smoke.run 'FE GFX PASS' 'FE GFX FAIL'
+tools/ci/run_os.sh build/os/bin/ecs_smoke.run 'FE ECS PASS' 'FE ECS FAIL'
+ARGS=--farcadegl tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 121'
 ```
 
 ## Models: `.mof`

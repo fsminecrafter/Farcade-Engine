@@ -1,6 +1,6 @@
 # Scene files
 
-The editor saves a scene as a `.fescene` file: plain text, one value per
+The editor saves a scene as a `.fscene` file: plain text, one value per
 line, written and read by `editor/src/scene_io.{h,cpp}`. Two objects from
 the demo scene, as the editor saves them:
 
@@ -91,9 +91,9 @@ end
 
 | Action | Effect |
 |---|---|
-| File > Save scene (Ctrl+S) | Saves to the open file. If the scene was never saved, it goes to `scenes/main.fescene`. |
-| File > Save scene as... | Asks for a name and saves to `scenes/<name>.fescene`. |
-| Double-click a `.fescene` in Files | Opens it. |
+| File > Save scene (Ctrl+S) | Saves to the open file. If the scene was never saved, it goes to `scenes/main.fscene`. |
+| File > Save scene as... | Asks for a name and saves to `scenes/<name>.fscene`. |
+| Double-click a `.fscene` in Files | Opens it. |
 | File > New scene | Empties the scene. |
 
 - **Saving during Play** writes the scene as it was before Play.

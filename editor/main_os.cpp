@@ -18,7 +18,7 @@
 // prints "FE BENCH <phase> ..." lines (the first 5 frames of a phase are not
 // measured), then "FE BENCH DONE". --scales adds orbit phases with FarcadeGL at
 // 1/2 and 1/4 of the viewport size.
-// --scene-test saves the demo scene to <project>/scenes/os-test.fescene,
+// --scene-test saves the demo scene to <project>/scenes/os-test.fscene,
 // opens it again and prints "FE SCENE PASS <objects> <bytes>" when saving
 // the opened scene gives the same file (else "FE SCENE FAIL ...").
 #include "bench.h"
@@ -65,12 +65,12 @@ int main(int argc, char** argv) {
         // Twice: the second save replaces the file (with a longer scene in
         // between, so stale bytes would show).
         ObjectId extra = ed.create_object("Extra object with a long name", MeshKind::Cube, Vec3(0, 0, 0));
-        bool saved = ed.save_scene("scenes/os-test.fescene");
+        bool saved = ed.save_scene("scenes/os-test.fscene");
         ed.scene.remove(extra);
         char* t1 = save_scene_text(ed.scene, ed.project_dir, &n1);     // next_id counts the removed object
-        saved = ed.save_scene("scenes/os-test.fescene") && saved;
+        saved = ed.save_scene("scenes/os-test.fscene") && saved;
         ed.new_scene();
-        bool opened = ed.open_scene("scenes/os-test.fescene");
+        bool opened = ed.open_scene("scenes/os-test.fscene");
         char* t2 = save_scene_text(ed.scene, ed.project_dir, &n2);
         bool same = t1 && t2 && n1 == n2 && memcmp(t1, t2, n1) == 0;
         if (saved && opened && same && ed.scene.count() == count) printf("FE SCENE PASS %d %u\n", count, (unsigned)n1);

@@ -1,4 +1,4 @@
-// Scene files (.fescene): the editor's scene as readable text.
+// Scene files (.fscene): the editor's scene as readable text.
 //
 //   farcade-scene 1
 //   next_id 14

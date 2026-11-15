@@ -101,12 +101,12 @@ public:
     char project_dir[256] = {};
     char files_dir[256] = {};
 
-    // ---- scene files (.fescene, see scene_io.h). Paths are full or
+    // ---- scene files (.fscene, see scene_io.h). Paths are full or
     // relative to the project.
     char scene_path[256] = {};                  // the open scene's file; "" = not saved yet
-    char save_as_name[64] = {};                 // File > Save scene as...: the name typed (scenes/<name>.fescene)
+    char save_as_name[64] = {};                 // File > Save scene as...: the name typed (scenes/<name>.fscene)
     // Saves the scene (while playing: the scene as it was before Play) to
-    // `path`, or to scene_path / scenes/main.fescene when null.
+    // `path`, or to scene_path / scenes/main.fscene when null.
     bool save_scene(const char* path = nullptr);
     // Stops Play, then replaces the scene with the file's. The scene stays
     // as it was when the file cannot be read.

@@ -58,7 +58,7 @@ static bool ext_is(const char* path, const char* const* list) {
 bool path_is_image(const char* p) { static const char* l[] = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", nullptr }; return ext_is(p, l); }
 bool path_is_model(const char* p) { static const char* l[] = { ".mof", ".gltf", ".glb", ".obj", nullptr }; return ext_is(p, l); }
 bool path_is_script(const char* p) { static const char* l[] = { ".lua", ".cpp", ".h", nullptr }; return ext_is(p, l); }
-bool path_is_scene(const char* p) { static const char* l[] = { ".fescene", nullptr }; return ext_is(p, l); }
+bool path_is_scene(const char* p) { static const char* l[] = { ".fscene", nullptr }; return ext_is(p, l); }
 
 const char* Settings::program_for(const char* path) const {
     const char* ext = path_extension(path);
@@ -264,7 +264,7 @@ bool Editor::init(int width, int height) {
     apply_theme();
 
     // Default file editors: text files in MOSdesk's editor.
-    static const char* text_exts[] = { ".lua", ".txt", ".md", ".json", ".fescene", ".cfg", ".cpp", ".h" };
+    static const char* text_exts[] = { ".lua", ".txt", ".md", ".json", ".fscene", ".cfg", ".cpp", ".h" };
     for (const char* e : text_exts) {
         FileEditor& fe_ = settings.editors[settings.editor_count++];
         snprintf(fe_.extension, sizeof(fe_.extension), "%s", e);
@@ -802,7 +802,7 @@ bool Editor::save_scene(const char* path) {
     char full[512];
     if (path && *path) project_path(path, full, sizeof full);
     else if (scene_path[0]) snprintf(full, sizeof full, "%s", scene_path);
-    else project_path("scenes/main.fescene", full, sizeof full);
+    else project_path("scenes/main.fscene", full, sizeof full);
     // The folder it goes in (scenes/) is made when missing.
     if (const char* slash = strrchr(full, '/')) {
         char dir[512];
@@ -860,7 +860,7 @@ void Editor::save_as_popup() {
     if (want_save_as_) { ImGui::OpenPopup("Save scene as"); want_save_as_ = false; }
     ImGui::SetNextWindowSize(ImVec2(360 * settings.ui_scale, 0));
     if (!ImGui::BeginPopupModal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
-    ImGui::TextUnformatted("Name (saved in scenes/ as .fescene)");
+    ImGui::TextUnformatted("Name (saved in scenes/ as .fscene)");
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(-1);
     bool enter = ImGui::InputText("##save_as_name", save_as_name, sizeof save_as_name, ImGuiInputTextFlags_EnterReturnsTrue);
@@ -874,7 +874,7 @@ void Editor::save_as_popup() {
     bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
     if (save) {
         char rel[128];
-        snprintf(rel, sizeof rel, "scenes/%s%s", save_as_name, path_is_scene(save_as_name) ? "" : ".fescene");
+        snprintf(rel, sizeof rel, "scenes/%s%s", save_as_name, path_is_scene(save_as_name) ? "" : ".fscene");
         save_scene(rel);
     }
     if (save || cancel) ImGui::CloseCurrentPopup();
@@ -1087,8 +1087,8 @@ void Editor::main_menu() {
         menu_item("Open project...", nullptr, false, false);
         if (menu_item("Save scene", "Ctrl+S")) save_scene();
         if (menu_item("Save scene as...")) {
-            const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fescene";
-            snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 8 : 0)), cur);
+            const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fscene";
+            snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 7 : 0)), cur);
             want_save_as_ = true;
         }
         ImGui::Separator();
@@ -1128,9 +1128,9 @@ void Editor::main_menu() {
     {
         const char* name = path_filename(project_dir);
         char title[160];
-        // "project · scene" (the scene file without .fescene).
+        // "project · scene" (the scene file without .fscene).
         const char* sn = scene_path[0] ? path_filename(scene_path) : "";
-        int sl = (int)strlen(sn) - (path_is_scene(sn) ? 8 : 0);
+        int sl = (int)strlen(sn) - (path_is_scene(sn) ? 7 : 0);
         if (sl > 0) snprintf(title, sizeof(title), "%s  \xC2\xB7  %.*s", *name ? name : "No project", sl, sn);
         else snprintf(title, sizeof(title), "%s", *name ? name : "No project");
         float tw = ImGui::CalcTextSize(title).x;

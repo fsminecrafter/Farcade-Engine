@@ -1250,35 +1250,35 @@ int main() {
         CHECK(load_scene_text(fs, loop, strlen(loop), &rep) && fs.depth(*fs.get(1)) < 3 && fs.depth(*fs.get(2)) < 3 && fs.get(3)->parent == kNoObject,
               "parent loops and missing parents are cut");
 
-        // Through the editor: Ctrl+S saves to scenes/main.fescene, opening it brings the scene back.
+        // Through the editor: Ctrl+S saves to scenes/main.fscene, opening it brings the scene back.
         frames(1);
         const uint16_t key_s = (uint16_t)(platform::KEY_A + ('s' - 'a'));
         ev_key(platform::KEY_LCTRL, true, platform::MOD_CTRL); ev_key(key_s, true, platform::MOD_CTRL); frames(1);
         ev_key(key_s, false, platform::MOD_CTRL); ev_key(platform::KEY_LCTRL, false); frames(1);
-        CHECK(platform::file_exists("build/host/test-project/scenes/main.fescene") && strstr(ed.scene_path, "scenes/main.fescene"),
+        CHECK(platform::file_exists("build/host/test-project/scenes/main.fscene") && strstr(ed.scene_path, "scenes/main.fscene"),
               "Ctrl+S saves the scene (%s)", ed.scene_path);
         int count = ed.scene.count();
         ed.play();
         ed.scene.get(base)->position = Vec3(9, 9, 9);
-        CHECK(ed.save_scene("scenes/during-play.fescene"), "saving while playing works");
+        CHECK(ed.save_scene("scenes/during-play.fscene"), "saving while playing works");
         ed.stop();
         // Double-click in Files hands over the full path (project folder included).
         ed.new_scene();
         char main_full[300];
-        snprintf(main_full, sizeof main_full, "%s/scenes/main.fescene", ed.project_dir);
+        snprintf(main_full, sizeof main_full, "%s/scenes/main.fscene", ed.project_dir);
         ed.open_file(main_full);
         CHECK(ed.scene.count() == count && !strcmp(ed.scene_path, main_full), "opening a scene from Files works (%s)", ed.scene_path);
         ed.new_scene();
         CHECK(ed.scene.count() == 0 && !ed.scene_path[0], "New scene empties it");
-        CHECK(ed.open_scene("scenes/during-play.fescene") && ed.scene.count() == count && ed.scene.get(base)->position.x == 1.0f,
+        CHECK(ed.open_scene("scenes/during-play.fscene") && ed.scene.count() == count && ed.scene.get(base)->position.x == 1.0f,
               "the file saved during Play holds the scene from before Play");
         CHECK(ed.scene.script_prop(kid, "gate", "speed") && ed.scene.script_prop(kid, "gate", "speed")->number == 12.5f &&
               ed.scene.script_prop(kid, "gate", "speed")->max == 20.0f, "opening re-reads the script inputs and keeps the saved values");
         ObjectId fresh = ed.create_object("Fresh", MeshKind::Cube, Vec3(0, 0, 0));
         CHECK(fresh > lamp && fresh > cam2, "objects made after opening get new ids");
         int before = ed.scene.count();
-        platform::write_file("build/host/test-project/scenes/bad.fescene", "nope", 4);
-        CHECK(!ed.open_scene("scenes/bad.fescene") && ed.scene.count() == before, "a broken file leaves the scene alone");
+        platform::write_file("build/host/test-project/scenes/bad.fscene", "nope", 4);
+        CHECK(!ed.open_scene("scenes/bad.fscene") && ed.scene.count() == before, "a broken file leaves the scene alone");
         // File > Save scene as...
         CHECK(click_ui("menubar:File"), "File menu opens");
         frames(2);
@@ -1296,8 +1296,8 @@ int main() {
         frames(2);
         CHECK(click_ui("save_as:save"), "the prompt's Save button");
         frames(2);
-        CHECK(platform::file_exists("build/host/test-project/scenes/level2.fescene") && strstr(ed.scene_path, "level2.fescene"),
-              "Save scene as writes scenes/level2.fescene (%s)", ed.scene_path);
+        CHECK(platform::file_exists("build/host/test-project/scenes/level2.fscene") && strstr(ed.scene_path, "level2.fscene"),
+              "Save scene as writes scenes/level2.fscene (%s)", ed.scene_path);
         ed.new_scene();
         frames(2);
     }

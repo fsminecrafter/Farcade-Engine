@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
         // The pillar's material in the Inspector (Look: roughness, metal),
-        // with the scene saved as scenes/main.fescene (its name in the title).
+        // with the scene saved as scenes/main.fscene (its name in the title).
         for (int i = 0; i < ed.scene.count(); i++)
             if (!strcmp(ed.scene.at(i).name, "Pillar")) ed.scene.select_only(ed.scene.at(i).id);
         ed.save_scene();

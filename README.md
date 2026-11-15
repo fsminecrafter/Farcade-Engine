@@ -24,7 +24,7 @@ repository.
 | ![Shaping a collider](docs/screenshots/editor-collider.png) | ![GPU tier in the editor](docs/screenshots/editor-farcadegl-ultra.png) |
 | **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
 | ![Material settings in the Inspector](docs/screenshots/editor-material.png) | |
-| **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fescene` | |
+| **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fscene` | |
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
@@ -64,7 +64,7 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 - **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
 - **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box, sphere, capsule, cylinder and convex mesh collisions, rolling and tipping, bounce, friction, triggers), a stand-in for Jolt.
 - **Modules and scene objects**: `docs/modules.md`.
-- **Scene files** (`.fescene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files.
+- **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files.
 
 ```sh
 build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene

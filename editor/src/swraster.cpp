@@ -399,6 +399,37 @@ void clear_rect(Framebuffer& fb, const SwRect& r, uint32_t color) {
 
 SwRenderer::~SwRenderer() { free(verify_buf_); }
 
+SwUpscaler::~SwUpscaler() { free(buf_); free(map_); }
+
+const uint32_t* SwUpscaler::run(const uint32_t* src, int sw, int sh, int dw, int dh) {
+    if (!src || sw < 1 || sh < 1 || dw < 1 || dh < 1) return nullptr;
+    if (cap_ < (size_t)dw * dh) {
+        free(buf_);
+        buf_ = (uint32_t*)malloc((size_t)dw * dh * 4);
+        cap_ = buf_ ? (size_t)dw * dh : 0;
+    }
+    if (map_cap_ < dw) {
+        free(map_);
+        map_ = (int*)malloc((size_t)dw * sizeof(int));
+        map_cap_ = map_ ? dw : 0;
+    }
+    if (!buf_ || !map_) return nullptr;
+    for (int x = 0; x < dw; x++) map_[x] = (int)((int64_t)x * sw / dw);
+    int last_sy = -1;
+    for (int y = 0; y < dh; y++) {
+        int sy = (int)((int64_t)y * sh / dh);
+        uint32_t* out = buf_ + (size_t)y * dw;
+        if (sy == last_sy) { memcpy(out, out - dw, (size_t)dw * 4); continue; }
+        last_sy = sy;
+        const uint32_t* row = src + (size_t)sy * sw;
+        for (int x = 0; x < dw; x++) {
+            uint32_t p = row[map_[x]];
+            out[x] = (p & 0xFF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
+        }
+    }
+    return buf_;
+}
+
 int SwRenderer::render_incremental(ImDrawData* dd, Framebuffer& fb, uint32_t clear_color, SwRect* out) {
     stats_ = SwStats();
     if (dd->Textures)

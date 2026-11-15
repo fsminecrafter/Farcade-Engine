@@ -49,6 +49,22 @@ struct SwRect {
     int64_t area() const { return empty() ? 0 : (int64_t)(x1 - x0) * (y1 - y0); }
 };
 
+// Nearest-neighbour upscaling of an RGBA image (R in the low byte, as the
+// viewport renderers produce) to a framebuffer-format (XRGB) image, into a
+// buffer it keeps.
+class SwUpscaler {
+public:
+    ~SwUpscaler();
+    // Returns the dw x dh XRGB pixels (valid until the next call).
+    const uint32_t* run(const uint32_t* src, int sw, int sh, int dw, int dh);
+
+private:
+    uint32_t* buf_ = nullptr;
+    size_t cap_ = 0;
+    int* map_ = nullptr;
+    int map_cap_ = 0;
+};
+
 struct SwStats {
     uint32_t commands = 0;
     uint32_t triangles = 0;

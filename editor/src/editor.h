@@ -175,6 +175,9 @@ public:
     SwStats raster_stats;               // the last UI rasterization
     gfx::RendererStats fgl_stats;       // the last FarcadeGL render
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
+    bool adaptive_view = false;         // render the viewport smaller while it changes (Minimal-OS: slow CPU/GPU emulation)
+    int view_div_shown = 1;             // the shown viewport image was rendered at 1/this size
+    int view_div_target = 1;            // ... and will be refined to this when the view stops changing
     int view_scale_div = 1;             // FarcadeGL renders at 1/view_scale_div of the viewport size (experiments)
     bool bench_interacting = false;     // benchmarks: behave as during a camera drag
     double (*perf_clock)() = nullptr;           // a real clock for view_ms (default: platform::time_seconds)
@@ -214,6 +217,7 @@ private:
     void dockspace(float top, float bottom);
     void viewport_overlays(float x, float y, float w, float h);
     uint64_t view_hash(int w, int h) const;
+    int render_w_ = 0, render_h_ = 0;   // size the next viewport render is made at
     bool view_interacting_ = false;     // a drag in the viewport (last frame)
     bool view_interacting() const { return view_interacting_ || bench_interacting; }
     bool view_supersample_now() const { return settings.view_supersample && !view_interacting(); }

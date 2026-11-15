@@ -71,6 +71,7 @@ struct Shader {
 struct Variant {
     Shader shader;
     int nd = 0, np = 0, ns = 0;
+    bool draft = false;
     uint64_t last_use = 0;
     bool used = false;
 };
@@ -111,7 +112,7 @@ FGLMat4 to_fgl(const Mat4& m) {
 struct Renderer::Impl {
     int width = 0, height = 0;
     FGLContext* gl = nullptr;
-    Shader unlit, sky;
+    Shader unlit[2], sky[2];                // [draft]
     Variant variants[kMaxVariants];
     FGLBuffer sky_buffer = 0;
     uint32_t* pixels = nullptr;
@@ -195,22 +196,21 @@ struct Renderer::Impl {
         *s = Shader();
     }
 
-    bool make_shaders() {
+    // The unlit and the sky shader (compiled on first use, cached).
+    bool use_shader(Shader* s, bool sky_shader, bool draft) {
+        if (s->sh) return true;
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return false; }
-        bool ok = true;
-        shaders::unlit_vertex(vs, shaders::kSourceBytes);
-        shaders::unlit_fragment(fs, shaders::kSourceBytes);
-        ok = compile(&unlit, vs, fs, "unlit");
-        if (ok) {
-            shaders::sky_vertex(vs, shaders::kSourceBytes);
-            shaders::sky_fragment(fs, shaders::kSourceBytes);
-            ok = compile(&sky, vs, fs, "sky");
-        }
+        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, draft); }
+        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, draft); }
+        bool ok = compile(s, vs, fs, sky_shader ? "sky" : "unlit");
         free(vs);
         free(fs);
-        if (!ok) return false;
+        return ok;
+    }
+
+    bool make_shaders() {
         // The sky: one triangle that covers the screen.
         static const float tri[18] = { -1, -1, 0, 0, 0, 0,   3, -1, 0, 0, 0, 0,   -1, 3, 0, 0, 0, 0 };
         sky_buffer = fglCreateBuffer(gl, sizeof tri);
@@ -223,9 +223,9 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns) {
+    Shader* lit_variant(int nd, int np, int ns, bool draft) {
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.draft == draft) { v.last_use = frame; return &v.shader; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -239,14 +239,14 @@ struct Renderer::Impl {
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
         shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns);
+        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, draft);
         Shader s;
         bool ok = compile(&s, vs, fs, "lit");
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
-        slot->nd = nd; slot->np = np; slot->ns = ns;
+        slot->nd = nd; slot->np = np; slot->ns = ns; slot->draft = draft;
         slot->used = true;
         slot->last_use = frame;
         return &slot->shader;
@@ -508,7 +508,7 @@ struct Renderer::Impl {
         }
     }
 
-    void set_sky_frame(const RenderScene& scene, const LightSet& ls) {
+    void set_sky_frame(Shader& sky, const RenderScene& scene, const LightSet& ls) {
         const Locs& l = sky.loc;
         const Sky& k = scene.sky;
         set_post(sky, scene.post);
@@ -594,12 +594,17 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
         if (any_lit) {
-            lit = lit_variant(ls.nd, ls.np, ls.ns);
+            lit = lit_variant(ls.nd, ls.np, ls.ns, scene.draft);
             if (!lit) return false;
             set_lit_frame(*lit, scene, ls);
         }
-        set_post(unlit, scene.post);
-        set_sky_frame(scene, ls);
+        Shader& unlit_s = unlit[scene.draft ? 1 : 0];
+        Shader& sky_s = sky[scene.draft ? 1 : 0];
+        bool any_unlit = false;
+        for (int i = 0; i < scene.item_count; i++) if (scene.items[i].unlit) { any_unlit = true; break; }
+        if ((any_unlit && !use_shader(&unlit_s, false, scene.draft)) || !use_shader(&sky_s, true, scene.draft)) return false;
+        if (any_unlit) set_post(unlit_s, scene.post);
+        set_sky_frame(sky_s, scene, ls);
 
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
@@ -610,12 +615,12 @@ struct Renderer::Impl {
         bool failed = false;
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
-            draw_item(it, it.unlit ? unlit : *lit, &failed);
+            draw_item(it, it.unlit ? unlit_s : *lit, &failed);
         }
         if (!failed) {
             // The sky last, at the far plane: only uncovered pixels are shaded.
             fglDisable(gl, FGL_CULL_FACE);
-            fglUseShader(gl, sky.sh);
+            fglUseShader(gl, sky_s.sh);
             fglSetModel(gl, to_fgl(Mat4::identity()));
             fglDraw(gl, sky_buffer, 0, 3);
             if (submit() != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
@@ -648,8 +653,7 @@ struct Renderer::Impl {
             free_temps();
             forget_all();
             for (Variant& v : variants) { if (v.used) drop(&v.shader); v.used = false; }
-            drop(&unlit);
-            drop(&sky);
+            for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
             fglDestroyContext(gl);
@@ -694,7 +698,7 @@ void Renderer::shutdown() {
     impl_ = nullptr;
 }
 
-bool Renderer::ready() const { return impl_ && impl_->gl && impl_->sky.sh; }
+bool Renderer::ready() const { return impl_ && impl_->gl && impl_->sky_buffer; }
 
 bool Renderer::resize(int width, int height) {
     if (!impl_) return init(width, height);

@@ -68,6 +68,9 @@ struct RenderScene {
     Sky sky;
     SkyLight sky_light;
     PostProcess post;
+    // Cheaper shading for images that are replaced at once (a camera drag):
+    // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
+    bool draft = false;
 };
 
 struct RendererStats {

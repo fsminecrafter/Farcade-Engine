@@ -9,6 +9,7 @@
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "view_quality.h"
 #include "platform/platform.h"
 
 #include "imgui/imgui.h"
@@ -196,7 +197,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
 
     uint32_t top = settings.dark_theme ? 0x2B3038 : 0xC9D0DA;
     uint32_t bottom = settings.dark_theme ? 0x16181C : 0xEEF1F5;
-    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
+    view3d.begin(render_w_, render_h_, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
     bool wire = view_mode == ViewMode::Wireframe;
     {
         uint16_t sel_ids[256];
@@ -273,43 +274,71 @@ void Editor::panel_viewport() {
 
     // The scene into the viewport image, redrawn only when something it
     // shows has changed (the CPU preview is not cheap; idle frames are free).
+    // With adaptive_view the image is rendered at 1/d of the size while the
+    // scene keeps changing (view_quality.h) and once more, sharper, when it
+    // stopped.
     static View3D view3d;
-    static uint64_t last_hash = 0;
-    uint64_t hash = view_hash((int)v.size.x, (int)v.size.y);
+    static uint64_t last_hash = 0, last_base = 0;
     static gfx::Renderer fgl;
     static RenderBridge bridge;
-    static SwTexture fgl_tex;
+    static SwTexture fgl_tex, shown_tex;
+    static SwUpscaler upscaler;
+    static ViewQuality quality_fgl(true), quality_cpu(false);
     static bool fgl_failed = false;
     bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
+    ViewQuality& quality = use_fgl ? quality_fgl : quality_cpu;
+    const int full_w = (int)v.size.x, full_h = (int)v.size.y;
+    uint64_t hash, base;
     {
-        uint8_t extra[3] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera, (uint8_t)view_scale_div };
-        for (uint8_t b : extra) { hash ^= b; hash *= 1099511628211ull; }
-        if (looking_through_camera)
-            for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); hash ^= u; hash *= 1099511628211ull; }
+        // base: what the image shows, as if nothing were dragged (shadows and
+        // smoothing come back after a drag, that alone is no scene change).
+        bool keep_a = view_interacting_, keep_b = bench_interacting;
+        view_interacting_ = bench_interacting = false;
+        base = view_hash(full_w, full_h);
+        view_interacting_ = keep_a;
+        bench_interacting = keep_b;
+        hash = view_hash(full_w, full_h);
+        uint8_t extra[2] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera };
+        uint64_t* hps[2] = { &hash, &base };
+        for (uint64_t* hp : hps) {
+            for (uint8_t eb : extra) { *hp ^= eb; *hp *= 1099511628211ull; }
+            if (looking_through_camera)
+                for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); *hp ^= u; *hp *= 1099511628211ull; }
+        }
     }
-    if (hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels)) {
+    int div = 1;
+    bool moving = false;
+    if (adaptive_view) {
+        moving = view_interacting() || base != last_base;
+        div = moving ? quality.interactive_div(full_w, full_h) : quality.settled_div(full_w, full_h);
+        view_div_target = quality.settled_div(full_w, full_h);
+    }
+    if (div < view_scale_div) div = view_scale_div;
+    last_base = base;
+    { uint8_t d8 = (uint8_t)(div | (use_fgl && moving ? 0x80 : 0)); hash ^= d8; hash *= 1099511628211ull; }
+    bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
+    // A refine render only when it brings something (never to the same size).
+    if (need) {
         last_hash = hash;
+        int rw = div > 1 ? (full_w + div - 1) / div : full_w, rh = div > 1 ? (full_h + div - 1) / div : full_h;
+        if (rw < 16) rw = 16;
+        if (rh < 16) rh = 16;
+        render_w_ = rw;
+        render_h_ = rh;
+        double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+        double t0 = clock();
+        const uint32_t* rgba = nullptr;
         if (use_fgl) {
-            double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
-            double t0 = clock();
-            int w = (int)v.size.x / view_scale_div, h = (int)v.size.y / view_scale_div;
-            if (w < 16) w = 16;
-            if (h < 16) h = 16;
             bool first = !fgl.ready();
-            bool ok = fgl.ready() ? ((fgl.width() == w && fgl.height() == h) || fgl.resize(w, h)) : fgl.init(w, h);
+            bool ok = fgl.ready() ? ((fgl.width() == rw && fgl.height() == rh) || fgl.resize(rw, rh)) : fgl.init(rw, rh);
             if (first) { fgl_init_ms = fgl.init_ms(); fgl_init_shader_ms = fgl.init_shader_ms(); }
             if (ok) {
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+                bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
                 ok = fgl.render(bridge.scene);
             }
             if (ok) {
-                fgl_tex.format = SwTexture::RGBA8;
-                fgl_tex.opaque = true;
-                fgl_tex.version++;
-                fgl_tex.width = fgl.width();
-                fgl_tex.height = fgl.height();
-                fgl_tex.pitch = fgl.width();
-                fgl_tex.pixels = (const uint8_t*)fgl.pixels();
+                rgba = fgl.pixels();
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
             } else {
@@ -317,16 +346,43 @@ void Editor::panel_viewport() {
                 fgl_failed = true;
                 view_renderer = ViewRenderer::CpuPreview;
                 use_fgl = false;
+                div = 1;
+                render_w_ = full_w;
+                render_h_ = full_h;
                 render_view(view3d, &v);
             }
-            view_ms = (float)((clock() - t0) * 1000.0);
-            view_renders++;
         } else {
             render_view(view3d, &v);
         }
+        view_ms = (float)((clock() - t0) * 1000.0);
+        view_renders++;
+        view_div_shown = div;
+        if (use_fgl && rgba) quality.report((long)rw * rh, view_ms, adaptive_view && moving);
+        else if (!use_fgl) quality_cpu.report((long)view3d.width() * view3d.height(), view_ms, false);
+        // What the window shows: the image itself, or the small one stretched.
+        SwTexture& t = shown_tex;
+        const uint32_t* src = use_fgl ? rgba : (const uint32_t*)view3d.texture()->pixels;
+        int sw = use_fgl ? rw : view3d.width(), sh = use_fgl ? rh : view3d.height();
+        if (div > 1 && src) {
+            const uint32_t* up = upscaler.run(src, sw, sh, full_w, full_h);
+            t.format = SwTexture::XRGB8;
+            t.pixels = (const uint8_t*)up;
+            t.width = full_w;
+            t.height = full_h;
+            t.pitch = full_w;
+        } else {
+            t.format = SwTexture::RGBA8;
+            t.pixels = (const uint8_t*)src;
+            t.width = sw;
+            t.height = sh;
+            t.pitch = sw;
+        }
+        t.opaque = true;
+        t.linear = false;
+        t.version++;
+        fgl_tex.pixels = use_fgl ? (const uint8_t*)rgba : nullptr;     // "there is an image" marker
     }
-    if (use_fgl) dl->AddImage((ImTextureID)SwRenderer::texture_id(&fgl_tex), v.pos, ImVec2(v.pos.x + fgl_tex.width * view_scale_div, v.pos.y + fgl_tex.height * view_scale_div));
-    else dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
+    if (shown_tex.pixels) dl->AddImage((ImTextureID)SwRenderer::texture_id(&shown_tex), v.pos, ImVec2(v.pos.x + shown_tex.width, v.pos.y + shown_tex.height));
     // Icons for objects without a mesh (cameras, lights, sky ...), where
     // they are: they are picked by clicking near them.
     {

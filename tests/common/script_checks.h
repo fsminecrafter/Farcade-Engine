@@ -328,12 +328,13 @@ inline void check_cross_script() {
         "  self.n = #self.door:scripts()\n"
         "  self.door:send('used_by', self.object)\n"
         "  self.same = self.door:script('door') == d\n"
+        "  self.rawself = d.type == nil and d.print == nil and d.next == nil and type(d.open) == 'function'\n"
         "  self.other = self.door:scripts()[1].name\n"
         "  d.locked = false\n"
         "end\n", &sp, 1, objs);
     SCRIPT_CHECK(other > 0 && did > 0 && sid > 0);
     E.w.progress(0.1f);
-    SCRIPT_CHECK(E.flag(sid, "found") && E.flag(sid, "found2") && E.flag(sid, "missing") && E.flag(sid, "same"));
+    SCRIPT_CHECK(E.flag(sid, "rawself") && E.flag(sid, "found") && E.flag(sid, "found2") && E.flag(sid, "missing") && E.flag(sid, "same"));
     SCRIPT_CHECK(E.flag(sid, "locked") && near_(E.num(sid, "speed"), 3) && near_(E.num(sid, "ret"), 42) && near_(E.num(sid, "n"), 2));
     SCRIPT_CHECK(E.flag(did, "opened") && E.str_is(did, "how", "wide") && E.str_is(did, "used_by", "switch1"));
     SCRIPT_CHECK(E.str_is(sid, "other", "helper"));
@@ -376,6 +377,40 @@ inline void check_events() {
     E.rt.send(target, "alarm");
     SCRIPT_CHECK(E.errors == 1 && E.rt.stats().failed == 1);     // a is failed, b has no on_alarm
     SCRIPT_CHECK(near_(E.num(a, "alarm"), 7));
+}
+
+// ---- events from coroutines, many arguments, runaway recursion
+inline void check_coroutines_and_limits() {
+    SCRIPT_ENV(E);
+    Entity target = E.w.create("target");
+    Entity sender = E.w.create("sender");
+    int t = E.add(target, "scripts/t.lua",
+        "function on_ping(self, x, y) self.got = x + y end\n"
+        "function on_many(self, ...) self.cnt = select('#', ...); self.last = select(-1, ...) end\n"
+        "function on_alarm(self, n) self.alarm = n end\n"
+        "function on_x(self) fe.find('other'):send('x') end\n");
+    Entity other = E.w.create("other");
+    int o = E.add(other, "scripts/o.lua", "function on_x(self) fe.find('target'):send('x') end\n");
+    int s = E.add(sender, "scripts/s.lua",
+        "function on_start(self)\n"
+        "  local t = fe.find('target')\n"
+        "  coroutine.wrap(function() t:send('ping', 3, 4); fe.broadcast('alarm', 9) end)()\n"
+        "  local big = {}\n"
+        "  for i = 1, 5000 do big[i] = i end\n"
+        "  t:send('many', table.unpack(big))\n"
+        "  print(string.rep('x', 2000), 'tail')\n"
+        "end\n");
+    SCRIPT_CHECK(t > 0 && o > 0 && s > 0);
+    E.w.progress(0.1f);
+    SCRIPT_CHECK(near_(E.num(t, "got"), 7) && near_(E.num(t, "alarm"), 9));
+    SCRIPT_CHECK(near_(E.num(t, "cnt"), 5000) && near_(E.num(t, "last"), 5000));
+    SCRIPT_CHECK(E.logged("\ttail") && E.errors == 0);
+    // two scripts sending to each other forever: Lua's C stack limit stops it
+    E.rt.send(target, "x");
+    SCRIPT_CHECK(E.errors >= 1 && E.logged("stack overflow") && E.rt.stats().failed >= 1);
+    int failed = E.rt.stats().failed;
+    E.w.progress(0.1f);                // the world still runs
+    SCRIPT_CHECK(E.rt.stats().failed == failed && E.rt.stats().instances == 3);
 }
 
 // ---- fe.find, fe.current

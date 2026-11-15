@@ -28,6 +28,7 @@ int main() {
     run("modules", check_modules);
     run("cross script", check_cross_script);
     run("events", check_events);
+    run("coroutines", check_coroutines_and_limits);
     run("find", check_find);
     run("physics events", check_physics_events);
     run("errors", check_errors);

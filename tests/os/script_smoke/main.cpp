@@ -26,6 +26,7 @@ int main() {
     check_modules();
     check_cross_script();
     check_events();
+    check_coroutines_and_limits();
     check_find();
     check_physics_events();
     check_errors();

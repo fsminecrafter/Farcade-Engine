@@ -229,9 +229,12 @@ struct ScriptRuntime::Impl {
     // Calls the function `fname` of the instance's environment as
     // fn(self, <args pushed by push>). False when the instance has none (or
     // cannot run); an error stops the instance.
+    // `L` is the state the call comes from (a coroutine's, when a script sends
+    // an event from one), so the arguments on its stack can be copied.
     template <class Push>
-    bool invoke(Inst* in, const char* fname, Push push) {
+    bool invoke(lua_State* L, Inst* in, const char* fname, Push push) {
         if (in->removed || in->failed || in->dying) return false;
+        if (!lua_checkstack(L, 8)) return false;
         const int base = lua_gettop(L);
         lua_pushcfunction(L, msgh);
         lua_rawgeti(L, LUA_REGISTRYINDEX, in->env_ref);
@@ -247,43 +250,46 @@ struct ScriptRuntime::Impl {
         if (status != LUA_OK) {
             const char* m = lua_tostring(L, -1);
             log(ScriptLogLevel::Error, m ? m : "script error");
-            in->failed = true;
-            stats.failed++;
+            if (!in->failed) {
+                in->failed = true;
+                stats.failed++;
+            }
         }
         lua_settop(L, base);
         return true;
     }
     bool invoke0(Inst* in, const char* fname) {
-        return invoke(in, fname, [](lua_State*) { return 0; });
+        return invoke(L, in, fname, [](lua_State*) { return 0; });
     }
 
     // on_<event>(self, args...) and on_event(self, event, args...) of one
     // instance; the arguments are the stack values argbase .. argbase+nargs-1.
-    void deliver_one(Inst* in, const char* event, int argbase, int nargs) {
+    void deliver_one(lua_State* L, Inst* in, const char* event, int argbase, int nargs) {
+        if (!lua_checkstack(L, nargs + 8)) return;
         if (strcmp(event, "event") != 0) {      // (an event called "event" only reaches on_event)
             char fname[96];
             snprintf(fname, sizeof fname, "on_%s", event);
-            invoke(in, fname, [&](lua_State* l) {
+            invoke(L, in, fname, [&](lua_State* l) {
                 for (int i = 0; i < nargs; i++) lua_pushvalue(l, argbase + i);
                 return nargs;
             });
         }
-        invoke(in, "on_event", [&](lua_State* l) {
+        invoke(L, in, "on_event", [&](lua_State* l) {
             lua_pushstring(l, event);
             for (int i = 0; i < nargs; i++) lua_pushvalue(l, argbase + i);
             return nargs + 1;
         });
     }
-    void deliver(Entity e, const char* event, int argbase, int nargs) {
+    void deliver(lua_State* L, Entity e, const char* event, int argbase, int nargs) {
         Scope s(this);
         Inst* tmp[64];
         int n = collect(e, tmp, 64);
-        for (int i = 0; i < n; i++) deliver_one(tmp[i], event, argbase, nargs);
+        for (int i = 0; i < n; i++) deliver_one(L, tmp[i], event, argbase, nargs);
     }
-    void broadcast(const char* event, int argbase, int nargs) {
+    void broadcast(lua_State* L, const char* event, int argbase, int nargs) {
         Scope s(this);
         int n = count;
-        for (int i = 0; i < n && i < count; i++) deliver_one(list[i], event, argbase, nargs);
+        for (int i = 0; i < n && i < count; i++) deliver_one(L, list[i], event, argbase, nargs);
     }
 
     // ---- the frame
@@ -314,9 +320,10 @@ struct ScriptRuntime::Impl {
             int n = count;
             for (int i = 0; i < n && i < count; i++) {
                 Inst* in = list[i];
-                if (in->removed || in->failed || in->dying || !in->started) continue;
+                if (in->removed) continue;
                 if (!world->alive(in->e)) { remove_inst(in); continue; }
-                invoke(in, "on_update", [dt](lua_State* l) { lua_pushnumber(l, dt); return 1; });
+                if (in->failed || in->dying || !in->started) continue;
+                invoke(L, in, "on_update", [dt](lua_State* l) { lua_pushnumber(l, dt); return 1; });
             }
         }
         stats.update_ms = (now_seconds() - t) * 1000.0;
@@ -427,6 +434,18 @@ int v_normalized(lua_State* L) { push_vec3(L, normalize(check_vec3(L, 1))); retu
 int f_dot(lua_State* L) { lua_pushnumber(L, dot(check_vec3(L, 1), check_vec3(L, 2))); return 1; }
 int f_cross(lua_State* L) { push_vec3(L, cross(check_vec3(L, 1), check_vec3(L, 2))); return 1; }
 
+// self.<name> that is not set falls back to what the script's own chunk
+// defined (its functions: other scripts call door:open()), but not to the
+// library behind it (self.type, self.next, ... stay nil).
+int self_index(lua_State* L) {
+    if (!lua_getmetatable(L, 1)) return 0;
+    lua_pushstring(L, "env");
+    lua_rawget(L, -2);
+    lua_pushvalue(L, 2);
+    lua_rawget(L, -2);
+    return 1;
+}
+
 // ---------------------------------------------------------------- object handles
 
 // One userdata per entity (cached, weakly), so == and table keys work.
@@ -505,7 +524,7 @@ int obj_send(lua_State* L) {
     Entity e = live_entity(L, 1);
     const char* event = luaL_checkstring(L, 2);
     if (strlen(event) > 80) return luaL_error(L, "event name too long");
-    I->deliver(e, event, 3, lua_gettop(L) - 2);
+    I->deliver(L, e, event, 3, lua_gettop(L) - 2);
     return 0;
 }
 
@@ -745,7 +764,7 @@ int f_broadcast(lua_State* L) {
     Impl* I = impl_of(L);
     const char* event = luaL_checkstring(L, 1);
     if (strlen(event) > 80) return luaL_error(L, "event name too long");
-    I->broadcast(event, 2, lua_gettop(L) - 1);
+    I->broadcast(L, event, 2, lua_gettop(L) - 1);
     return 0;
 }
 
@@ -764,8 +783,8 @@ int f_print(lua_State* L) {
     luaL_Buffer b;
     luaL_buffinit(L, &b);
     for (int i = 1; i <= n; i++) {
+        if (i > 1) luaL_addchar(&b, '\t');         // (only luaL_addvalue may run with a value on the stack)
         luaL_tolstring(L, i, nullptr);
-        if (i > 1) luaL_addchar(&b, '\t');
         luaL_addvalue(&b);
     }
     luaL_pushresult(&b);
@@ -1008,8 +1027,10 @@ int ScriptRuntime::add_instance(Entity e, const char* path, const char* source, 
         lua_pushstring(L, nm);
         lua_setfield(L, -2, "name");
     }
-    lua_createtable(L, 0, 1);
+    lua_createtable(L, 0, 2);
     lua_pushvalue(L, base + 1);
+    lua_setfield(L, -2, "env");
+    lua_pushcfunction(L, self_index);
     lua_setfield(L, -2, "__index");
     lua_setmetatable(L, -2);
 
@@ -1060,7 +1081,7 @@ void ScriptRuntime::remove_instances(Entity e) {
 void ScriptRuntime::send(Entity target, const char* event) {
     Impl* I = impl_;
     if (!I || !event || I->dead(target)) return;
-    I->deliver(target, event, 0, 0);
+    I->deliver(I->L, target, event, 0, 0);
 }
 
 void ScriptRuntime::trigger_enter(Entity owner, Entity other) {
@@ -1070,7 +1091,7 @@ void ScriptRuntime::trigger_enter(Entity owner, Entity other) {
     Inst* tmp[64];
     int n = I->collect(owner, tmp, 64);
     for (int i = 0; i < n; i++)
-        I->invoke(tmp[i], "on_trigger_enter", [other](lua_State* l) { push_object(l, other); return 1; });
+        I->invoke(I->L, tmp[i], "on_trigger_enter", [other](lua_State* l) { push_object(l, other); return 1; });
 }
 
 void ScriptRuntime::trigger_exit(Entity owner, Entity other) {
@@ -1080,7 +1101,7 @@ void ScriptRuntime::trigger_exit(Entity owner, Entity other) {
     Inst* tmp[64];
     int n = I->collect(owner, tmp, 64);
     for (int i = 0; i < n; i++)
-        I->invoke(tmp[i], "on_trigger_exit", [other](lua_State* l) { push_object(l, other); return 1; });
+        I->invoke(I->L, tmp[i], "on_trigger_exit", [other](lua_State* l) { push_object(l, other); return 1; });
 }
 
 void ScriptRuntime::collision(Entity a, Entity b) {
@@ -1090,10 +1111,10 @@ void ScriptRuntime::collision(Entity a, Entity b) {
     Inst* tmp[64];
     int n = I->collect(a, tmp, 64);
     for (int i = 0; i < n; i++)
-        I->invoke(tmp[i], "on_collision", [b](lua_State* l) { push_object(l, b); return 1; });
+        I->invoke(I->L, tmp[i], "on_collision", [b](lua_State* l) { push_object(l, b); return 1; });
     n = I->collect(b, tmp, 64);
     for (int i = 0; i < n; i++)
-        I->invoke(tmp[i], "on_collision", [a](lua_State* l) { push_object(l, a); return 1; });
+        I->invoke(I->L, tmp[i], "on_collision", [a](lua_State* l) { push_object(l, a); return 1; });
 }
 
 namespace {
@@ -1170,7 +1191,9 @@ bool ScriptRuntime::run(const char* code) {
 
 const ScriptStats& ScriptRuntime::stats() const {
     static const ScriptStats none;
-    return impl_ ? impl_->stats : none;
+    if (!impl_) return none;
+    impl_->stats.instances = impl_->live;
+    return impl_->stats;
 }
 
 double ScriptRuntime::time() const { return impl_ ? now_seconds() - impl_->t0 : 0; }

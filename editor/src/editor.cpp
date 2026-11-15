@@ -664,7 +664,15 @@ void Editor::build_world() {
     pe.trigger_exit = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("left", t, o); };
     pe.collision = [](Entity a, Entity b, void* u) { ((Editor*)u)->physics_event("hit", a, b); };
     physics_->init(world_, pe);
-    for (int i = 0; i < world_count_; i++) physics_->add(world_entities_[i]);
+    for (int i = 0; i < world_count_; i++) {
+        physics_->add(world_entities_[i]);
+        // A Mesh collider is the convex hull of its object's mesh.
+        Object* o = scene.get(world_objects_[i]);
+        if (o && o->kind == ObjectKind::Mesh && o->modules.has(ModuleKind::Collider3D) && o->modules.collider3d.shape == ColliderShape::Mesh) {
+            const MeshData& md = Scene::mesh_for(*o);
+            physics_->set_mesh(world_entities_[i], md.positions, (int)md.vertex_count);
+        }
+    }
 }
 
 ObjectId Editor::object_of(uint64_t e) const {

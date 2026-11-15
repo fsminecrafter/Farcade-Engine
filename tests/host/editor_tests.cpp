@@ -1,6 +1,7 @@
 // Editor interaction tests on the headless platform: mouse and keyboard
 // events go in, the editor's state is checked after a few frames.
 #include "editor.h"
+#include "swraster.h"
 #include "ecs/ecs.h"
 #include "platform/headless.h"
 
@@ -816,6 +817,53 @@ int main() {
         }
         ed.stop();
         CHECK(ed.play_world() == nullptr && ed.scene.get(root)->position.x == 1.0f, "Stop drops the world and restores the scene");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- the FarcadeGL renderer in the viewport, and Play through the current camera
+    {
+        int objects0 = ed.scene.count();
+        ed.scene.clear_selection();
+        frames(2);
+        CHECK(click_ui("run:renderer"), "the renderer menu opens");
+        frames(2);
+        CHECK(click_ui("menu:FarcadeGL") && ed.view_renderer == Editor::ViewRenderer::FarcadeGL, "the menu switches to FarcadeGL");
+        ev_key(platform::KEY_ESCAPE, true); frames(1); ev_key(platform::KEY_ESCAPE, false); frames(3);
+        int errors = 0;
+        for (int i = 0; i < ed.log_count; i++) errors += ed.log_lines[i].level == LogLevel::Error;
+        CHECK(ed.view_renderer == Editor::ViewRenderer::FarcadeGL && errors == 0, "FarcadeGL renders without errors (%d)", errors);
+        CHECK(ed.view_triangles > 0, "FarcadeGL drew triangles (%d)", ed.view_triangles);
+        // A sky changes the picture: read a viewport pixel before and after.
+        auto pixel = [&](float fx, float fy) {
+            Framebuffer& fb = platform::framebuffer();
+            int x = (int)(ed.view_rect[0] + ed.view_rect[2] * fx), y = (int)(ed.view_rect[1] + ed.view_rect[3] * fy);
+            return fb.pixels[y * fb.pitch + x];
+        };
+        uint32_t before = pixel(0.5f, 0.12f);
+        ObjectId sky = ed.create_kind("Test Sky", ObjectKind::Sky, Vec3(0, 3, 0));
+        ed.scene.set_current(sky, ModuleKind::Sky);
+        ed.scene.get(sky)->modules.sky.mode = SkyMode::Color;
+        ed.scene.get(sky)->modules.sky.zenith = Vec3(1.0f, 0.0f, 0.0f);
+        ed.scene.clear_selection();
+        frames(3);
+        uint32_t after = pixel(0.5f, 0.12f);
+        CHECK(before != after && ((after >> 16) & 0xFF) > ((after >> 8) & 0xFF) + 40, "a red sky turns the background red (%08X -> %08X)", before, after);
+        // Play through the current camera.
+        ObjectId cam = ed.create_kind("Look Cam", ObjectKind::Camera, Vec3(0, 1.5f, 6));
+        ed.scene.set_current(cam, ModuleKind::Camera);
+        ed.scene.clear_selection();
+        ed.play();
+        frames(3);
+        CHECK(ed.looking_through_camera, "Play looks through the current camera");
+        ed.settings.play_through_camera = false;
+        frames(2);
+        CHECK(!ed.looking_through_camera, "unless that is switched off");
+        ed.settings.play_through_camera = true;
+        ed.stop();
+        frames(2);
+        CHECK(!ed.looking_through_camera, "editing uses the editor camera");
+        ed.view_renderer = Editor::ViewRenderer::CpuPreview;
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         frames(2);
     }

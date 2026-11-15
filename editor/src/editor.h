@@ -37,6 +37,7 @@ struct Settings {
     bool view_supersample = true;       // 2x2 supersampling in the viewport
     bool view_shadows = true;           // shadows on the ground
 #endif
+    bool play_through_camera = true;    // Play shows the scene through the current Camera object
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
     float snap_scale = 0.1f;
@@ -71,6 +72,11 @@ public:
     Tool tool = Tool::Move;
     bool gizmo_local = false;           // gizmo along the object's axes (X toggles); Scale always is
     ViewMode view_mode = ViewMode::Lit;
+    // What draws the viewport: the CPU preview (grid, outline, shadows) or
+    // FarcadeGL (lights, sky, sky light, post processing; engine/gfx).
+    enum class ViewRenderer : uint8_t { CpuPreview, FarcadeGL };
+    ViewRenderer view_renderer = ViewRenderer::CpuPreview;
+    bool looking_through_camera = false;        // last frame: the view was the current camera's
     Palette pal = {};
     char project_dir[256] = {};
     char files_dir[256] = {};

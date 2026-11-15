@@ -1,10 +1,12 @@
 // farcade-editor: the editor on Minimal-OS (full screen).
 //
-//   run 0:/programs/farcade-editor.run [--frames N]
+//   run 0:/programs/farcade-editor.run [--frames N] [--farcadegl]
 //
 // Prints "FE EDITOR READY" once the first frame is on the screen, then every
 // 60 frames the average frame time. With --frames N it quits after N frames
-// and prints "FE EDITOR DONE".
+// and prints "FE EDITOR DONE". --farcadegl draws the viewport with FarcadeGL
+// (the kernel's FGPU) instead of the CPU preview and reports, every 60
+// frames, whether it still does ("renderer FarcadeGL" or "renderer CPU").
 #include "editor.h"
 #include "platform/platform.h"
 
@@ -29,6 +31,12 @@ static void demo_scene(Editor& ed) {
     ObjectId pillar = ed.create_object("Pillar", MeshKind::Cylinder, Vec3(2.6f, 1.0f, 1.6f));
     ed.scene.get(pillar)->scale = Vec3(0.6f, 2.0f, 0.6f);
     ed.scene.get(pillar)->color = Vec3(0.75f, 0.76f, 0.80f);
+    // A sun, a sky, a camera: what FarcadeGL lights and draws.
+    ed.create_light(LightType::Directional, Vec3(-1.5f, 4.0f, -2.5f));
+    ed.create_kind("Sky", ObjectKind::Sky, Vec3(-3.5f, 2.2f, -3.0f));
+    ed.create_kind("Sky Light", ObjectKind::SkyLight, Vec3(-2.7f, 2.2f, -3.0f));
+    ObjectId cam = ed.create_kind("Main Camera", ObjectKind::Camera, Vec3(-3.5f, 2.2f, 4.5f));
+    ed.scene.get(cam)->rotation = Quat::euler_deg(Vec3(-18, -35, 0));
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
     ed.tool = Tool::Move;
@@ -37,8 +45,11 @@ static void demo_scene(Editor& ed) {
 
 int main(int argc, char** argv) {
     long max_frames = 0;
-    for (int i = 1; i < argc; i++)
+    bool farcadegl = false;
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) max_frames = atol(argv[++i]);
+        else if (strcmp(argv[i], "--farcadegl") == 0) farcadegl = true;
+    }
 
     static Editor ed;
     if (!ed.init(0, 0)) {
@@ -50,6 +61,7 @@ int main(int argc, char** argv) {
     // the cursor there before the first mouse event arrives.
     ImGui::GetIO().AddMousePosEvent(platform::width() * 0.5f, platform::height() * 0.5f);
     demo_scene(ed);
+    if (farcadegl) ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
 
     long frames = 0;
     double window_start = platform::time_seconds();
@@ -62,7 +74,8 @@ int main(int argc, char** argv) {
             window_start = platform::time_seconds();
         } else if ((frames - 1) % 60 == 0) {
             double now = platform::time_seconds();
-            printf("FE EDITOR frames %ld: %.1f ms/frame (last 60)\n", frames, (now - window_start) * 1000.0 / 60.0);
+            printf("FE EDITOR frames %ld: %.1f ms/frame (last 60), renderer %s, viewport %.1f ms\n", frames, (now - window_start) * 1000.0 / 60.0,
+                   ed.view_renderer == Editor::ViewRenderer::FarcadeGL ? "FarcadeGL" : "CPU", ed.view_ms);
             window_start = now;
         }
         if (max_frames && frames >= max_frames) break;

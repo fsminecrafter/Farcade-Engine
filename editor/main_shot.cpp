@@ -231,6 +231,24 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }
+    // The FarcadeGL renderer: the editor view, then Play through the current camera.
+    {
+        ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
+        ed.scene.select_only(kNoObject);
+        for (int i = 0; i < 3; i++) ed.frame();
+        printf("FarcadeGL viewport: %.1f ms\n", ed.view_ms);
+        snprintf(path, sizeof(path), "%s/editor-farcadegl.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.play();
+        for (int i = 0; i < 3; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-farcadegl-play.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.stop();
+        ed.view_renderer = Editor::ViewRenderer::CpuPreview;
+        ed.frame();
+    }
     if (const Editor::UiRect* r = ed.find_rect("run:renderer")) {
         float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
         platform::Event e;

@@ -5,6 +5,7 @@
 // FarcadeGL renderer replaces that drawing later; picking, camera and
 // gizmos stay.
 #include "editor.h"
+#include "render_bridge.h"
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
@@ -102,6 +103,9 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.modules.present, sizeof(o.modules.present));
         mix(&o.modules.light, sizeof(o.modules.light));
         mix(&o.modules.camera, sizeof(o.modules.camera));
+        mix(&o.modules.sky, sizeof(o.modules.sky));
+        mix(&o.modules.sky_light, sizeof(o.modules.sky_light));
+        mix(&o.modules.post_process, sizeof(o.modules.post_process));
         mix(&o.visible, sizeof(o.visible));
         mix(&o.parent, sizeof(o.parent));
     }
@@ -253,6 +257,15 @@ void Editor::panel_viewport() {
     view_rect[0] = v.pos.x; view_rect[1] = v.pos.y; view_rect[2] = v.size.x; view_rect[3] = v.size.y;
     v.view = camera.view();
     v.proj = camera.projection(v.size.x / v.size.y);
+    Vec3 eye = camera.eye();
+    float znear = 0.1f, zfar = 500.0f;
+    // In Play, the view of the current Camera object (the game's view).
+    looking_through_camera = false;
+    if (playing() && settings.play_through_camera) {
+        ObjectId cam = scene.current(ModuleKind::Camera);
+        if (cam && RenderBridge::camera_view(scene, cam, v.size.x / v.size.y, &v.view, &v.proj, &eye, &znear, &zfar))
+            looking_through_camera = true;
+    }
     v.viewproj = v.proj * v.view;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 end(v.pos.x + v.size.x, v.pos.y + v.size.y);
@@ -263,18 +276,56 @@ void Editor::panel_viewport() {
     static View3D view3d;
     static uint64_t last_hash = 0;
     uint64_t hash = view_hash((int)v.size.x, (int)v.size.y);
-    if (hash != last_hash || !view3d.width()) {
-        last_hash = hash;
-        render_view(view3d, &v);
+    static gfx::Renderer fgl;
+    static RenderBridge bridge;
+    static SwTexture fgl_tex;
+    static bool fgl_failed = false;
+    bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
+    {
+        uint8_t extra[2] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera };
+        for (uint8_t b : extra) { hash ^= b; hash *= 1099511628211ull; }
+        if (looking_through_camera)
+            for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); hash ^= u; hash *= 1099511628211ull; }
     }
-    dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
+    if (hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels)) {
+        last_hash = hash;
+        if (use_fgl) {
+            double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+            double t0 = clock();
+            int w = (int)v.size.x, h = (int)v.size.y;
+            bool ok = fgl.ready() ? ((fgl.width() == w && fgl.height() == h) || fgl.resize(w, h)) : fgl.init(w, h);
+            if (ok) {
+                bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+                ok = fgl.render(bridge.scene);
+            }
+            if (ok) {
+                fgl_tex.format = SwTexture::RGBA8;
+                fgl_tex.width = fgl.width();
+                fgl_tex.height = fgl.height();
+                fgl_tex.pitch = fgl.width();
+                fgl_tex.pixels = (const uint8_t*)fgl.pixels();
+                view_triangles = fgl.stats().triangles;
+            } else {
+                log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
+                fgl_failed = true;
+                view_renderer = ViewRenderer::CpuPreview;
+                use_fgl = false;
+                render_view(view3d, &v);
+            }
+            view_ms = (float)((clock() - t0) * 1000.0);
+        } else {
+            render_view(view3d, &v);
+        }
+    }
+    if (use_fgl) dl->AddImage((ImTextureID)SwRenderer::texture_id(&fgl_tex), v.pos, ImVec2(v.pos.x + fgl_tex.width, v.pos.y + fgl_tex.height));
+    else dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
     // Icons for objects without a mesh (cameras, lights, sky ...), where
     // they are: they are picked by clicking near them.
     {
         float fs = ImGui::GetFontSize();
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
-            if (o.kind == ObjectKind::Mesh || !scene.visible_in_tree(o)) continue;
+            if (o.kind == ObjectKind::Mesh || !scene.visible_in_tree(o) || looking_through_camera) continue;
             Mat4 m = scene.world_matrix(o);
             Vec4 c = v.viewproj * Vec4{ m.m[12], m.m[13], m.m[14], 1.0f };
             if (c.w <= 0.05f) continue;

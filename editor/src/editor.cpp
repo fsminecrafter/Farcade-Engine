@@ -899,7 +899,7 @@ void Editor::run_controls() {
     float bar_h = bar->Size.y;
     float bs = ImGui::GetFrameHeight();
     char chip_label[64];
-    snprintf(chip_label, sizeof(chip_label), "CPU preview  %.1f ms", view_ms);
+    snprintf(chip_label, sizeof(chip_label), "%s  %.1f ms", view_renderer == ViewRenderer::FarcadeGL ? "FarcadeGL" : "CPU preview", view_ms);
     float chip_w = ImGui::CalcTextSize("CPU preview  000.0 ms").x + bs + 14;
     float group_w = bs * 2 + 8;
     float total = group_w + 10 + chip_w + 6 + bs + 8;
@@ -942,7 +942,16 @@ void Editor::run_controls() {
     ImGui::SetNextWindowPos(ImVec2(cp.x + chip_w, cp.y + bs + 4), ImGuiCond_Always, ImVec2(1, 0));
     if (ImGui::BeginPopup("##renderer_popup")) {
         heading("Viewport renderer");
-        ImGui::TextDisabled("CPU preview: a stand-in until the FarcadeGL renderer");
+        if (ImGui::RadioButton("CPU preview", view_renderer == ViewRenderer::CpuPreview)) view_renderer = ViewRenderer::CpuPreview;
+        track("menu:CPU preview");
+        ImGui::SameLine();
+        ImGui::TextDisabled("grid, outline, shadows");
+        if (ImGui::RadioButton("FarcadeGL", view_renderer == ViewRenderer::FarcadeGL)) view_renderer = ViewRenderer::FarcadeGL;
+        track("menu:FarcadeGL");
+        ImGui::SameLine();
+        ImGui::TextDisabled("lights, sky, post processing");
+        ImGui::Checkbox("Play through the current camera", &settings.play_through_camera);
+        track("menu:Play camera");
         ImGui::Separator();
         ImGui::TextDisabled("Display");
         if (ImGui::RadioButton("Lit", view_mode == ViewMode::Lit)) view_mode = ViewMode::Lit;

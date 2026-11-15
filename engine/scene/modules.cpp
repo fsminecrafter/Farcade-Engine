@@ -101,6 +101,7 @@ const FieldInfo kSky[] = {
     FE_F(Sky, ground, "Ground", Color, 0, 0, nullptr),
     FE_F(Sky, sun_size, "Sun size", Float, 0, 20, nullptr),
     FE_F(Sky, intensity, "Intensity", Float, 0, 10, nullptr),
+    FE_F(Sky, fog, "Fog", Float, 0, 1, nullptr),
 };
 
 const FieldInfo kPost[] = {

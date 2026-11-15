@@ -160,6 +160,7 @@ struct Sky {
     Vec3 ground = Vec3(0.30f, 0.28f, 0.26f);
     float sun_size = 1.5f;              // degrees; 0 = no sun disc
     float intensity = 1.0f;
+    float fog = 0.0f;                   // 0..1: distance fog towards the horizon color
     bool current = false;
 };
 

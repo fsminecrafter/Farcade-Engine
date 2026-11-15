@@ -15,6 +15,7 @@
 
 #include "core/math.h"
 #include "scene/modules.h"
+#include "gfx/graphics_settings.h"
 #include <stdint.h>
 
 namespace fe::gfx {
@@ -34,7 +35,9 @@ struct DrawItem {
     Mat4 model;                         // object to world
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);  // sRGB albedo
     float roughness = 0.6f;
+    float metallic = 0.0f;              // GPU tier (PBR)
     bool unlit = false;
+    bool cast_shadows = true;           // GPU tier
 };
 
 // A light in world space (filled from a Light module and its object).
@@ -105,6 +108,15 @@ public:
     const char* error() const;
     // Drops cached GPU meshes (for example when a model file changed).
     void forget_meshes();
+
+    // Quality settings (graphics_settings.h). The GPU tier runs only when
+    // FarcadeGL is on a graphics card, unless the settings force it.
+    void set_settings(const GraphicsSettings& s);
+    const GraphicsSettings& settings() const;
+    // What runs with the current settings and backend.
+    GraphicsFeatures features() const;
+    // The FarcadeGL backend, from fglGetDeviceInfo ("cpu ...", "nvidia 3D engine").
+    const char* backend() const;
 
     struct Impl;
 private:

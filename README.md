@@ -20,8 +20,8 @@ repository.
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
-*The editor running full screen on Minimal-OS (QEMU, 1024x768), from an
-earlier build.*
+*The editor running full screen on Minimal-OS (QEMU, 1024x768), with the
+entity system linked in.*
 
 The screenshots come from `build/host/bin/fe-editor-shot <dir>`, which
 renders the editor headless on the PC, and from `tools/ci/run_os.sh` with

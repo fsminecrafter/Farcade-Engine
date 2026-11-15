@@ -872,6 +872,21 @@ void Editor::settings_graphics() {
             prop_label("  Soft");
             changed |= toggle_switch("##soft", &g.soft_shadows);
         }
+        prop_label("Point / spot shadows");
+        changed |= toggle_switch("##lshadows", &g.local_shadows);
+        track("gfx:local_shadows");
+        if (g.local_shadows) {
+            prop_label("  Lights");
+            changed |= ImGui::SliderInt("##lsn", &g.local_shadow_lights, 1, 4);
+            track("gfx:local_lights");
+            static const int asizes[] = { 512, 1024, 2048, 4096 };
+            static const char* asize_names[] = { "512", "1024", "2048", "4096" };
+            int ai = 1;
+            for (int i = 0; i < 4; i++) if (asizes[i] == g.local_shadow_resolution) ai = i;
+            prop_label("  Atlas");
+            if (ImGui::Combo("##lsres", &ai, asize_names, 4)) { g.local_shadow_resolution = asizes[ai]; changed = true; }
+            faint("A spot light takes one of 16 atlas tiles, a point light six.");
+        }
         prop_label("Ambient occlusion");
         changed |= toggle_switch("##ao", &g.ambient_occlusion);
         track("gfx:ao");
@@ -894,7 +909,8 @@ void Editor::settings_graphics() {
         ImGui::EndDisabled();
         if (fgl_backend[0]) {
             char on[128];
-            snprintf(on, sizeof(on), "Running now: %s%s%s%s%s", fgl_features.shadows ? "shadows  " : "", fgl_features.ambient_occlusion ? "AO  " : "",
+            snprintf(on, sizeof(on), "Running now: %s%s%s%s%s%s", fgl_features.shadows ? "shadows  " : "",
+                     fgl_features.local_shadows ? "point/spot shadows  " : "", fgl_features.ambient_occlusion ? "AO  " : "",
                      fgl_features.bloom ? "bloom  " : "", fgl_features.antialiasing ? "AA  " : "", fgl_features.pbr ? "PBR" : "");
             faint(fgl_features.gpu_tier ? on : "Running now: base tier only");
         }

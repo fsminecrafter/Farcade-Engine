@@ -138,6 +138,29 @@ const char* const kPbrTail =
     "    spec += rad * F * (dv * ndl * 3.14159265);\n"
     "}\n";
 
+const char* const kComp[4] = { "x", "y", "z", "w" };
+
+// The atlas lookup of one point / spot shadow, written out (a function call
+// would copy its arguments into new registers). In: d (light to surface),
+// a = (right, up, forward) coordinates of d in the light camera, p = (first
+// tile, tan of half the fov, relative bias, 1 / range). Out: LS.<comp>.
+void emit_atlas_lookup(Text& t, const char* comp, bool soft) {
+    t.add("        vec2 uv = clamp(vec2(0.5, 0.5) + vec2(a.x, -a.y) * (0.5 / (max(a.z, 0.0001) * p.y)), u_la.z, 1.0 - u_la.z);\n"
+          "        p.y = floor((p.x + 0.5) * u_la.y);\n"            // the tile's row
+          "        uv = (vec2(p.x - p.y * u_la.x, p.y) + uv) * u_la.y;\n"
+          "        p.w = length(d) * p.w * (1.0 - p.z);\n");         // the reference depth
+    if (soft) {
+        t.add("        p.y = u_la.z * u_la.y * 0.6667;\n"
+              "        p.z = atlas_tap(uv - vec2(p.y, p.y), p.w);\n"
+              "        p.z = p.z + atlas_tap(uv + vec2(p.y, -p.y), p.w);\n"
+              "        p.z = p.z + atlas_tap(uv + vec2(-p.y, p.y), p.w);\n"
+              "        p.z = p.z + atlas_tap(uv + vec2(p.y, p.y), p.w);\n"
+              "        LS."); t.add(comp); t.add(" = p.z * 0.25;\n");
+    } else {
+        t.add("        LS."); t.add(comp); t.add(" = atlas_tap(uv, p.w);\n");
+    }
+}
+
 // Vogel disk offsets of the soft shadow filter, rotated per pixel.
 constexpr int kShadowTaps = 10;
 
@@ -181,8 +204,9 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
           "uniform vec4 u_gnd;\n"
           "uniform vec4 u_fog;\n");
     if (total > 0) {
-        const char* names[4] = { "u_l0", "u_l1", "u_l2", "u_l3" };
-        for (int i = 0; i < 4; i++) {
+        // the spot cone is in u_l1.w (cos outer) and u_l2.w (cos inner): no u_l3
+        const char* names[3] = { "u_l0", "u_l1", "u_l2" };
+        for (int i = 0; i < 3; i++) {
             t.add("uniform vec4 "); t.add(names[i]); t.add("["); t.num(total); t.add("];\n");
         }
     }
@@ -198,8 +222,24 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
               "varying vec3 v_sh;\n");
     }
     if (k.ao) t.add("uniform sampler2D u_ao;\n");
+    const bool local = k.nps + k.nss > 0;
+    if (local) {
+        t.add("uniform sampler2D u_atlas;\n"
+              "uniform vec4 u_la;\n");          // x tiles per row, y 1 / that, z tile inset (uv)
+        // per shadowed light (points, then spots): x first tile, y tan(half fov), z bias, w normal offset per meter
+        t.add("uniform vec4 u_lsh["); t.num(k.nps + k.nss); t.add("];\n");
+    }
     t.add(kTone);
     t.add(kPack);
+    if (local) {
+        // d: from the light to the (offset) surface point; s, u, f: the light
+        // camera's right, up and forward; tn: tan of half its field of view.
+        // Depth is the distance to the light / range.
+        t.add("float atlas_tap(vec2 uv, float dref) {\n"
+              "    return step(dref, unpack24(texture(u_atlas, uv).rgb));\n"
+              "}\n"
+              );
+    }
     if (k.shadow) {
         t.add("float shadow_tap(vec2 uv, float dref) {\n"
               "    return step(dref - u_shp.w, unpack24(texture(u_shadow, uv).rgb));\n"
@@ -239,9 +279,45 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
           "    vec3 N = normalize(v_nrm);\n");
     // the shadow first: it needs many registers, main has few live values yet
     if (k.shadow && k.nd > 0) {
-        t.add("    float SH = shadow_factor(N, -u_l1[");
+        // In a block: an inlined function's temporaries live until the block ends.
+        t.add("    float SH = 1.0;\n    {\n        SH = shadow_factor(N, -u_l1[");
         t.num(k.shadow_light);
-        t.add("].xyz);\n");
+        t.add("].xyz);\n    }\n");
+    }
+    // point / spot shadows too, all four in one register
+    if (local) {
+        t.add("    vec4 LS = vec4(1.0);\n");
+        for (int j = 0; j < k.nps; j++) {
+            int i = k.nd + j;
+            t.add("    {\n"
+                  "        vec3 d = v_pos - u_l0["); t.num(i); t.add("].xyz;\n"
+                  "        d = d + N * (u_lsh["); t.num(j); t.add("].w * length(d));\n"
+                  "        vec3 a = abs(d);\n"
+                  "        vec3 m = vec3(step(a.y, a.x) * step(a.z, a.x), 0.0, 0.0);\n"
+                  "        m.y = (1.0 - m.x) * step(a.z, a.y);\n"
+                  "        m.z = 1.0 - m.x - m.y;\n"
+                  "        a = step(d, vec3(0.0));\n"            // 1 where d points the negative way
+                  "        vec3 f = m * (1.0 - 2.0 * a);\n"
+                  "        vec4 p = vec4(u_lsh["); t.num(j); t.add("].x + dot(m, a + vec3(0.0, 2.0, 4.0)), u_lsh["); t.num(j);
+            t.add("].y, u_lsh["); t.num(j); t.add("].z, 1.0 / u_l0["); t.num(i); t.add("].w);\n"
+                  "        m = cross(f, vec3(0.0, 1.0 - m.y, m.y));\n"   // right
+                  "        a = vec3(dot(d, m), dot(d, cross(m, f)), dot(d, f));\n");
+            emit_atlas_lookup(t, kComp[j], k.local_soft);
+            t.add("    }\n");
+        }
+        for (int j = 0; j < k.nss; j++) {
+            int i = k.nd + k.np + j, sj = k.nps + j;
+            // the spot's camera from its direction, as atlas_pass builds it
+            t.add("    {\n"
+                  "        vec3 d = v_pos - u_l0["); t.num(i); t.add("].xyz;\n"
+                  "        d = d + N * (u_lsh["); t.num(sj); t.add("].w * length(d));\n"
+                  "        vec3 f = u_l1["); t.num(i); t.add("].xyz;\n"
+                  "        vec3 m = normalize(cross(f, vec3(0.0, 1.0 - step(0.99, abs(f.y)), step(0.99, abs(f.y)))));\n"
+                  "        vec3 a = vec3(dot(d, m), dot(d, cross(m, f)), dot(d, f));\n"
+                  "        vec4 p = vec4(u_lsh["); t.num(sj); t.add("].xyz, 1.0 / u_l0["); t.num(i); t.add("].w);\n");
+            emit_atlas_lookup(t, kComp[sj], k.local_soft);
+            t.add("    }\n");
+        }
     }
     t.add("    vec3 V = normalize(u_cam.xyz - v_pos);\n"
           "    float rough = clamp(u_mat.w, 0.045, 1.0);\n"
@@ -274,16 +350,34 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         }
         t.add(tail);
     }
-    if (k.np > 0) {
-        t.add("    for (int i = "); t.num(k.nd); t.add("; i < "); t.num(k.nd + k.np); t.add("; i++) {\n");
+    // Shadowed point lights: one-pass loops (so i is a constant index). The
+    // cube face is picked with arithmetic (the shader machine has no branches)
+    // and its camera built as Mat4::look_at does (see cube_face).
+    for (int j = 0; j < k.nps; j++) {
+        int i = k.nd + j;
+        t.add("    for (int i = "); t.num(i); t.add("; i < "); t.num(i + 1); t.add("; i++) {\n");
+        t.add(kPointHead);
+        t.add("    float S = LS."); t.add(kComp[j]); t.add(";\n");
+        t.add(tail);
+    }
+    if (k.np > k.nps) {
+        t.add("    for (int i = "); t.num(k.nd + k.nps); t.add("; i < "); t.num(k.nd + k.np); t.add("; i++) {\n");
         t.add(kPointHead);
         t.add("    float S = 1.0;\n");
         t.add(tail);
     }
-    if (k.ns > 0) {
-        t.add("    for (int i = "); t.num(k.nd + k.np); t.add("; i < "); t.num(total); t.add("; i++) {\n");
+    for (int j = 0; j < k.nss; j++) {
+        int i = k.nd + k.np + j;
+        t.add("    for (int i = "); t.num(i); t.add("; i < "); t.num(i + 1); t.add("; i++) {\n");
         t.add(kPointHead);
-        t.add("    att = att * smoothstep(u_l3[i].x, u_l3[i].y, dot(-L, u_l1[i].xyz));\n"
+        t.add("    att = att * smoothstep(u_l1[i].w, u_l2[i].w, dot(-L, u_l1[i].xyz));\n"
+              "    float S = LS."); t.add(kComp[k.nps + j]); t.add(";\n");
+        t.add(tail);
+    }
+    if (k.ns > k.nss) {
+        t.add("    for (int i = "); t.num(k.nd + k.np + k.nss); t.add("; i < "); t.num(total); t.add("; i++) {\n");
+        t.add(kPointHead);
+        t.add("    att = att * smoothstep(u_l1[i].w, u_l2[i].w, dot(-L, u_l1[i].xyz));\n"
               "    float S = 1.0;\n");
         t.add(tail);
     }
@@ -392,6 +486,36 @@ void hq_shadow_fragment(char* out, size_t cap) {
     t.add("void main() {\n"
           "    gl_FragColor = vec4(pack24(v_d), 1.0);\n"
           "}\n");
+}
+
+void hq_local_shadow_vertex(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform mat4 fgl_ModelViewProjection;\n"
+          "uniform mat4 fgl_Model;\n"
+          "attribute vec3 position;\n"
+          "varying vec3 v_p;\n"
+          "void main() {\n"
+          "    v_p = (fgl_Model * vec4(position, 1.0)).xyz;\n"
+          "    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
+          "}\n");
+}
+
+void hq_local_shadow_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform vec4 u_lp;\n"
+          "varying vec3 v_p;\n");
+    t.add(kPack);
+    t.add("void main() {\n"
+          "    gl_FragColor = vec4(pack24(length(v_p - u_lp.xyz) * u_lp.w), 1.0);\n"
+          "}\n");
+}
+
+void cube_face(int face, float fwd[3], float up[3]) {
+    for (int i = 0; i < 3; i++) fwd[i] = up[i] = 0.0f;
+    int axis = face / 2;
+    fwd[axis] = (face & 1) ? -1.0f : 1.0f;
+    if (axis == 1) up[2] = 1.0f;        // the y faces look along y: z is up
+    else up[1] = 1.0f;
 }
 
 void hq_depth_vertex(char* out, size_t cap) {

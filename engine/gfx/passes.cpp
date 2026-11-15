@@ -78,6 +78,14 @@ struct MeshBounds {
     Bounds b;
 };
 
+// A point or spot light's place in the shadow atlas (see atlas_pass).
+struct LocalShadow {
+    int tile = 0;                           // first tile (a point light uses six from here)
+    Vec3 s, u, f;                           // spot: the light camera's right, up, forward
+    float tn = 1;                           // tan of half the field of view
+    float bias = 0;                         // relative depth bias
+};
+
 // The shadow map of a frame: matrices and the constants the lit shader needs.
 struct ShadowFit {
     bool valid = false;
@@ -105,6 +113,7 @@ struct GpuTier::Impl {
     FGLBuffer tri = 0;
     // programs
     FGLShader* shadow_p = nullptr;
+    FGLShader* local_p = nullptr;           // point / spot casters into the atlas
     FGLShader* depth_p = nullptr;
     FGLShader* normal_p = nullptr;
     FGLShader* skymask_p = nullptr;
@@ -121,6 +130,10 @@ struct GpuTier::Impl {
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
+    Target atlas;
+    uint64_t atlas_hash = 0;
+    LocalShadow locals[kMaxLocalShadows];
+    int local_count = 0;
     Target bl_down[kBloomLevels], bl_up[kBloomLevels - 1];
     uint64_t shadow_hash = 0;
     MeshBounds bounds_cache[kBoundsCache];
@@ -140,6 +153,7 @@ struct GpuTier::Impl {
         FGLShader* sh = fglCreateShader(gl, vs, fs);
         if (!sh) {
             if (err && err_cap) snprintf(err, (size_t)err_cap, "%s shader: %s", what, fglShaderLog(gl));
+            if (getenv("FE_DUMP_SHADER")) fprintf(stderr, "%s\n", fs);
             return false;
         }
         *out = sh;
@@ -463,6 +477,128 @@ struct GpuTier::Impl {
         return true;
     }
 
+    // ---- point and spot shadows
+
+    static constexpr float kPointTan = 1.08f;    // a cube face sees a little more than 90 degrees
+
+    int atlas_size(const GraphicsSettings& gs, bool hw) const {
+        int size = gs.local_shadow_resolution;
+        if (size < 512) size = 512;
+        if (size > 4096) size = 4096;
+        if (!hw && size > 1024) size = 1024;     // clears and fills cost too much on the CPU backend
+        return size / kAtlasTiles * kAtlasTiles;
+    }
+
+    // Perspective with tan(half fov) = tn, square.
+    static Mat4 frustum(float tn, float zn, float zf) {
+        Mat4 r;
+        for (float& v : r.m) v = 0;
+        float f = 1.0f / tn;
+        r.at(0, 0) = f;
+        r.at(1, 1) = f;
+        r.at(2, 2) = (zf + zn) / (zn - zf);
+        r.at(2, 3) = 2.0f * zf * zn / (zn - zf);
+        r.at(3, 2) = -1.0f;
+        return r;
+    }
+
+    // Renders the casters of every shadowed point / spot light into its
+    // tiles: radial distance / range, packed. Skipped when nothing changed.
+    bool atlas_pass(const RenderScene& s, const PackedLights& ls, const PassHost& host, const GraphicsSettings& gs, bool hw) {
+        local_count = ls.nps + ls.nss;
+        int size = atlas_size(gs, hw), T = size / kAtlasTiles;
+        bool fresh = false;
+        if (!ensure(atlas, size, size, true, &fresh)) return false;
+        if (fresh) atlas_hash = 0;
+        // where each light goes, and the hash of everything the atlas depends on
+        uint64_t hash = 1469598103934665603ull;
+        bool cacheable = true;
+        int tile = 0;
+        for (int j = 0; j < local_count; j++) {
+            const RenderLight& l = *ls.local[j];
+            LocalShadow& o = locals[j];
+            o = LocalShadow();
+            o.tile = tile;
+            if (l.type == LightType::Point) {
+                o.tn = kPointTan;
+                tile += 6;
+            } else {
+                Vec3 f = length(l.direction) > 0.0f ? normalize(l.direction) : Vec3(0, -1, 0);
+                Vec3 up = fabsf_(f.y) < 0.99f ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
+                o.f = f;
+                o.s = normalize(cross(f, up));
+                o.u = cross(o.s, f);
+                float half = fclamp(l.spot_angle * 0.5f + 2.0f, 2.0f, 75.0f);
+                o.tn = ftan(radians(half));
+                tile += 1;
+            }
+            o.bias = 3.0f * o.tn / (float)T;
+            hash = fnv(hash, &l.type, sizeof l.type);
+            hash = fnv(hash, &l.position, sizeof l.position);
+            hash = fnv(hash, &l.range, sizeof l.range);
+            hash = fnv(hash, &o.f, sizeof o.f);
+            hash = fnv(hash, &o.tn, sizeof o.tn);
+        }
+        for (int i = 0; i < s.item_count; i++) {
+            const DrawItem& it = s.items[i];
+            if (!it.cast_shadows) continue;
+            hash = fnv(hash, it.model.m, sizeof it.model.m);
+            hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
+            hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
+            if (!it.mesh.key) cacheable = false;
+        }
+        hash = fnv(hash, &size, sizeof size);
+        stats.local_shadows = local_count;
+        if (cacheable && hash == atlas_hash) { stats.atlas_reused = true; return true; }
+
+        double t0 = now_ms();
+        if (!make(&local_p, shaders::hq_local_shadow_vertex, shaders::hq_local_shadow_fragment, "local shadow")) return false;
+        set_target(atlas.color, atlas.depth);
+        fglClearColor(gl, 1, 1, 1);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        fglUseShader(gl, local_p);
+        bool failed = false;
+        for (int j = 0; j < local_count && !failed; j++) {
+            const RenderLight& l = *ls.local[j];
+            const LocalShadow& o = locals[j];
+            float range = l.range > 0.01f ? l.range : 0.01f;
+            u4(local_p, "u_lp", l.position.x, l.position.y, l.position.z, 1.0f / range);
+            float zn = fmaxf_(0.02f, range * 0.002f);
+            fglSetProjection(gl, to_fgl(frustum(o.tn, zn, range)));
+            int faces = l.type == LightType::Point ? 6 : 1;
+            for (int face = 0; face < faces && !failed; face++) {
+                Mat4 view;
+                if (l.type == LightType::Point) {
+                    float fw[3], up[3];
+                    shaders::cube_face(face, fw, up);
+                    view = Mat4::look_at(l.position, l.position + Vec3(fw[0], fw[1], fw[2]), Vec3(up[0], up[1], up[2]));
+                } else {
+                    Vec3 up = fabsf_(o.f.y) < 0.99f ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
+                    view = Mat4::look_at(l.position, l.position + o.f, up);
+                }
+                int t = o.tile + face;
+                host.set_viewport(host.user, (t % kAtlasTiles) * T, (t / kAtlasTiles) * T, T, T);
+                fglSetView(gl, to_fgl(view));
+                for (int i = 0; i < s.item_count && !failed; i++) {
+                    const DrawItem& it = s.items[i];
+                    if (!it.cast_shadows) continue;
+                    // only casters that reach into the light's range
+                    Bounds b = item_bounds(it);
+                    if (!b.any) continue;
+                    Vec3 c = vmax(b.lo, vmin(l.position, b.hi));
+                    Vec3 dd = c - l.position;
+                    if (dot(dd, dd) > range * range) continue;
+                    host.draw_mesh(host.user, it, false, &failed);
+                }
+            }
+        }
+        host.set_viewport(host.user, 0, 0, 0, 0);
+        if (!end_pass(t0, &stats.local_shadow_ms) || failed) return false;
+        atlas_hash = cacheable ? hash : 0;
+        return true;
+    }
+
     // "Masks": a pass can skip pixels cheaply with the depth test, which runs before the
     // fragment shader. A first pass draws its triangle at a near depth (u_z) and discards
     // the pixels to keep, so only the others get a depth; the next passes draw farther
@@ -595,6 +731,9 @@ struct GpuTier::Impl {
             key.ao = use_ao;
             key.fog = plan.fog;
             key.hdr = hdr;
+            key.nps = ls.nps;
+            key.nss = ls.nss;
+            key.local_soft = (ls.nps + ls.nss) > 0 && gs.soft_shadows;
             lit = lit_variant(key);
             if (!lit) return false;
         }
@@ -626,7 +765,6 @@ struct GpuTier::Impl {
                 fglUniformArray(sh, fglUniformLocation(sh, "u_l0"), 0, ls.l0, total);
                 fglUniformArray(sh, fglUniformLocation(sh, "u_l1"), 0, ls.l1, total);
                 fglUniformArray(sh, fglUniformLocation(sh, "u_l2"), 0, ls.l2, total);
-                fglUniformArray(sh, fglUniformLocation(sh, "u_l3"), 0, ls.l3, total);
             }
             if (use_shadow) {
                 fglUniformMatrix4(sh, fglUniformLocation(sh, "u_shm"), to_fgl(fit.viewproj));
@@ -636,12 +774,24 @@ struct GpuTier::Impl {
                 u4(sh, "u_lr", fit.right.x, fit.right.y, fit.right.z, 0);
                 u4(sh, "u_lu", fit.up.x, fit.up.y, fit.up.z, 0);
             }
+            if (ls.nps + ls.nss > 0) {
+                float T = (float)(atlas.w / kAtlasTiles);
+                u4(sh, "u_la", (float)kAtlasTiles, 1.0f / (float)kAtlasTiles, 1.5f / T, 0);
+                float v[kMaxLocalShadows * 4];
+                for (int j = 0; j < ls.nps + ls.nss; j++) {
+                    const LocalShadow& o = locals[j];
+                    float e[4] = { (float)o.tile, o.tn, o.bias, 3.0f * o.tn / T };
+                    memcpy(v + j * 4, e, sizeof e);
+                }
+                fglUniformArray(sh, fglUniformLocation(sh, "u_lsh"), 0, v, (uint32_t)(ls.nps + ls.nss));
+            }
         }
 
         set_target(dst.color, main_depth);
         if (lit) {
             if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
             if (use_ao) bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+            if (ls.nps + ls.nss > 0) bind_tex(lit->sh, "u_atlas", atlas, FGL_TEXTURE_CLAMP);
         }
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
@@ -832,6 +982,10 @@ struct GpuTier::Impl {
             }
         }
 
+        stats.local_shadows = 0;
+        stats.atlas_reused = false;
+        stats.local_shadow_ms = 0;
+        if (ls.nps + ls.nss > 0 && !atlas_pass(s, ls, host, gs, plan.hw)) return false;
         if (plan.ao && !ao_passes(s, host, gs)) return false;
 
         // the scene
@@ -858,18 +1012,19 @@ struct GpuTier::Impl {
 
     void release_all() {
         if (!gl) return;
-        drop(&shadow_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
+        drop(&shadow_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
         drop(&up_p); drop(&comp_p[0]); drop(&comp_p[1]); drop(&fxaa_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
         for (LitProg& v : lit_p) { drop(&v.sh); v = LitProg(); }
-        free_target(shadow); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
+        free_target(shadow); free_target(atlas); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
         free_target(scene); free_target(ldr);
         for (Target& t : bl_down) free_target(t);
         for (Target& t : bl_up) free_target(t);
         if (tri) fglDestroyBuffer(gl, tri);
         tri = 0;
         shadow_hash = 0;
+        atlas_hash = 0;
         gl = nullptr;
     }
 };
@@ -885,6 +1040,12 @@ GpuPlan GpuTier::plan(const RenderScene& scene, const GraphicsFeatures& f) {
         if (l.type == LightType::Directional && l.shadows && l.intensity * luma(l.color) > 0.0f) sun = true;
     }
     p.shadows = f.shadows && sun && scene.item_count > 0;
+    bool local = false;
+    for (int i = 0; i < scene.light_count; i++) {
+        const RenderLight& l = scene.lights[i];
+        if (l.type != LightType::Directional && l.shadows && l.intensity * luma(l.color) > 0.0f) local = true;
+    }
+    p.local_shadows = f.local_shadows && local && scene.item_count > 0;
     p.ao = f.ambient_occlusion && scene.item_count > 0;
     p.bloom = f.bloom && scene.post.bloom > 0.0f;
     p.aa = f.antialiasing;

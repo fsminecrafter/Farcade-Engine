@@ -79,6 +79,12 @@ public:
     enum class ViewRenderer : uint8_t { CpuPreview, FarcadeGL };
     ViewRenderer view_renderer = ViewRenderer::CpuPreview;
     bool looking_through_camera = false;        // last frame: the view was the current camera's
+    // Collider 3D: the active object's collider is drawn in the viewport;
+    // with edit_collider on, handles on it change its size/radius/height.
+    bool edit_collider = false;
+    // Draws the collider (and its handles) over the viewport rectangle;
+    // true while a handle is hovered or dragged (the gizmo and picking wait).
+    bool collider_overlay(const Mat4& view, const Mat4& proj, float x, float y, float w, float h);
     Palette pal = {};
     char project_dir[256] = {};
     char files_dir[256] = {};
@@ -170,6 +176,8 @@ public:
     bool log_scroll_to_end = false;
 
 private:
+    int collider_drag_ = -1;                    // the handle being dragged
+    ObjectId collider_drag_object_ = kNoObject;
     World* world_ = nullptr;
     PhysicsWorld* physics_ = nullptr;
     ScriptRuntime* scripts_ = nullptr;

@@ -461,6 +461,19 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
         }
         snprintf(key, sizeof(key), "module:%s:remove", mi.name);
         track(key);
+        if (kind == ModuleKind::Collider3D) {
+            // Shape the collider in the viewport by dragging handles.
+            prop_label("Edit shape");
+            toggle_switch("##edit_shape", &edit_collider);
+            track("module:collider3d:edit");
+            if (edit_collider) {
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("drag the dots");
+                ImGui::PopStyleColor();
+            }
+        }
     }
     for (int i = 0; i < mi.field_count; i++) {
         const FieldInfo& f = mi.fields[i];

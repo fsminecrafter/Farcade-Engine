@@ -348,7 +348,10 @@ void Editor::panel_viewport() {
     bool gizmo_active = false;
     ImGuiIO& gio = ImGui::GetIO();
     Object* act = scene.get(scene.active());
-    if (act && tool != Tool::Select) {
+    // The collider's shape and its handles come first: a handle under the
+    // mouse wins over the gizmo.
+    if (!looking_through_camera && collider_overlay(v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y)) gizmo_active = true;
+    if (act && tool != Tool::Select && !gizmo_active) {
         ImGuizmo::SetDrawlist(dl);
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetRect(v.pos.x, v.pos.y, v.size.x, v.size.y);

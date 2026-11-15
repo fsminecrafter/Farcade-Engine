@@ -229,6 +229,24 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }
+    // Shaping a collider: the pillar's cylinder collider with its handles.
+    {
+        ObjectId pil = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) if (!strcmp(ed.scene.at(i).name, "Pillar")) pil = ed.scene.at(i).id;
+        ed.scene.add_module(pil, ModuleKind::Collider3D);
+        ed.scene.get(pil)->modules.collider3d.radius = 0.6f;
+        ed.scene.select_only(pil);
+        ed.edit_collider = true;
+        ed.tool = Tool::Select;
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 300); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-collider.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.edit_collider = false;
+        ed.tool = Tool::Move;
+        if (iw) ImGui::SetScrollY(iw, 0);
+    }
     // The FarcadeGL renderer: the editor view, then Play through the current camera.
     {
         ed.view_renderer = Editor::ViewRenderer::FarcadeGL;

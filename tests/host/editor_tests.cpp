@@ -961,6 +961,68 @@ int main() {
         frames(2);
     }
 
+    // ---- collider shapes in the viewport: drag handles change size, radius, height
+    {
+        int objects0 = ed.scene.count();
+        ed.camera.target = Vec3(0, 0.5f, 0); ed.camera.yaw = 30; ed.camera.pitch = 20; ed.camera.distance = 7;
+        ed.settings.snap = false;
+        ed.tool = Tool::Select;
+        ObjectId box = ed.create_object("Shape Box", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        ed.scene.add_module(box, ModuleKind::Collider3D);
+        ed.scene.select_only(box);
+        frames(3);
+        CHECK(!ui("chandle:0"), "no handles until Edit shape is on");
+        CHECK(click_ui("module:collider3d:edit") && ed.edit_collider, "the Edit shape switch turns handles on");
+        frames(2);
+        CHECK(ui("chandle:0") && ui("chandle:5") && !ui("chandle:6"), "a box has 6 handles");
+        // Handle 1 is the +X face: drag it outwards along its direction on screen.
+        auto drag_handle = [&](int i, float dx, float dy) {
+            char k[24];
+            snprintf(k, sizeof(k), "chandle:%d", i);
+            const Editor::UiRect* r = ui(k);
+            if (!r) return false;
+            float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
+            drag(x, y, x + dx, y + dy, 0, 10);
+            return true;
+        };
+        float sx, sy, hx, hy;
+        to_screen(Vec3(0, 0.5f, 0), &sx, &sy);
+        to_screen(Vec3(0.5f, 0.5f, 0), &hx, &hy);
+        float ux = hx - sx, uy = hy - sy;               // the +X direction on screen, half a unit long
+        Vec3 pos0 = ed.scene.get(box)->position;
+        CHECK(drag_handle(1, ux, uy), "drag the +X handle");
+        float size_x = ed.scene.get(box)->modules.collider3d.size.x;
+        CHECK(size_x > 1.6f && size_x < 2.4f, "dragging it half a unit out makes the box about 2 wide (%.2f)", size_x);
+        CHECK(ed.scene.get(box)->position.x == pos0.x && ed.scene.selected_count() == 1, "the object did not move and stays selected");
+        // A capsule: the top handle sets the height, a side handle the radius.
+        ed.scene.get(box)->modules.collider3d.shape = ColliderShape::Capsule;
+        ed.scene.get(box)->modules.collider3d.radius = 0.5f;
+        ed.scene.get(box)->modules.collider3d.height = 2.0f;
+        frames(2);
+        CHECK(ui("chandle:5") && !ui("chandle:6"), "a capsule has 6 handles (2 for the height, 4 for the radius)");
+        float tx, ty, tx2, ty2;
+        to_screen(Vec3(0, 1.5f, 0), &tx, &ty);
+        to_screen(Vec3(0, 2.0f, 0), &tx2, &ty2);
+        CHECK(drag_handle(1, tx2 - tx, ty2 - ty), "drag the top handle");
+        float hgt = ed.scene.get(box)->modules.collider3d.height;
+        CHECK(hgt > 2.6f && hgt < 3.4f, "half a unit up makes it about 3 tall (%.2f)", hgt);
+        float rx, ry, rx2, ry2;
+        to_screen(Vec3(0.5f, 0.5f, 0), &rx, &ry);
+        to_screen(Vec3(0.25f, 0.5f, 0), &rx2, &ry2);
+        CHECK(drag_handle(3, rx2 - rx, ry2 - ry), "drag a side handle in");
+        float rad = ed.scene.get(box)->modules.collider3d.radius;
+        CHECK(rad > 0.15f && rad < 0.35f, "the radius shrinks to about 0.25 (%.2f)", rad);
+        // The new cylinder shape is offered and fits cylinders.
+        ObjectId cyl = ed.create_object("Shape Cyl", MeshKind::Cylinder, Vec3(3, 0.5f, 0));
+        ed.scene.add_module(cyl, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(cyl)->modules.collider3d.shape == ColliderShape::Cylinder, "a cylinder gets a cylinder collider");
+        ed.edit_collider = false;
+        ed.tool = Tool::Move;
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        ed.scene.clear_selection();
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");

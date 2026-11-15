@@ -23,8 +23,8 @@ repository.
 | **FarcadeGL, base tier** (runs everywhere, also on the CPU) | **GPU tier** (Ultra): sun shadows, ambient occlusion, bloom, PBR metals, FXAA, fog. On by default only on a graphics card |
 | ![Shaping a collider](docs/screenshots/editor-collider.png) | ![GPU tier in the editor](docs/screenshots/editor-farcadegl-ultra.png) |
 | **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
-| ![Material settings in the Inspector](docs/screenshots/editor-material.png) | |
-| **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fscene` | |
+| ![Material settings in the Inspector](docs/screenshots/editor-material.png) | ![The unsaved-changes prompt](docs/screenshots/editor-unsaved.png) |
+| **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fscene` | **Unsaved changes**: New scene, Open and Quit ask first; Ctrl+Z / Ctrl+Y undo and redo every edit |
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
@@ -61,10 +61,11 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 - **Graphics settings** (Settings > Graphics, `engine/gfx/graphics_settings.h`, `docs/graphics.md`): presets Low to Ultra. The GPU tier (shadow maps with soft PCF, SSAO, bloom, FXAA, GGX PBR) runs only when FarcadeGL is on a graphics card, unless forced with "Use on the CPU".
 - **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows, AO and bloom are in the GPU tier (above).
 - **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
-- **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
+- **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), the look (`obj.material.metallic = 1`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
 - **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box, sphere, capsule, cylinder and convex mesh collisions, rolling and tipping, bounce, friction, triggers), a stand-in for Jolt.
 - **Modules and scene objects**: `docs/modules.md`.
-- **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files.
+- **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files. New scene, Open and Quit ask before unsaved changes are lost.
+- **Undo and redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z): every edit in the editor, a drag counts as one step (`docs/scenes.md`).
 
 ```sh
 build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene

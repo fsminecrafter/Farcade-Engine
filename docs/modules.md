@@ -54,7 +54,7 @@ game renders with, the sky that is drawn, or the listener that hears.
 - **Play mode:** Play/Stop puts the flags back as they were before Play.
 - **In C++:** `Scene::set_current`, `clear_current`, `current(kind)` and `is_current` in the editor. The ECS has the same rule (`World::set_current`), enforced however the flag is set.
 
-Scripts reach Current like any other field. The planned Lua API (it arrives with the Lua runtime):
+Scripts reach Current like any other field (see scripting.md):
 
 ```lua
 -- switch to the security camera when the player enters a trigger

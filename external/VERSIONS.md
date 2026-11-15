@@ -11,6 +11,7 @@ licence file. To update one, copy the new files over and change this table.
 | cgltf | https://github.com/jkuhlmann/cgltf | master | 85cd623 | MIT |
 | fast_obj | https://github.com/thisistherk/fast_obj | master | d620667 | MIT |
 | flecs | https://github.com/SanderMertens/flecs | tag v4.1.6 | fb55f3c | MIT (single-file distribution: flecs.c, flecs.h) |
+| lua | https://www.lua.org/ftp/lua-5.4.7.tar.gz | release 5.4.7 | sha256 9fbf5e28 | MIT (src/*.c, *.h without lua.c, luac.c; the engine builds without liolib, loslib, loadlib, linit) |
 | fgpu | https://github.com/fsminecrafter/Minimal-OS | - | a00577e | GPLv3 |
 | Minimal-OS-SDK | https://github.com/fsminecrafter/Minimal-OS-SDK | main | git submodule | GPLv3 |
 

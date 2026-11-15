@@ -20,6 +20,7 @@
 //     Bloom is not implemented.
 #include "gfx/renderer.h"
 #include "gfx/shaders.h"
+#include "gfx/passes.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -118,6 +119,12 @@ struct Renderer::Impl {
     char error[200] = "";
     RendererStats stats;
     uint64_t frame = 0;
+
+    // GPU tier (graphics_settings.h, passes.h)
+    GraphicsSettings settings;
+    bool hw = false;                        // FGPU_CAP_HW_3D: FarcadeGL runs on a graphics card
+    char backend[40] = "";
+    GpuTier tier;
 
     // Mesh cache: open addressing on key, entries never move between rebuilds.
     MeshEntry* table = nullptr;
@@ -531,7 +538,8 @@ struct Renderer::Impl {
 
     // ---- frame
 
-    bool draw_item(const DrawItem& it, const Shader& s, bool* failed) {
+    // Binds the mesh of `it` and draws it with the shader and uniforms set by the caller.
+    bool draw_mesh(const DrawItem& it, bool count, bool* failed) {
         MeshEntry temp_entry;
         MeshEntry* e = mesh_buffers(it.mesh, &temp_entry);
         if (!e) {
@@ -551,17 +559,40 @@ struct Renderer::Impl {
         Vec3 c0(m[0], m[1], m[2]), c1(m[4], m[5], m[6]), c2(m[8], m[9], m[10]);
         if (dot(c0, cross(c1, c2)) < 0.0f) fglDisable(gl, FGL_CULL_FACE);
         else fglEnable(gl, FGL_CULL_FACE);
-        fglUseShader(gl, s.sh);
-        fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
         fglSetModel(gl, to_fgl(it.model));
         uint32_t first = 0;
         for (uint32_t c = 0; c < e->chunks; c++) {
             fglDraw(gl, e->buffer[c], 0, e->chunk_vertices[c]);
             first += e->chunk_vertices[c];
         }
-        stats.draws++;
-        stats.triangles += (int)(first / 3);
+        if (count) {
+            stats.draws++;
+            stats.triangles += (int)(first / 3);
+        }
         return true;
+    }
+
+    bool draw_item(const DrawItem& it, const Shader& s, bool* failed) {
+        fglUseShader(gl, s.sh);
+        fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
+        return draw_mesh(it, true, failed);
+    }
+
+    // ---- GPU tier hook: the passes draw their meshes through this
+    static bool tier_draw_mesh(void* user, const DrawItem& it, bool count, bool* failed) {
+        return static_cast<Impl*>(user)->draw_mesh(it, count, failed);
+    }
+
+    GraphicsFeatures feature_set() const {
+        GraphicsFeatures f;
+        f.gpu = hw;
+        f.gpu_tier = hw || settings.allow_gpu_effects_on_cpu;
+        f.shadows = f.gpu_tier && settings.shadows;
+        f.ambient_occlusion = f.gpu_tier && settings.ambient_occlusion;
+        f.bloom = f.gpu_tier && settings.bloom;
+        f.antialiasing = f.gpu_tier && settings.antialiasing;
+        f.pbr = f.gpu_tier && settings.pbr;
+        return f;
     }
 
     bool render(const RenderScene& scene) {
@@ -573,6 +604,24 @@ struct Renderer::Impl {
 
         LightSet ls;
         pack_lights(scene, &ls);
+
+        // GPU tier / fog: replaces the main pass below (passes.cpp); the readback is shared.
+        GpuPlan plan = GpuTier::plan(scene, feature_set());
+        bool failed = false;
+        bool tier_done = false;
+        if (plan.any()) {
+            PackedLights pl;
+            pl.l0 = ls.l0; pl.l1 = ls.l1; pl.l2 = ls.l2; pl.l3 = ls.l3;
+            pl.nd = ls.nd; pl.np = ls.np; pl.ns = ls.ns;
+            pl.has_sun = ls.has_sun; pl.sun_dir = ls.sun_dir; pl.sun_color = ls.sun_color;
+            PassHost host;
+            host.user = this;
+            host.draw_mesh = &Impl::tier_draw_mesh;
+            failed = !tier.render(gl, scene, pl, settings, plan, host, error, (int)sizeof error);
+            if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
+            tier_done = true;
+        }
+        if (!tier_done) {
         bool any_lit = false;
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
@@ -590,7 +639,6 @@ struct Renderer::Impl {
         fglSetView(gl, to_fgl(scene.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
 
-        bool failed = false;
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
             draw_item(it, it.unlit ? unlit : *lit, &failed);
@@ -605,6 +653,7 @@ struct Renderer::Impl {
         } else {
             fglSubmit(gl);
         }
+        }   // !tier_done
         free_temps();
         if (failed) return false;
         if (fglReadPixels(gl, pixels, (uint32_t)width * 4) != 0) {
@@ -630,6 +679,7 @@ struct Renderer::Impl {
             drop(&sky);
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
+            tier.release(gl);
             fglDestroyContext(gl);
             gl = nullptr;
         }
@@ -643,14 +693,23 @@ bool Renderer::init(int width, int height) {
     shutdown();
     if (width < 1 || height < 1 || width > 4096 || height > 4096) {
         impl_ = new Impl();
+        impl_->settings = settings_;
         impl_->set_error("render size out of range (1..4096)");
         return false;
     }
     impl_ = new Impl();
+    impl_->settings = settings_;
     Impl& m = *impl_;
     m.width = width;
     m.height = height;
     if (!fglHasShaders()) { m.set_error("FarcadeGL: the GPU has no shader support"); return false; }
+    {
+        syscall_gpu_info_t info;
+        if (fglGetDeviceInfo(&info) == 0) {
+            m.hw = (info.caps & FGPU_CAP_HW_3D) != 0;
+            snprintf(m.backend, sizeof m.backend, "%s", info.backend);
+        }
+    }
     m.scratch = (float*)malloc((size_t)kUploadSlice * kVertexBytes);
     m.pixels = (uint32_t*)calloc((size_t)width * (size_t)height, 4);
     if (!m.scratch || !m.pixels) { m.set_error("out of memory"); return false; }
@@ -681,7 +740,7 @@ bool Renderer::resize(int width, int height) {
     if (!px) { m.set_error("out of memory"); return false; }
     // Buffers and shaders belong to the device, not to the context: only the
     // surfaces are recreated.
-    if (m.gl) fglDestroyContext(m.gl);
+    if (m.gl) { m.tier.release(m.gl); fglDestroyContext(m.gl); }
     m.gl = nullptr;
     free(m.pixels);
     m.pixels = px;
@@ -707,6 +766,36 @@ const RendererStats& Renderer::stats() const {
     static const RendererStats none;
     return impl_ ? impl_->stats : none;
 }
+
+// ---- quality settings (graphics_settings.h)
+
+void Renderer::set_settings(const GraphicsSettings& s) {
+    settings_ = s;
+    if (impl_) impl_->settings = s;
+}
+
+const GraphicsSettings& Renderer::settings() const { return settings_; }
+
+GraphicsFeatures Renderer::features() const {
+    if (impl_) return impl_->feature_set();
+    GraphicsFeatures f;                     // before init: no backend known, the base tier
+    f.gpu_tier = settings_.allow_gpu_effects_on_cpu;
+    f.shadows = f.gpu_tier && settings_.shadows;
+    f.ambient_occlusion = f.gpu_tier && settings_.ambient_occlusion;
+    f.bloom = f.gpu_tier && settings_.bloom;
+    f.antialiasing = f.gpu_tier && settings_.antialiasing;
+    f.pbr = f.gpu_tier && settings_.pbr;
+    return f;
+}
+
+const char* Renderer::backend() const { return impl_ ? impl_->backend : ""; }
+
+const GpuTierStats& Renderer::gpu_tier_stats() const {
+    static const GpuTierStats none;
+    return impl_ ? impl_->tier.stats() : none;
+}
+int Renderer::gpu_tier_surfaces() const { return impl_ ? impl_->tier.live_surfaces() : 0; }
+int Renderer::gpu_tier_programs() const { return impl_ ? impl_->tier.live_programs() : 0; }
 
 void Renderer::forget_meshes() {
     if (impl_ && impl_->gl) impl_->forget_all();

@@ -2,7 +2,8 @@
 # and for Minimal-OS, plus the host FGPU device that lets the SDK's
 # farcadegl.h run on the PC.
 #
-#   GFX_SRC       renderer.cpp, shaders.cpp (both targets; use with $(CORE_SRC))
+#   GFX_SRC       renderer.cpp, passes.cpp (the GPU tier), shaders.cpp, shaders_hq.cpp (both
+#                 targets; use with $(CORE_SRC))
 #   GFX_HOST_SRC  the host device and the vendored FGPU CPU backend (host only;
 #                 on Minimal-OS the kernel provides SYS_GPU)
 #   host link:    $(call host_objs,$(GFX_SRC) $(GFX_HOST_SRC) $(CORE_SRC)) -lm
@@ -13,7 +14,7 @@
 #   build/host/bin/fe-gfx-shot   fe-gfx-shot <out.png> [width height]: renders a demo scene
 #   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <checksum>")
 
-GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp
+GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp engine/gfx/shaders_hq.cpp engine/gfx/passes.cpp
 GFX_HOST_SRC := engine/gfx/host/fgpu_host.c external/fgpu/fgpu_raster.c external/fgpu/fgpu_shader.c \
                 external/fgpu/fgpu_jit_x64.c external/fgpu/fgpu_ir.c
 
@@ -29,8 +30,8 @@ $(BUILD)/host/tests/host/gfx_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_HOST_INC)
 # farcadegl.h copies matrices and vectors through one function; GCC cannot see
 # that the 64 byte matrix branch is not taken for vector uniforms.
 GFX_SDK_WARN := -Wno-array-bounds -Wno-stringop-overread
-$(BUILD)/host/engine/gfx/renderer.cpp.o $(BUILD)/host/tests/host/gfx_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_SDK_WARN)
-$(BUILD)/os/engine/gfx/renderer.cpp.o: OS_EXTRA_FLAGS += $(GFX_SDK_WARN)
+$(BUILD)/host/engine/gfx/renderer.cpp.o $(BUILD)/host/engine/gfx/passes.cpp.o $(BUILD)/host/tests/host/gfx_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_SDK_WARN)
+$(BUILD)/os/engine/gfx/renderer.cpp.o $(BUILD)/os/engine/gfx/passes.cpp.o: OS_EXTRA_FLAGS += $(GFX_SDK_WARN)
 
 $(BUILD)/host/tools/gfx/shot.cpp.o: HOST_EXTRA_FLAGS += -Wno-unused-function     # static stb_image_write
 

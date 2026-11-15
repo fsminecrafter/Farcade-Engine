@@ -26,6 +26,7 @@ int main() {
     run("vec3", check_vec3);
     run("transforms", check_transforms);
     run("modules", check_modules);
+    run("material", check_material);
     run("cross script", check_cross_script);
     run("events", check_events);
     run("coroutines", check_coroutines_and_limits);

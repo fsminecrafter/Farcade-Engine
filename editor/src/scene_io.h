@@ -30,7 +30,10 @@ constexpr int kSceneFormatVersion = 1;
 
 // Writes the scene. Paths that start with `project_dir` are stored relative
 // to it. Returns malloc'd text (its length in *size), or null.
-char* save_scene_text(Scene& scene, const char* project_dir, size_t* size);
+// kSceneTextHistory leaves out what undo should not track (next_id and the
+// hierarchy's expanded flags).
+enum : unsigned { kSceneTextHistory = 1u };
+char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsigned flags = 0);
 
 struct SceneLoadReport {
     int objects = 0;

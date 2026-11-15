@@ -91,7 +91,7 @@ static void test_meta(World& w) {
     const EcsStruct* ws = ecs_get(ew, w.world_transform_component(), EcsStruct);
     ECS_CHECK(ws && ecs_vec_count(&ws->members) == 1);
     const EcsStruct* rs = ecs_get(ew, w.renderable_component(), EcsStruct);
-    ECS_CHECK(rs && ecs_vec_count(&rs->members) == 4);
+    ECS_CHECK(rs && ecs_vec_count(&rs->members) == 8);
 
     // meta cursor reads the same values as the struct
     Entity e = w.create("meta");

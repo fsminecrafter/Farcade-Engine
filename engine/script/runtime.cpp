@@ -19,6 +19,7 @@ namespace {
 
 const char* const kObjMeta = "fe.object";
 const char* const kModMeta = "fe.module";
+const char* const kMatMeta = "fe.material";
 const char* const kVecMeta = "fe.vec3";
 
 // ---------------------------------------------------------------- instances
@@ -588,6 +589,15 @@ int obj_index(lua_State* L) {
     } else if (strcmp(k, "parent") == 0) {
         Entity p = w->parent(e);
         if (p) push_object(L, p); else lua_pushnil(L);
+    } else if (strcmp(k, "material") == 0) {
+        // Only objects that draw a mesh have one.
+        if (w->renderable(e)) {
+            Entity* m = (Entity*)lua_newuserdatauv(L, sizeof(Entity), 0);
+            *m = e;
+            luaL_setmetatable(L, kMatMeta);
+        } else {
+            lua_pushnil(L);
+        }
     } else {
         ModuleKind mk = module_by_name(k);
         if (mk != ModuleKind::Count) {
@@ -618,7 +628,7 @@ int obj_newindex(lua_State* L) {
         } else {
             w->transform(e)->scale = check_vec3(L, 3);
         }
-    } else if (strcmp(k, "world_position") == 0 || strcmp(k, "parent") == 0 || strcmp(k, "alive") == 0) {
+    } else if (strcmp(k, "world_position") == 0 || strcmp(k, "parent") == 0 || strcmp(k, "alive") == 0 || strcmp(k, "material") == 0) {
         return luaL_error(L, "'%s' is read only", k);
     } else {
         return luaL_error(L, "cannot set '%s' on an object (settable: name, position, rotation, scale; modules are read with obj.<module>)", k);
@@ -638,6 +648,68 @@ int obj_tostring(lua_State* L) {
     const char* n = I->world->name(e);
     if (n && *n) lua_pushfstring(L, "object(%s)", n);
     else lua_pushfstring(L, "object(#%I)", (lua_Integer)(e & 0xffffffffu));
+    return 1;
+}
+
+// ---------------------------------------------------------------- material proxy
+//
+// obj.material.color / roughness / metallic / unlit / cast_shadows / visible:
+// reads and writes the entity's Renderable.
+
+Renderable* check_material(lua_State* L, const char* key) {
+    Impl* I = impl_of(L);
+    Entity e = *(Entity*)luaL_checkudata(L, 1, kMatMeta);
+    if (I->dead(e)) { luaL_error(L, "cannot use material.%s: the object no longer exists", key); return nullptr; }
+    Renderable* r = I->world->renderable(e);
+    if (!r) luaL_error(L, "the object has no mesh, so no material");
+    return r;
+}
+
+int mat_index(lua_State* L) {
+    const char* k = luaL_checkstring(L, 2);
+    Renderable* r = check_material(L, k);
+    if (strcmp(k, "color") == 0) push_vec3(L, r->color);
+    else if (strcmp(k, "roughness") == 0) lua_pushnumber(L, r->roughness);
+    else if (strcmp(k, "metallic") == 0) lua_pushnumber(L, r->metallic);
+    else if (strcmp(k, "unlit") == 0) lua_pushboolean(L, r->unlit);
+    else if (strcmp(k, "cast_shadows") == 0) lua_pushboolean(L, r->cast_shadows);
+    else if (strcmp(k, "visible") == 0) lua_pushboolean(L, r->visible);
+    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible)", k);
+    return 1;
+}
+
+int mat_newindex(lua_State* L) {
+    const char* k = luaL_checkstring(L, 2);
+    Renderable* r = check_material(L, k);
+    auto number01 = [&](float* out) {
+        if (lua_type(L, 3) != LUA_TNUMBER) return luaL_error(L, "material.%s expects a number from 0 to 1, got %s", k, luaL_typename(L, 3));
+        float v = (float)lua_tonumber(L, 3);
+        *out = v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+        return 0;
+    };
+    auto boolean = [&](bool* out) {
+        if (lua_type(L, 3) != LUA_TBOOLEAN) return luaL_error(L, "material.%s expects true or false, got %s", k, luaL_typename(L, 3));
+        *out = lua_toboolean(L, 3) != 0;
+        return 0;
+    };
+    if (strcmp(k, "color") == 0) r->color = check_vec3(L, 3);
+    else if (strcmp(k, "roughness") == 0) number01(&r->roughness);
+    else if (strcmp(k, "metallic") == 0) number01(&r->metallic);
+    else if (strcmp(k, "unlit") == 0) boolean(&r->unlit);
+    else if (strcmp(k, "cast_shadows") == 0) boolean(&r->cast_shadows);
+    else if (strcmp(k, "visible") == 0) boolean(&r->visible);
+    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible)", k);
+    return 0;
+}
+
+int mat_tostring(lua_State* L) {
+    Impl* I = impl_of(L);
+    Entity e = *(Entity*)luaL_checkudata(L, 1, kMatMeta);
+    const Renderable* r = I->dead(e) ? nullptr : I->world->renderable(e);
+    if (!r) { lua_pushstring(L, "material(none)"); return 1; }
+    char buf[96];
+    snprintf(buf, sizeof buf, "material(roughness %.2f, metallic %.2f)", (double)r->roughness, (double)r->metallic);
+    lua_pushstring(L, buf);
     return 1;
 }
 
@@ -918,6 +990,9 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     static const luaL_Reg mod_meta[] = {
         { "__index", mod_index }, { "__newindex", mod_newindex }, { "__tostring", mod_tostring }, { nullptr, nullptr } };
     make_meta(L, kModMeta, mod_meta);
+    static const luaL_Reg mat_meta[] = {
+        { "__index", mat_index }, { "__newindex", mat_newindex }, { "__tostring", mat_tostring }, { nullptr, nullptr } };
+    make_meta(L, kMatMeta, mat_meta);
 
     // the shared library table: the safe base functions, the libraries, fe
     lua_newtable(L);                                    // lib

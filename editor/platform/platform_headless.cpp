@@ -49,6 +49,7 @@ int width() { return g_fb.width; }
 int height() { return g_fb.height; }
 Framebuffer& framebuffer() { return g_fb; }
 void present() { g_presents++; }
+void present_region(int, int, int, int) { g_presents++; }
 
 bool poll(Event& e) {
     if (g_head == g_tail) return false;

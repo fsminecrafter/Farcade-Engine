@@ -854,12 +854,29 @@ bool Editor::frame() {
     double t_raster = platform::time_seconds();
 
     static SwRenderer renderer;
+    renderer.set_verify(verify_damage);
     Framebuffer& fb = platform::framebuffer();
-    SwRenderer::clear(fb, settings.dark_theme ? 0x101215 : 0xD9DCE1);
-    renderer.render(ImGui::GetDrawData(), fb);
+    SwRect damage[SwRenderer::kMaxDamage];
+    int nd = renderer.render_incremental(ImGui::GetDrawData(), fb, settings.dark_theme ? 0x101215 : 0xD9DCE1, damage);
+    damage_mismatches = renderer.verify_mismatches();
     raster_stats = renderer.stats();
     double t_present = platform::time_seconds();
-    platform::present();
+    if (nd > 0) {
+        // Rectangles close together go to the screen as one.
+        SwRect all;
+        int64_t sum = 0;
+        for (int i = 0; i < nd; i++) {
+            all = all.empty() ? damage[i] : SwRect{ damage[i].x0 < all.x0 ? damage[i].x0 : all.x0, damage[i].y0 < all.y0 ? damage[i].y0 : all.y0,
+                                                    damage[i].x1 > all.x1 ? damage[i].x1 : all.x1, damage[i].y1 > all.y1 ? damage[i].y1 : all.y1 };
+            sum += damage[i].area();
+        }
+        if (nd == 1 || sum * 3 > all.area() * 2) platform::present_region(all.x0, all.y0, all.x1 - all.x0, all.y1 - all.y0);
+        else for (int i = 0; i < nd; i++) platform::present_region(damage[i].x0, damage[i].y0, damage[i].x1 - damage[i].x0, damage[i].y1 - damage[i].y0);
+        perf.drawn++;
+    } else {
+        perf.skipped++;
+    }
+    last_frame_idle = nd == 0;
     double t_end = platform::time_seconds();
     perf.build += (t_raster - t_build) * 1000.0;
     perf.raster += (t_present - t_raster) * 1000.0;

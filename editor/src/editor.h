@@ -166,12 +166,16 @@ public:
         double raster = 0;              // clearing and rasterizing the UI
         double present = 0;             // copying to the screen
         double wait = 0;                // waiting for input (filled by the main loop)
-        int frames = 0, view_renders = 0;
+        int frames = 0, view_renders = 0, drawn = 0, skipped = 0;
     } perf;
+    bool last_frame_idle = false;       // the last frame changed nothing on screen (not drawn, not presented)
+    bool verify_damage = false;         // debug: check every incremental redraw against a full one (tests)
+    int damage_mismatches = 0;
     uint32_t view_renders = 0;          // how many times the viewport image was rendered
     SwStats raster_stats;               // the last UI rasterization
     gfx::RendererStats fgl_stats;       // the last FarcadeGL render
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
+    int view_scale_div = 1;             // FarcadeGL renders at 1/view_scale_div of the viewport size (experiments)
     bool bench_interacting = false;     // benchmarks: behave as during a camera drag
     double (*perf_clock)() = nullptr;           // a real clock for view_ms (default: platform::time_seconds)
     struct TileRect { char path[256]; float x, y, w, h; };

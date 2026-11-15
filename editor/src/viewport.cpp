@@ -282,7 +282,7 @@ void Editor::panel_viewport() {
     static bool fgl_failed = false;
     bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
     {
-        uint8_t extra[2] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera };
+        uint8_t extra[3] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera, (uint8_t)view_scale_div };
         for (uint8_t b : extra) { hash ^= b; hash *= 1099511628211ull; }
         if (looking_through_camera)
             for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); hash ^= u; hash *= 1099511628211ull; }
@@ -292,7 +292,9 @@ void Editor::panel_viewport() {
         if (use_fgl) {
             double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
             double t0 = clock();
-            int w = (int)v.size.x, h = (int)v.size.y;
+            int w = (int)v.size.x / view_scale_div, h = (int)v.size.y / view_scale_div;
+            if (w < 16) w = 16;
+            if (h < 16) h = 16;
             bool first = !fgl.ready();
             bool ok = fgl.ready() ? ((fgl.width() == w && fgl.height() == h) || fgl.resize(w, h)) : fgl.init(w, h);
             if (first) { fgl_init_ms = fgl.init_ms(); fgl_init_shader_ms = fgl.init_shader_ms(); }
@@ -302,6 +304,8 @@ void Editor::panel_viewport() {
             }
             if (ok) {
                 fgl_tex.format = SwTexture::RGBA8;
+                fgl_tex.opaque = true;
+                fgl_tex.version++;
                 fgl_tex.width = fgl.width();
                 fgl_tex.height = fgl.height();
                 fgl_tex.pitch = fgl.width();
@@ -321,7 +325,7 @@ void Editor::panel_viewport() {
             render_view(view3d, &v);
         }
     }
-    if (use_fgl) dl->AddImage((ImTextureID)SwRenderer::texture_id(&fgl_tex), v.pos, ImVec2(v.pos.x + fgl_tex.width, v.pos.y + fgl_tex.height));
+    if (use_fgl) dl->AddImage((ImTextureID)SwRenderer::texture_id(&fgl_tex), v.pos, ImVec2(v.pos.x + fgl_tex.width * view_scale_div, v.pos.y + fgl_tex.height * view_scale_div));
     else dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
     // Icons for objects without a mesh (cameras, lights, sky ...), where
     // they are: they are picked by clicking near them.

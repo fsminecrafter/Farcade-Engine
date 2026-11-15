@@ -77,11 +77,12 @@ end
 
 - **Done in the editor:** the data model, the Inspector, creating objects, the Current rule, and the viewport icons and shapes.
 - **Physics:** in Play, a built-in physics step runs Rigidbody 3D and Collider 3D (`engine/physics`). It is a stand-in for Jolt (plan C6), which needs the standard C++ library this engine doesn't use yet. What it does:
-  - Dynamic bodies fall and are damped; kinematic bodies move only by their velocity; static bodies and colliders without a body don't move.
-  - Box and sphere colliders push bodies apart, with bounciness, friction and collision layers. Capsule and mesh colliders are treated as boxes.
+  - Dynamic bodies fall and are damped (linear and angular) and turn as well as move: inertia comes from the collider shape, `freeze_rotation` locks the rotation, kinematic bodies move and turn by their velocities, and static bodies and colliders without a body don't move.
+  - Box, sphere, capsule, cylinder and mesh colliders all collide with each other (GJK and EPA on convex shapes, contact manifolds of up to 4 points), so boxes rest flat and stack, spheres and cylinders roll down slopes, and boxes tip over edges. Friction, bounciness (no bounce below 1 m/s) and collision layers apply; the solver is sequential impulses with warm starting.
+  - Mesh colliders use the convex hull of the points given to `PhysicsWorld::set_mesh` (the editor calls it with the object's mesh vertices when play starts); without points a mesh collider is its `size` box. Concave triangle meshes are not done.
   - Triggers report objects entering and leaving them, and first contacts are reported as hits. Scripts get them as `on_trigger_enter`, `on_trigger_exit` and `on_collision`, and the console logs them too.
-  - `rigidbody3d.velocity` is the live velocity.
-  - Not done: rotation from collisions (bodies slide rather than roll or tip), joints, and continuous collision.
+  - `rigidbody3d.velocity` and `rigidbody3d.angular_velocity` are live.
+  - Not done: joints, continuous collision (very fast small bodies can tunnel through thin colliders), sleeping, concave meshes.
   - A new collider starts fitted to the object's mesh: a sphere for spheres, a thin box for planes.
 - **Audio:** Audio settings are saved, but nothing plays them yet (plan C6: the engine's mixer over `SYS_AUDIO_STREAM`).
 - **Rendering:** the editor's CPU preview does not use lights, sky, sky light or post processing. The FarcadeGL renderer (`engine/gfx`, in progress) does.

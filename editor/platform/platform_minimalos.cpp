@@ -1,15 +1,18 @@
-// Minimal-OS platform: the whole screen (SYS_GRAPHICS acquire, blit and
-// present), raw USB keyboard and mouse (SYS_INPUT_READ, which the screen
-// owner may read), MinimaFS files and SYS_SPAWN.
-//
-// The editor runs full screen for now: a window under mosWM comes once the
-// desktop has been tested with OS-5's shared window frames.
+// Minimal-OS platform: MinimaFS files, SYS_SPAWN, and the screen in one of
+// two ways:
+//   - full screen (no desktop running): SYS_GRAPHICS acquire, blit and
+//     present, raw USB keyboard and mouse (SYS_INPUT_READ, which the screen
+//     owner may read);
+//   - a window under MOSdesk's mosWM (it owns the screen): SYS_WINDOW
+//     create / present, and the window's events (mouse in window
+//     coordinates, keys while focused, resize, close).
 #include "platform/platform.h"
 #include "swraster.h"
 
 #include "minimalos.h"
 #include "graphics.h"
 #include "process.h"
+#include "window.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +24,7 @@ namespace {
 Framebuffer g_fb;
 uint32_t* g_pixels;
 bool g_have_screen;
+uint32_t g_window;                      // 0 = full screen
 float g_mouse_x, g_mouse_y;
 uint8_t g_buttons;
 uint8_t g_mods;
@@ -101,9 +105,116 @@ uint8_t to_mods(uint8_t m) {
                      ((m & SYSCALL_INPUT_MOD_ALT) ? MOD_ALT : 0));
 }
 
+void key_event(uint8_t hid, bool down, uint8_t raw_mods) {
+    g_mods = to_mods(raw_mods);
+    Event e;
+    e.type = EventType::Key;
+    e.key = map_key(hid);
+    e.down = down;
+    e.mods = g_mods;
+    if (e.key != KEY_NONE) push(e);
+    if (down && !(g_mods & (MOD_CTRL | MOD_ALT))) {
+        uint32_t ch = key_char(hid, (g_mods & MOD_SHIFT) != 0);
+        if (ch) {
+            Event t;
+            t.type = EventType::Text;
+            t.codepoint = ch;
+            push(t);
+        }
+    }
+}
+
+void button_events(uint8_t buttons) {
+    static const uint8_t bits[3] = { SYSCALL_INPUT_BTN_LEFT, SYSCALL_INPUT_BTN_RIGHT, SYSCALL_INPUT_BTN_MIDDLE };
+    for (int b = 0; b < 3; b++) {
+        bool was = (g_buttons & bits[b]) != 0, now = (buttons & bits[b]) != 0;
+        if (was == now) continue;
+        Event e;
+        e.type = EventType::MouseButton;
+        e.x = g_mouse_x;
+        e.y = g_mouse_y;
+        e.button = b;
+        e.down = now;
+        e.mods = g_mods;
+        push(e);
+    }
+    g_buttons = buttons;
+}
+
+// A new window size: a new framebuffer (the editor redraws everything).
+void resize_to(int w, int h) {
+    if (w < 64) w = 64;
+    if (h < 64) h = 64;
+    if (w == g_fb.width && h == g_fb.height) return;
+    uint32_t* p = (uint32_t*)malloc((size_t)w * h * 4);
+    if (!p) return;
+    memset(p, 0, (size_t)w * h * 4);
+    free(g_pixels);
+    g_pixels = p;
+    g_fb.pixels = p;
+    g_fb.width = w;
+    g_fb.height = h;
+    g_fb.pitch = w;
+    Event e;
+    e.type = EventType::Resize;
+    push(e);
+}
+
+// The window's events. mosWM sends the mouse in window coordinates (its
+// buttons and the key modifiers use the raw input bits).
+void pump_window() {
+    syscall_window_event_t ev;
+    while (mos_window_next_event(g_window, &ev) == SYS_SUCCESS) {
+        Event e;
+        switch (ev.type) {
+            case SYSCALL_WINDOW_EVENT_MOUSE:
+                g_mods = to_mods(ev.mods);
+                if ((float)ev.x != g_mouse_x || (float)ev.y != g_mouse_y) {
+                    g_mouse_x = (float)ev.x;
+                    g_mouse_y = (float)ev.y;
+                    e.type = EventType::MouseMove;
+                    e.x = g_mouse_x;
+                    e.y = g_mouse_y;
+                    push(e);
+                }
+                button_events((uint8_t)ev.buttons);
+                break;
+            case SYSCALL_WINDOW_EVENT_MOUSE_WHEEL:
+                e.type = EventType::MouseWheel;
+                e.wheel_y = (float)-ev.wheel;
+                push(e);
+                break;
+            case SYSCALL_WINDOW_EVENT_KEY:
+                key_event((uint8_t)ev.key, ev.buttons != 0, ev.mods);
+                break;
+            case SYSCALL_WINDOW_EVENT_RESIZED:
+                if (ev.width > 0 && ev.height > 0) resize_to(ev.width, ev.height);
+                break;
+            case SYSCALL_WINDOW_EVENT_FOCUS_LOST:
+                button_events(0);       // a button held while leaving never sends its release
+                break;
+            case SYSCALL_WINDOW_EVENT_CLOSE_REQUEST:
+                e.type = EventType::Quit;
+                push(e);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 // Reads raw input (waiting up to timeout_ms for the first event) and turns
 // it into editor events.
 void pump(uint32_t timeout_ms) {
+    if (g_window) {
+        // Window events have no blocking read: look every few milliseconds.
+        uint64_t end = mos_clock_monotonic_ns() + (uint64_t)timeout_ms * 1000000ull;
+        for (;;) {
+            pump_window();
+            if (g_head != g_tail || mos_clock_monotonic_ns() >= end) return;
+            mos_sleep(4);
+        }
+    }
     syscall_input_event_t evs[64];
     syscall_input_read_request_t req;
     memset(&req, 0, sizeof(req));
@@ -130,48 +241,18 @@ void pump(uint32_t timeout_ms) {
                 e.y = g_mouse_y;
                 push(e);
                 break;
-            case SYSCALL_INPUT_MOUSE_BUTTON: {
-                static const uint8_t bits[3] = { SYSCALL_INPUT_BTN_LEFT, SYSCALL_INPUT_BTN_RIGHT, SYSCALL_INPUT_BTN_MIDDLE };
-                for (int b = 0; b < 3; b++) {
-                    bool was = (g_buttons & bits[b]) != 0, now = (r.buttons & bits[b]) != 0;
-                    if (was == now) continue;
-                    e = Event();
-                    e.type = EventType::MouseButton;
-                    e.x = g_mouse_x;
-                    e.y = g_mouse_y;
-                    e.button = b;
-                    e.down = now;
-                    e.mods = g_mods;
-                    push(e);
-                }
-                g_buttons = r.buttons;
+            case SYSCALL_INPUT_MOUSE_BUTTON:
+                button_events(r.buttons);
                 break;
-            }
             case SYSCALL_INPUT_MOUSE_WHEEL:
                 e.type = EventType::MouseWheel;
                 e.wheel_y = (float)-r.wheel;
                 push(e);
                 break;
             case SYSCALL_INPUT_KEY_DOWN:
-            case SYSCALL_INPUT_KEY_UP: {
-                bool down = r.type == SYSCALL_INPUT_KEY_DOWN;
-                g_mods = to_mods(r.mods);
-                e.type = EventType::Key;
-                e.key = map_key(r.key);
-                e.down = down;
-                e.mods = g_mods;
-                if (e.key != KEY_NONE) push(e);
-                if (down && !(g_mods & (MOD_CTRL | MOD_ALT))) {
-                    uint32_t ch = key_char(r.key, (g_mods & MOD_SHIFT) != 0);
-                    if (ch) {
-                        Event t;
-                        t.type = EventType::Text;
-                        t.codepoint = ch;
-                        push(t);
-                    }
-                }
+            case SYSCALL_INPUT_KEY_UP:
+                key_event(r.key, r.type == SYSCALL_INPUT_KEY_DOWN, r.mods);
                 break;
-            }
             default: break;
         }
     }
@@ -180,8 +261,27 @@ void pump(uint32_t timeout_ms) {
 
 bool init(int width, int height) {
     if (mos_graphics_acquire() != 0) {
-        printf("farcade: the screen is in use\n");
-        return false;
+        // The desktop owns the screen: open a window instead.
+        int w = width > 0 ? width : 1180, h = height > 0 ? height : 740;
+        g_window = mos_window_create(0, 50, 40, (uint32_t)w, (uint32_t)h, "Farcade Editor");
+        if (!g_window) {
+            printf("farcade: the screen is in use and no window could be opened\n");
+            return false;
+        }
+        mos_window_set_resizable(g_window, true);
+        syscall_window_info_t wi;
+        memset(&wi, 0, sizeof(wi));
+        if (mos_window_get_info(g_window, &wi) == SYS_SUCCESS && wi.width && wi.height) { w = (int)wi.width; h = (int)wi.height; }
+        g_pixels = (uint32_t*)calloc((size_t)w * h, 4);
+        if (!g_pixels) { mos_window_close(g_window); g_window = 0; return false; }
+        g_fb.pixels = g_pixels;
+        g_fb.width = w;
+        g_fb.height = h;
+        g_fb.pitch = w;
+        g_mouse_x = w * 0.5f;
+        g_mouse_y = h * 0.5f;
+        g_t0 = mos_clock_monotonic_ns();
+        return true;
     }
     g_have_screen = true;
     syscall_graphics_info_t info;
@@ -206,7 +306,11 @@ bool init(int width, int height) {
     return true;
 }
 
+bool windowed() { return g_window != 0; }
+
 void shutdown() {
+    if (g_window) mos_window_close(g_window);
+    g_window = 0;
     if (g_have_screen) mos_graphics_release();
     g_have_screen = false;
     free(g_pixels);
@@ -218,6 +322,10 @@ int height() { return g_fb.height; }
 Framebuffer& framebuffer() { return g_fb; }
 
 void present() {
+    if (g_window) {
+        mos_window_present(g_window, g_fb.pixels, (uint32_t)g_fb.pitch * 4, 0, 0, (uint32_t)g_fb.width, (uint32_t)g_fb.height);
+        return;
+    }
     mos_graphics_blit_surface(g_fb.pixels, (uint32_t)g_fb.width, (uint32_t)g_fb.height, (uint32_t)g_fb.pitch * 4, 0, 0,
                               g_fb.width, g_fb.height, 0, 0, SYS_GRAPHICS_BLIT_OPAQUE);
     mos_graphics_present(0, 0, g_fb.width, g_fb.height);
@@ -229,6 +337,10 @@ void present_region(int x, int y, int w, int h) {
     if (x + w > g_fb.width) w = g_fb.width - x;
     if (y + h > g_fb.height) h = g_fb.height - y;
     if (w <= 0 || h <= 0) return;
+    if (g_window) {
+        mos_window_present(g_window, g_fb.pixels, (uint32_t)g_fb.pitch * 4, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
+        return;
+    }
     mos_graphics_blit_surface(g_fb.pixels, (uint32_t)g_fb.width, (uint32_t)g_fb.height, (uint32_t)g_fb.pitch * 4, x, y, w, h, x, y,
                               SYS_GRAPHICS_BLIT_OPAQUE);
     mos_graphics_present(x, y, w, h);

@@ -60,6 +60,8 @@ bool poll(Event& e) {
 
 void wait_event(int) {}
 
+bool windowed() { return false; }
+
 double time_seconds() {
     if (g_fake_time >= 0) return g_fake_time;
     timespec ts;

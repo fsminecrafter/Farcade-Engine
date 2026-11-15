@@ -64,6 +64,9 @@ bool poll(Event& e);
 void wait_event(int timeout_ms);
 
 double time_seconds();
+// True when the editor is a window on a desktop (it draws no mouse cursor
+// of its own then); false when it has the whole screen.
+bool windowed();
 
 // ---- files
 

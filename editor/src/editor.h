@@ -1,6 +1,8 @@
 // The Farcade editor: state shared by the panels, and the frame loop.
 #pragma once
 
+#include "gfx/graphics_settings.h"
+
 #include "scene.h"
 #include "widgets.h"
 #include <stdint.h>
@@ -40,6 +42,7 @@ struct Settings {
     bool view_shadows = true;           // shadows on the ground
 #endif
     bool play_through_camera = true;    // Play shows the scene through the current Camera object
+    gfx::GraphicsSettings graphics;     // FarcadeGL quality (GPU tier: graphics card only)
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
     float snap_scale = 0.1f;
@@ -79,6 +82,9 @@ public:
     enum class ViewRenderer : uint8_t { CpuPreview, FarcadeGL };
     ViewRenderer view_renderer = ViewRenderer::CpuPreview;
     bool looking_through_camera = false;        // last frame: the view was the current camera's
+    // What the FarcadeGL renderer reported last time it ran.
+    char fgl_backend[64] = {};
+    gfx::GraphicsFeatures fgl_features;
     // Collider 3D: the active object's collider is drawn in the viewport;
     // with edit_collider on, handles on it change its size/radius/height.
     bool edit_collider = false;
@@ -194,6 +200,7 @@ private:
     void add_script_button(Object* o);
     bool module_section(Object* o, ModuleKind kind);   // false when the module was removed
     void add_module_button(Object* o);
+    void settings_graphics();
     void draw_object_shape(View3D& view3d, const Object& o, const Mat4& model);
     void main_menu();
     void run_controls();

@@ -816,6 +816,92 @@ void Editor::add_script_button(Object* o) {
     }
 }
 
+// Settings > Graphics: FarcadeGL quality. The GPU effects run only when
+// FarcadeGL is on a graphics card, unless forced on the CPU.
+void Editor::settings_graphics() {
+    const Palette& pal = ui_palette();
+    gfx::GraphicsSettings& g = settings.graphics;
+    bool gpu = fgl_features.gpu;
+    ImGui::Dummy(ImVec2(0, 4));
+    auto faint = [&](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    if (section_header("Device", Icon::Monitor)) {
+        prop_label("FarcadeGL on");
+        ImGui::AlignTextToFramePadding();
+        if (fgl_backend[0]) ImGui::Text("%s  (%s)", fgl_backend, gpu ? "graphics card" : "CPU");
+        else ImGui::TextDisabled("not started yet: switch the viewport to FarcadeGL");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Quality", Icon::Sun)) {
+        static const char* presets[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+        int p = (int)g.preset;
+        prop_label("Preset");
+        if (ImGui::Combo("##preset", &p, presets, 5)) g.apply_preset((gfx::GraphicsPreset)p);
+        track("gfx:preset");
+        prop_label("Render scale");
+        ImGui::SliderFloat("##rscale", &g.render_scale, 0.25f, 1.0f, "%.2f");
+        faint("Fog is set on the Sky object.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("GPU effects", Icon::Wand)) {
+        bool active = gpu || g.allow_gpu_effects_on_cpu;
+        if (!gpu) {
+            faint("These run when FarcadeGL is on a graphics card (the kernel's NVIDIA backend, RTX 20 / GTX 16). "
+                  "This machine draws on the CPU, so they are off unless forced (slow).");
+            prop_label("Use on the CPU");
+            toggle_switch("##force", &g.allow_gpu_effects_on_cpu);
+            track("gfx:force");
+        }
+        ImGui::BeginDisabled(!active);
+        bool changed = false;
+        prop_label("Shadows");
+        changed |= toggle_switch("##shadows", &g.shadows);
+        track("gfx:shadows");
+        if (g.shadows) {
+            static const int sizes[] = { 512, 1024, 2048, 4096 };
+            static const char* size_names[] = { "512", "1024", "2048", "4096" };
+            int si = 0;
+            for (int i = 0; i < 4; i++) if (sizes[i] == g.shadow_resolution) si = i;
+            prop_label("  Resolution");
+            if (ImGui::Combo("##sres", &si, size_names, 4)) { g.shadow_resolution = sizes[si]; changed = true; }
+            prop_label("  Distance");
+            changed |= ImGui::SliderFloat("##sdist", &g.shadow_distance, 5.0f, 200.0f, "%.0f m");
+            prop_label("  Soft");
+            changed |= toggle_switch("##soft", &g.soft_shadows);
+        }
+        prop_label("Ambient occlusion");
+        changed |= toggle_switch("##ao", &g.ambient_occlusion);
+        track("gfx:ao");
+        if (g.ambient_occlusion) {
+            prop_label("  Radius");
+            changed |= ImGui::SliderFloat("##aor", &g.ao_radius, 0.1f, 2.0f, "%.2f m");
+            prop_label("  Strength");
+            changed |= ImGui::SliderFloat("##aos", &g.ao_strength, 0.0f, 2.0f, "%.2f");
+        }
+        prop_label("Bloom");
+        changed |= toggle_switch("##bloom", &g.bloom);
+        track("gfx:bloom");
+        prop_label("Antialiasing");
+        changed |= toggle_switch("##aa", &g.antialiasing);
+        track("gfx:aa");
+        prop_label("PBR shading");
+        changed |= toggle_switch("##pbr", &g.pbr);
+        track("gfx:pbr");
+        if (changed) g.preset = gfx::GraphicsPreset::Custom;
+        ImGui::EndDisabled();
+        if (fgl_backend[0]) {
+            char on[128];
+            snprintf(on, sizeof(on), "Running now: %s%s%s%s%s", fgl_features.shadows ? "shadows  " : "", fgl_features.ambient_occlusion ? "AO  " : "",
+                     fgl_features.bloom ? "bloom  " : "", fgl_features.antialiasing ? "AA  " : "", fgl_features.pbr ? "PBR" : "");
+            faint(fgl_features.gpu_tier ? on : "Running now: base tier only");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+}
+
 void Editor::panel_inspector() {
     ImGui::Begin("Inspector");
     int n = scene.selected_count();
@@ -1274,10 +1360,14 @@ void Editor::window_settings() {
                 prop_label("Ground shadows");
                 toggle_switch("##shadows", &settings.view_shadows);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
-                ImGui::TextWrapped("The viewport is drawn on the CPU until the FarcadeGL renderer lands. While you drag the camera "
-                                   "or an object it draws without smoothing and shadows, and redraws in full when you let go.");
+                ImGui::TextWrapped("The CPU preview is the editor's own quick renderer (renderer menu, top right). While you drag "
+                                   "the camera or an object it draws without smoothing and shadows, and redraws in full when you let go.");
                 ImGui::PopStyleColor();
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Graphics")) {
+            settings_graphics();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("File editors")) {

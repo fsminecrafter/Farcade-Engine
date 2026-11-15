@@ -172,7 +172,7 @@ void sky_vertex(char* out, size_t cap) {
           "varying vec2 v_ndc;\n"
           "void main() {\n"
           "    v_ndc = position.xy;\n"
-          "    gl_Position = vec4(position.xy, 0.99999, 1.0);\n"
+          "    gl_Position = vec4(position.xy, 0.999999, 1.0);\n"
           "}\n");
 }
 

@@ -709,6 +709,42 @@ void test_many_items_and_budget() {
     CHECK(lum(px(r, W / 2, H / 2)) > 0);
 }
 
+void test_big_mesh() {
+    // More than one upload slice (8190 vertices) per buffer: 64 x 32 segments is 12288
+    // vertices. With and without normals (made from the faces) the picture is the same
+    // when the given normals are the face normals.
+    constexpr int SEG = 64, RINGS = 32, N = SEG * RINGS * 6;
+    static Vec3 pos[N], face_n[N];
+    static Vec3 smooth_n[N];
+    make_sphere(pos, smooth_n, 1.0f, SEG, RINGS);
+    for (int i = 0; i < N; i += 3) {
+        Vec3 n = normalize(cross(pos[i + 1] - pos[i], pos[i + 2] - pos[i]));
+        if (length(n) == 0) n = smooth_n[i];                // pole triangles without area
+        face_n[i] = face_n[i + 1] = face_n[i + 2] = n;
+    }
+    TestScene t;
+    t.items[0].mesh = RenderMesh{ pos, face_n, N, 21 };
+    t.lights[0] = dir_light(Vec3(-1, -1, -1));
+    t.scene.light_count = 1;
+    t.camera(Vec3(0, 0, 4), Vec3(0, 0, 0));
+    Renderer r;
+    CHECK(r.init(W, H));
+    if (!render_ok(r, t.scene)) return;
+    CHECK_EQ(r.stats().triangles, N / 3);
+    static uint32_t a[W * H];
+    memcpy(a, r.pixels(), sizeof a);
+    CHECK(lum(t.at(r, Vec3(0, 0, 1))) > 10);
+    t.items[0].mesh = RenderMesh{ pos, nullptr, N, 22 };
+    if (!render_ok(r, t.scene)) return;
+    int differing = 0;
+    for (int i = 0; i < W * H; i++) if (a[i] != r.pixels()[i]) differing++;
+    CHECK(differing <= 12);                                 // pole triangles aside
+    // A vertex count that is not a multiple of 3 drops the rest.
+    t.items[0].mesh = RenderMesh{ pos, face_n, N - 2, 23 };
+    if (!render_ok(r, t.scene)) return;
+    CHECK_EQ(r.stats().triangles, N / 3 - 1);
+}
+
 void test_jit_matches_interpreter() {
     // The shader JIT and the interpreter give the same picture bit for bit.
     TestScene t;
@@ -769,10 +805,11 @@ void test_smoke_scene() {
     SmokeScene s;
     s.build();
     Renderer r;
-    CHECK(r.init(kSmokeWidth, kSmokeHeight));
-    if (!render_ok(r, s.scene)) return;
-    uint32_t sum = checksum(r.pixels(), kSmokeWidth * kSmokeHeight);
-    printf("gfx_smoke scene on the host: checksum %08x (%.1f ms)\n", sum, r.stats().ms);
+    uint32_t sum = 0;
+    const char* why = smoke_check(r, s, &sum);       // the checks of the Minimal-OS program
+    CHECK_MSG(why == nullptr, why ? why : "");
+    if (why) fprintf(stderr, "smoke_check: %s (%s)\n", why, r.error());
+    printf("gfx_smoke scene on the host: FE GFX PASS %08x\n", sum);
     CHECK(sum != 0);
 }
 
@@ -787,6 +824,7 @@ int main() {
     test_sky();
     test_cache_and_resize();
     test_many_items_and_budget();
+    test_big_mesh();
     test_jit_matches_interpreter();
     test_errors();
     test_smoke_scene();

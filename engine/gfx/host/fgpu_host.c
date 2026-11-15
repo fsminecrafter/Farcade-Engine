@@ -223,7 +223,8 @@ static uint64_t execute(exec_state_t* st, const uint32_t* cmd, uint32_t words) {
                 if (!make_target(st, &t)) return SYS_ERR_INVAL;
                 float depth;
                 memcpy(&depth, &arg[2], sizeof(depth));
-                fgpu_pass_clear(g_pass, &t, arg[0], arg[1], depth);
+                if (g_pass) fgpu_pass_clear(g_pass, &t, arg[0], arg[1], depth);
+                else fgpu_raster_clear(&t, arg[0], arg[1], depth);
                 break;
             }
             case FGPU_OP_SET_STATE:
@@ -318,7 +319,8 @@ static uint64_t execute(exec_state_t* st, const uint32_t* cmd, uint32_t words) {
                 uint32_t count = ib ? d.index_count : (d.vertex_count < avail ? d.vertex_count : avail);
                 // Pipeline state, uniforms and constants are snapshotted by the
                 // pass; buffers, textures and programs stay alive until the flush.
-                fgpu_pass_draw_layout(g_pass, &t, &st->pipe, layout, verts, avail, idx, count, 0);
+                if (g_pass) fgpu_pass_draw_layout(g_pass, &t, &st->pipe, layout, verts, avail, idx, count, 0);
+                else st->triangles += fgpu_raster_draw_layout(&t, &st->pipe, layout, verts, avail, idx, count);
                 break;
             }
             default:

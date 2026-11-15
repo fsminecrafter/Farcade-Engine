@@ -12,7 +12,8 @@
 //     unrolls loops and the shader machine runs no branches, so the counts are
 //     compiled in), at most kMaxLights lights per frame, cached.
 //   - Unlit items use a flat shader, the sky one full-screen triangle at the
-//     far plane drawn last (only the pixels no mesh covers are shaded).
+//     far plane drawn last (only the pixels no mesh covers are shaded; geometry
+//     beyond about 1e6 * near is lost to the sky: depth 0.9999995).
 //   - Post processing (exposure, tint, tonemap, contrast, saturation,
 //     vignette, linear to sRGB) is the last part of each fragment shader:
 //     the render targets are 8 bit, so a separate pass could not tonemap HDR.
@@ -43,7 +44,7 @@ constexpr int kMaxCachedBuffers = 2048;             // the kernel allows 4096 pe
 constexpr int kMaxTempBuffers = 1024;
 constexpr int kMaxVariants = 12;                    // lit shaders kept
 constexpr uint32_t kCommandBudget = 900 * 1024;     // submit before FGPU_MAX_COMMAND_BYTES (1 MiB)
-constexpr uint32_t kUploadSlice = 8192;             // vertices converted per upload call
+constexpr uint32_t kUploadSlice = 8190;             // vertices converted per upload call (a multiple of 3)
 
 struct MeshEntry {
     uint64_t key = 0;

@@ -10,7 +10,7 @@ licence file. To update one, copy the new files over and change this table.
 | stb | https://github.com/nothings/stb | master | 9600522 | MIT or public domain (stb_sprintf.h from deprecated/) |
 | cgltf | https://github.com/jkuhlmann/cgltf | master | 85cd623 | MIT |
 | fast_obj | https://github.com/thisistherk/fast_obj | master | d620667 | MIT |
-| fgpu | https://github.com/fsminecrafter/Minimal-OS | claude/os0-process-basics-bq26wb | a00577e | GPLv3 |
+| fgpu | https://github.com/fsminecrafter/Minimal-OS | - | a00577e | GPLv3 |
 | Minimal-OS-SDK | https://github.com/fsminecrafter/Minimal-OS-SDK | main | git submodule | GPLv3 |
 
 fgpu: the kernel's FGPU CPU backend, unmodified (no patches), laid out as the

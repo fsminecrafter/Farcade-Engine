@@ -49,4 +49,53 @@ inline uint32_t checksum(const uint32_t* px, int count) {
     return h;
 }
 
+inline int smoke_luma(uint32_t p) {
+    int r = (int)(p & 0xFF), g = (int)((p >> 8) & 0xFF), b = (int)((p >> 16) & 0xFF);
+    return (r * 3 + g * 6 + b) / 10;
+}
+
+// The pixel a world point projects to.
+inline uint32_t smoke_pixel_at(const RenderScene& s, const Renderer& r, Vec3 p) {
+    Vec4 c = s.camera.proj * (s.camera.view * Vec4{ p.x, p.y, p.z, 1 });
+    int x = (int)((c.x / c.w * 0.5f + 0.5f) * (float)r.width());
+    int y = (int)((1.0f - (c.y / c.w * 0.5f + 0.5f)) * (float)r.height());
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= r.width()) x = r.width() - 1;
+    if (y >= r.height()) y = r.height() - 1;
+    return r.pixels()[y * r.width() + x];
+}
+
+// Draws the smoke scene and checks the picture: returns nullptr when all is
+// well (*sum gets the checksum of the first frame), else why not. The Renderer's
+// own message is in r.error(). Shared by the Minimal-OS program and the host test.
+inline const char* smoke_check(Renderer& r, SmokeScene& s, uint32_t* sum) {
+    if (!r.init(kSmokeWidth, kSmokeHeight)) return "init failed";
+    if (!r.render(s.scene)) return "render failed";
+    if (r.stats().uploads != 2 || r.stats().draws != 2) return "first frame: wrong uploads or draws";
+    *sum = checksum(r.pixels(), kSmokeWidth * kSmokeHeight);
+
+    // The sky fills the empty top corner and differs from the cube; the cube's
+    // sun-facing top is lit.
+    uint32_t sky = r.pixels()[2 * kSmokeWidth + 2];
+    uint32_t top = smoke_pixel_at(s.scene, r, Vec3(0, 0.5f, 0));
+    if ((sky & 0xFFFFFF) == 0 || (top & 0xFFFFFF) == (sky & 0xFFFFFF)) return "sky and cube look the same";
+    if (smoke_luma(top) < 40) return "the lit top of the cube is dark";
+    int differing = 0;
+    for (int i = 0; i < kSmokeWidth * kSmokeHeight; i++)
+        if (r.pixels()[i] != sky) differing++;
+    if (differing < kSmokeWidth * kSmokeHeight / 8) return "picture is almost flat";
+    if ((top >> 24) != 0xFF) return "alpha is not 255";
+
+    // A second frame reuses the cached meshes and draws the same picture.
+    if (!r.render(s.scene)) return "second render failed";
+    if (r.stats().uploads != 0) return "second frame uploaded meshes again";
+    if (checksum(r.pixels(), kSmokeWidth * kSmokeHeight) != *sum) return "second frame differs";
+
+    // Resize keeps the meshes.
+    if (!r.resize(kSmokeWidth / 2, kSmokeHeight / 2)) return "resize failed";
+    if (!r.render(s.scene) || r.stats().uploads != 0) return "render after resize";
+    return nullptr;
+}
+
 }  // namespace fe::gfx

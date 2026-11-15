@@ -825,7 +825,13 @@ void test_smoke_scene() {
     CHECK(h.init(kSmokeWidth, kSmokeHeight));
     if (render_ok(h, s.scene)) {
         CHECK(h.gpu_tier_stats().passes >= 5);
-        printf("gfx_smoke gpu tier on the host: FE GFX PASS %08x %08x\n", sum, checksum(h.pixels(), kSmokeWidth * kSmokeHeight));
+        uint32_t hq = checksum(h.pixels(), kSmokeWidth * kSmokeHeight);
+        SmokeLocalLights ll;
+        ll.apply(s);
+        if (render_ok(h, s.scene)) {
+            CHECK_EQ(h.gpu_tier_stats().local_shadows, 2);
+            printf("gfx_smoke gpu tier on the host: FE GFX PASS %08x %08x %08x\n", sum, hq, checksum(h.pixels(), kSmokeWidth * kSmokeHeight));
+        }
     }
 }
 
@@ -836,6 +842,7 @@ GraphicsSettings tier_off() {
     GraphicsSettings g;
     g.preset = GraphicsPreset::Custom;
     g.shadows = g.ambient_occlusion = g.bloom = g.antialiasing = g.pbr = false;
+    g.local_shadows = false;
     g.shadow_resolution = 512;
     g.allow_gpu_effects_on_cpu = true;
     return g;
@@ -947,6 +954,171 @@ void test_shadows() {
     // the light does not cast shadows
     t.lights[0].shadows = false;
     if (render_ok(r, t.scene)) CHECK(abs(lum_at(t, r, shadowed) - lum_at(t, r, lit)) < 8);
+}
+
+// Point and spot light shadows from the atlas.
+Mat4 wall_model(Vec3 at, Vec3 facing_away, Vec3 side) {
+    // The plane's normal (+y) turned to -facing_away, x along `side`.
+    Vec3 y = facing_away * -1.0f, x = side, z = cross(x, y);
+    Mat4 m = Mat4::identity();
+    m.m[0] = x.x; m.m[1] = x.y; m.m[2] = x.z;
+    m.m[4] = y.x; m.m[5] = y.y; m.m[6] = y.z;
+    m.m[8] = z.x; m.m[9] = z.y; m.m[10] = z.z;
+    m.m[12] = at.x; m.m[13] = at.y; m.m[14] = at.z;
+    return m;
+}
+
+void test_local_shadows() {
+    GraphicsSettings g = tier_off();
+    g.local_shadows = true;
+    g.local_shadow_lights = 4;
+    g.local_shadow_resolution = 1024;
+    Renderer r;
+    r.set_settings(g);
+    CHECK(r.init(W, H));
+    CHECK(r.features().local_shadows);
+
+    // A point light, a cube 2 m away and a wall 4 m away, on each of the six
+    // sides: the wall behind the cube is in shadow (every cube face of the
+    // light's shadow), the wall beside it is not.
+    const Vec3 axes[6] = { Vec3(1, 0, 0), Vec3(-1, 0, 0), Vec3(0, 1, 0), Vec3(0, -1, 0), Vec3(0, 0, 1), Vec3(0, 0, -1) };
+    const Vec3 L(0.3f, 5.0f, -0.2f);
+    int faces_ok = 0, sides_ok = 0;
+    for (int f = 0; f < 6; f++) {
+        Vec3 a = axes[f];
+        Vec3 side = fabsf(a.y) > 0.5f ? Vec3(1, 0, 0) : Vec3(0, 1, 0);
+        TestScene t;
+        t.items[0].model = Mat4::translation(L + a * 2.0f);
+        t.items[1].model = wall_model(L + a * 4.0f, a, side);
+        t.scene.item_count = 2;
+        RenderLight pl;
+        pl.type = LightType::Point;
+        pl.position = L;
+        pl.range = 12.0f;
+        pl.intensity = 3.0f;
+        t.lights[0] = pl;
+        t.scene.light_count = 1;
+        Vec3 behind = L + a * 4.0f, beside = L + a * 4.0f + side * 2.2f;
+        Vec3 perp = cross(a, side);
+        t.camera(L + a * 2.0f + perp * 7.0f, behind, 60.0f);
+        g.local_shadows = false; r.set_settings(g);
+        int b0 = 0, s0 = 0, b1 = 0, s1 = 0;
+        if (render_ok(r, t.scene)) { b0 = lum_at(t, r, behind); s0 = lum_at(t, r, beside); }
+        g.local_shadows = true; r.set_settings(g);
+        if (render_ok(r, t.scene)) {
+            b1 = lum_at(t, r, behind); s1 = lum_at(t, r, beside);
+            CHECK_EQ(r.gpu_tier_stats().local_shadows, 1);
+        }
+        bool face = b0 > 30 && b1 < b0 / 3;
+        bool sidelit = abs(s1 - s0) <= 4;
+        faces_ok += face;
+        sides_ok += sidelit;
+        if (!face || !sidelit) fprintf(stderr, "point shadow face %d: behind %d -> %d, beside %d -> %d\n", f, b0, b1, s0, s1);
+    }
+    CHECK_MSG(faces_ok == 6, "a point light shadows all six directions");
+    CHECK_MSG(sides_ok == 6, "the wall next to the shadow stays lit (no acne, no other tile)");
+
+    // A spot light pointing down onto a cube on the floor.
+    {
+        TestScene t;
+        t.items[0].model = Mat4::translation(Vec3(0, 1.5f, 0));
+        t.scene.item_count = 2;
+        RenderLight sl;
+        sl.type = LightType::Spot;
+        sl.position = Vec3(0, 4.0f, 0);
+        sl.direction = Vec3(0, -1, 0);
+        sl.spot_angle = 80.0f;
+        sl.range = 10.0f;
+        sl.intensity = 3.0f;
+        t.lights[0] = sl;
+        t.scene.light_count = 1;
+        t.camera(Vec3(0.5f, 6.0f, 5.0f), Vec3(0, 0, 0), 55.0f);
+        const Vec3 under(0, 0, 0), out(1.6f, 0, 0);
+        g.local_shadows = false; r.set_settings(g);
+        int u0 = 0, o0 = 0;
+        if (render_ok(r, t.scene)) { u0 = lum_at(t, r, under); o0 = lum_at(t, r, out); }
+        g.local_shadows = true; r.set_settings(g);
+        if (render_ok(r, t.scene)) {
+            int u1 = lum_at(t, r, under), o1 = lum_at(t, r, out);
+            CHECK_MSG(u0 > 30 && u1 < u0 / 3, "the floor under the cube is in the spot light's shadow");
+            CHECK(abs(o1 - o0) <= 4);
+            if (!(u1 < u0 / 3) || abs(o1 - o0) > 4) fprintf(stderr, "spot: under %d -> %d, out %d -> %d\n", u0, u1, o0, o1);
+            CHECK(render_ok(r, t.scene));
+            CHECK(r.gpu_tier_stats().atlas_reused);        // nothing moved: the atlas is kept
+        }
+        // the cube does not cast / the light has no shadows / the option is off
+        t.items[0].cast_shadows = false;
+        if (render_ok(r, t.scene)) CHECK(abs(lum_at(t, r, under) - u0) <= 4);
+        t.items[0].cast_shadows = true;
+        t.lights[0].shadows = false;
+        if (render_ok(r, t.scene)) { CHECK(abs(lum_at(t, r, under) - u0) <= 4); CHECK_EQ(r.gpu_tier_stats().local_shadows, 0); }
+        t.lights[0].shadows = true;
+        // soft and hard filtering both work
+        g.soft_shadows = false; r.set_settings(g);
+        if (render_ok(r, t.scene)) CHECK(lum_at(t, r, under) < u0 / 3);
+        g.soft_shadows = true; r.set_settings(g);
+    }
+
+    // The atlas budget: three point lights need 18 tiles, the atlas has 16;
+    // with a spot light that is 2 points and the spot. The light count setting caps it too.
+    {
+        TestScene t;
+        t.scene.item_count = 2;
+        t.items[0].model = Mat4::translation(Vec3(0, 0.5f, 0));
+        for (int i = 0; i < 3; i++) {
+            RenderLight pl;
+            pl.type = LightType::Point;
+            pl.position = Vec3((float)i * 2.0f - 2.0f, 2.0f, 1.0f);
+            pl.range = 8.0f;
+            t.lights[i] = pl;
+        }
+        RenderLight sl;
+        sl.type = LightType::Spot;
+        sl.position = Vec3(0, 3, 0);
+        sl.direction = Vec3(0, -1, 0);
+        t.lights[3] = sl;
+        t.scene.light_count = 4;
+        if (render_ok(r, t.scene)) CHECK_EQ(r.gpu_tier_stats().local_shadows, 3);
+        g.local_shadow_lights = 1; r.set_settings(g);
+        if (render_ok(r, t.scene)) CHECK_EQ(r.gpu_tier_stats().local_shadows, 1);
+        g.local_shadow_lights = 4; r.set_settings(g);
+    }
+}
+
+// The biggest lit shader: 8 lights (a sun, points, spots), soft sun shadow,
+// AO, PBR, fog, HDR (bloom) and four point / spot shadows must compile (32
+// registers, 2048 instructions).
+void test_worst_case_shader() {
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Ultra);
+    g.allow_gpu_effects_on_cpu = true;
+    g.shadow_resolution = 512;
+    g.local_shadow_resolution = 512;
+    for (int combo = 0; combo < 3; combo++) {
+        Renderer r;
+        r.set_settings(g);
+        CHECK(r.init(160, 120));
+        ShadowRig rig;
+        TestScene& t = rig.t;
+        t.scene.post.bloom = 0.5f;
+        t.scene.post.bloom_threshold = 0.8f;
+        t.scene.sky.fog = 0.3f;
+        int n = 1;      // the sun is lights[0]
+        int points = combo == 0 ? 4 : (combo == 1 ? 1 : 2);
+        for (int i = 0; i < 7; i++) {
+            RenderLight l;
+            l.type = i < points ? LightType::Point : LightType::Spot;
+            l.position = Vec3((float)(i % 4) - 1.5f, 2.0f + (float)(i / 4), 1.0f);
+            l.direction = Vec3(0, -1, 0);
+            l.range = 6.0f;
+            t.lights[n++] = l;
+        }
+        t.scene.light_count = n;
+        bool ok = r.render(t.scene);
+        CHECK_MSG(ok, "the worst-case lit shader compiles");
+        if (!ok) fprintf(stderr, "worst case %d points: %s\n", points, r.error());
+        else CHECK(r.gpu_tier_stats().local_shadows >= 2);
+    }
 }
 
 void test_pbr() {
@@ -1217,6 +1389,8 @@ int main() {
     test_smoke_scene();
     test_features();
     test_shadows();
+    test_local_shadows();
+    test_worst_case_shader();
     test_pbr();
     test_fog();
     test_ssao();

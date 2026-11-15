@@ -40,6 +40,29 @@ struct SmokeScene {
     }
 };
 
+// A point and a spot light with shadows next to the sun (the third checksum:
+// the GPU tier's point / spot shadow atlas).
+struct SmokeLocalLights {
+    RenderLight lights[3];
+    void apply(SmokeScene& s) {
+        lights[0] = s.sun;
+        lights[1].type = LightType::Point;
+        lights[1].position = Vec3(1.2f, 1.0f, 0.9f);
+        lights[1].color = Vec3(1.0f, 0.8f, 0.5f);
+        lights[1].intensity = 2.0f;
+        lights[1].range = 6.0f;
+        lights[2].type = LightType::Spot;
+        lights[2].position = Vec3(-1.4f, 2.4f, 0.6f);
+        lights[2].direction = normalize(Vec3(1.4f, -2.4f, -0.6f));
+        lights[2].color = Vec3(0.5f, 0.8f, 1.0f);
+        lights[2].intensity = 3.0f;
+        lights[2].range = 8.0f;
+        lights[2].spot_angle = 60.0f;
+        s.scene.lights = lights;
+        s.scene.light_count = 3;
+    }
+};
+
 inline uint32_t checksum(const uint32_t* px, int count) {
     uint32_t h = 2166136261u;                   // FNV-1a over the RGBA words
     for (int i = 0; i < count; i++) {

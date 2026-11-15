@@ -92,9 +92,12 @@ struct RendererStats {
 // did not run), for tools and tests (see engine/gfx/passes.h).
 struct GpuTierStats {
     double shadow_ms = 0, depth_ms = 0, ssao_ms = 0, blur_ms = 0, lit_ms = 0, bloom_ms = 0, composite_ms = 0, fxaa_ms = 0;
+    double local_shadow_ms = 0;             // the point / spot shadow atlas
     int passes = 0;                         // render passes of the frame
     bool shadow_reused = false;             // the shadow map of the last frame was still valid
-    double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms; }
+    int local_shadows = 0;                  // point / spot lights that got an atlas shadow
+    bool atlas_reused = false;              // the atlas of the last frame was still valid
+    double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms + local_shadow_ms; }
 };
 
 class Renderer {

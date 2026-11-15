@@ -27,9 +27,14 @@ struct HqLitKey {
     bool ao = false;                                // multiplies by the AO texture
     bool fog = false;
     bool hdr = false;                               // writes an HDR-encoded value, not the final color
+    // Point and spot shadows from the atlas: the first nps point lights and
+    // the first nss spot lights (in packed order) have one.
+    int nps = 0, nss = 0;
+    bool local_soft = false;                        // 4 taps, else 1
     bool operator==(const HqLitKey& o) const {
         return nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
-               shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr;
+               shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
+               nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }
 };
 
@@ -48,6 +53,13 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr);         // vertex: shader
 // linear depth for SSAO (u_pp.x = 1 / far).
 void hq_shadow_vertex(char* out, size_t cap);
 void hq_shadow_fragment(char* out, size_t cap);
+// Point and spot shadow casters into the atlas: radial distance to the light
+// (u_lp: xyz light position, w 1 / range), packed in 24 bits.
+void hq_local_shadow_vertex(char* out, size_t cap);
+void hq_local_shadow_fragment(char* out, size_t cap);
+// The six cube faces of a point light shadow, in the order the lit shader
+// picks them: +x, -x, +y, -y, +z, -z (forward), with these up vectors.
+void cube_face(int face, float fwd[3], float up[3]);
 void hq_depth_vertex(char* out, size_t cap);
 void hq_depth_fragment(char* out, size_t cap);
 void hq_normal_vertex(char* out, size_t cap);                  // view space normal * 0.5 + 0.5

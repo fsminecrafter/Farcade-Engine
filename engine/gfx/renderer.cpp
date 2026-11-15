@@ -87,6 +87,8 @@ struct LightSet {
     bool has_sun = false;
     Vec3 sun_dir;                           // towards the sun
     Vec3 sun_color;
+    int nps = 0, nss = 0;                   // shadowed point / spot lights at the start of their groups
+    const RenderLight* local[kMaxLocalShadows] = {};
 };
 
 struct Chosen {
@@ -131,6 +133,7 @@ struct Renderer::Impl {
     bool hw = false;                        // FGPU_CAP_HW_3D: FarcadeGL runs on a graphics card
     char backend[40] = "";
     GpuTier tier;
+    bool tier_ran = false;                  // the last frame used the GPU tier
 
     // Mesh cache: open addressing on key, entries never move between rebuilds.
     MeshEntry* table = nullptr;
@@ -176,8 +179,10 @@ struct Renderer::Impl {
     // A band is drawn through a viewport as big as the image, shifted up by
     // the band's first row: the rasterizer clips to the (smaller) surface.
     void emit_viewport() {
-        if (banding) fglViewport(gl, 0, -band_y0, width, height);
+        if (pass_vp[2] > 0) fglViewport(gl, pass_vp[0], pass_vp[1], pass_vp[2], pass_vp[3]);
+        else if (banding) fglViewport(gl, 0, -band_y0, width, height);
     }
+    int pass_vp[4] = {};                    // a GPU tier pass's viewport (an atlas tile), 0 = none
 
     // ---- shaders
 
@@ -451,7 +456,10 @@ struct Renderer::Impl {
     // Picks up to kMaxLights lights, strongest first (directional lights
     // before the others, nearer and brighter point and spot lights first) and
     // packs them directional, point, spot.
-    static void pack_lights(const RenderScene& s, LightSet* out) {
+    // max_local > 0: up to that many point / spot lights with Shadows on get
+    // an atlas shadow (best score first, while the atlas has tiles: a spot
+    // takes 1, a point 6); they go first in their group.
+    static void pack_lights(const RenderScene& s, LightSet* out, int max_local = 0) {
         Chosen pick[kMaxLights];
         int n = 0;
         float sun_score = 0;
@@ -482,19 +490,52 @@ struct Renderer::Impl {
             }
         }
         out->nd = out->np = out->ns = 0;
-        // Group by type: directional, point, spot.
+        out->nps = out->nss = 0;
+        bool shadowed[kMaxLights] = {};
+        if (max_local > 0) {
+            if (max_local > kMaxLocalShadows) max_local = kMaxLocalShadows;
+            int tiles = kAtlasTiles * kAtlasTiles, count = 0;
+            for (;;) {
+                int best = -1;
+                for (int k = 0; k < n; k++) {
+                    const RenderLight& l = *pick[k].light;
+                    if (shadowed[k] || !l.shadows || l.type == LightType::Directional) continue;
+                    if ((l.type == LightType::Point ? 6 : 1) > tiles) continue;
+                    if (best < 0 || pick[k].score > pick[best].score) best = k;
+                }
+                if (best < 0 || count == max_local) break;
+                shadowed[best] = true;
+                tiles -= pick[best].light->type == LightType::Point ? 6 : 1;
+                count++;
+            }
+        }
+        // Group by type: directional, point, spot; within a group the
+        // shadowed lights first.
         int idx = 0;
-        for (int type = 0; type < 3; type++) {
+        for (int pass = 0; pass < 5; pass++) {
+            // 0 directional, 1 shadowed points, 2 points, 3 shadowed spots, 4 spots
+            int type = pass == 0 ? 0 : (pass <= 2 ? 1 : 2);
+            bool want_shadow = pass == 1 || pass == 3;
             LightType want = type == 0 ? LightType::Directional : (type == 1 ? LightType::Point : LightType::Spot);
             for (int k = 0; k < n; k++) {
                 const RenderLight& l = *pick[k].light;
                 if (l.type != want) continue;
+                if (type != 0 && shadowed[k] != want_shadow) continue;
+                if (want_shadow) {
+                    out->local[out->nps + out->nss] = &l;
+                    if (type == 1) out->nps++; else out->nss++;
+                }
                 Vec3 dir = length(l.direction) > 0.0f ? normalize(l.direction) : Vec3(0, -1, 0);
                 Vec3 col = l.color * l.intensity;
                 float range = l.range > 0.001f ? l.range : 0.001f;
                 put4(out->l0, idx, l.position.x, l.position.y, l.position.z, range);
-                put4(out->l1, idx, dir.x, dir.y, dir.z, 0);
-                put4(out->l2, idx, col.x, col.y, col.z, 0);
+                // The spot cone is in l3 and, for the GPU tier's shaders (short of
+                // uniform space), also in the w of l1 / l2 (the base tier reads xyz only).
+                float outer_c = fcos(radians(fclamp(l.spot_angle * 0.5f, 0.5f, 89.0f)));
+                float inner_c = fcos(radians(fclamp(l.spot_angle * 0.5f, 0.5f, 89.0f)) * (1.0f - fclamp(l.spot_blend, 0.0f, 1.0f)));
+                if (inner_c < outer_c + 1e-4f) inner_c = outer_c + 1e-4f;
+                put4(out->l1, idx, dir.x, dir.y, dir.z, outer_c);
+                put4(out->l2, idx, col.x, col.y, col.z, inner_c);
                 float outer = radians(fclamp(l.spot_angle * 0.5f, 0.5f, 89.0f));
                 float blend = fclamp(l.spot_blend, 0.0f, 1.0f);
                 float c_outer = fcos(outer);
@@ -621,6 +662,11 @@ struct Renderer::Impl {
     static bool tier_draw_mesh(void* user, const DrawItem& it, bool count, bool* failed) {
         return static_cast<Impl*>(user)->draw_mesh(it, count, failed);
     }
+    static void tier_set_viewport(void* user, int x, int y, int w, int h) {
+        Impl* I = static_cast<Impl*>(user);
+        I->pass_vp[0] = x; I->pass_vp[1] = y; I->pass_vp[2] = w; I->pass_vp[3] = h;
+        if (w > 0) fglViewport(I->gl, x, y, w, h);
+    }
 
     GraphicsFeatures feature_set() const {
         GraphicsFeatures f;
@@ -631,6 +677,7 @@ struct Renderer::Impl {
         f.bloom = f.gpu_tier && settings.bloom;
         f.antialiasing = f.gpu_tier && settings.antialiasing;
         f.pbr = f.gpu_tier && settings.pbr;
+        f.local_shadows = f.gpu_tier && settings.local_shadows;
         return f;
     }
 
@@ -648,11 +695,10 @@ struct Renderer::Impl {
         gl->error = 0;
         frame++;
 
-        LightSet ls;
-        pack_lights(scene, &ls);
-
         // GPU tier / fog: replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
+        LightSet ls;
+        pack_lights(scene, &ls, plan.local_shadows ? settings.local_shadow_lights : 0);
         if (plan.any() && banding) {
             set_error("FarcadeGL: bands are not available with the GPU tier or fog");
             in_render = false;
@@ -660,14 +706,18 @@ struct Renderer::Impl {
         }
         bool failed = false;
         bool tier_done = false;
+        tier_ran = plan.any();
         if (plan.any()) {
             PackedLights pl;
             pl.l0 = ls.l0; pl.l1 = ls.l1; pl.l2 = ls.l2; pl.l3 = ls.l3;
             pl.nd = ls.nd; pl.np = ls.np; pl.ns = ls.ns;
             pl.has_sun = ls.has_sun; pl.sun_dir = ls.sun_dir; pl.sun_color = ls.sun_color;
+            pl.nps = ls.nps; pl.nss = ls.nss;
+            for (int i = 0; i < ls.nps + ls.nss; i++) pl.local[i] = ls.local[i];
             PassHost host;
             host.user = this;
             host.draw_mesh = &Impl::tier_draw_mesh;
+            host.set_viewport = &Impl::tier_set_viewport;
             failed = !tier.render(gl, scene, pl, settings, plan, host, error, (int)sizeof error);
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
             tier_done = true;
@@ -874,7 +924,7 @@ const char* Renderer::backend() const { return impl_ ? impl_->backend : ""; }
 
 const GpuTierStats& Renderer::gpu_tier_stats() const {
     static const GpuTierStats none;
-    return impl_ ? impl_->tier.stats() : none;
+    return impl_ && impl_->tier_ran ? impl_->tier.stats() : none;   // zeros after a base tier frame
 }
 int Renderer::gpu_tier_surfaces() const { return impl_ ? impl_->tier.live_surfaces() : 0; }
 int Renderer::gpu_tier_programs() const { return impl_ ? impl_->tier.live_programs() : 0; }

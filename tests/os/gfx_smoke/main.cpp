@@ -4,7 +4,8 @@
 // gradient sky, ACES) into an offscreen FarcadeGL context through the
 // kernel's FGPU, checks the picture (smoke_check in scene.h, the same checks
 // the host test runs) and prints "FE GFX PASS <base> <hq>" (the base tier's checksum, then that of a frame
-// with the GPU tier forced on) or "FE GFX FAIL
+// with the GPU tier forced on, then of that frame with a point and a spot
+// light casting shadows from the atlas) or "FE GFX FAIL
 // <why>". The checksum is that of the RGBA pixels; the host test
 // (build/host/bin/gfx_tests) prints the checksum of the same scene rendered
 // on the host device, which should be the same.
@@ -48,6 +49,15 @@ int main() {
         return 1;
     }
     uint32_t hq = checksum(h.pixels(), kSmokeWidth * kSmokeHeight);
-    printf("FE GFX PASS %08x %08x\n", sum, hq);
+
+    // Point and spot shadows (the atlas), same settings.
+    SmokeLocalLights ll;
+    ll.apply(s);
+    if (!h.render(s.scene) || h.gpu_tier_stats().local_shadows != 2) {
+        printf("FE GFX FAIL point/spot shadows (%s, %d lights)\n", h.error(), h.gpu_tier_stats().local_shadows);
+        return 1;
+    }
+    uint32_t local = checksum(h.pixels(), kSmokeWidth * kSmokeHeight);
+    printf("FE GFX PASS %08x %08x %08x\n", sum, hq, local);
     return 0;
 }

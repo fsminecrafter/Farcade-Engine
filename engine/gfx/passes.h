@@ -19,6 +19,9 @@
 
 namespace fe::gfx {
 
+constexpr int kMaxLocalShadows = 4;         // point / spot lights with shadows at a time
+constexpr int kAtlasTiles = 4;              // the shadow atlas is kAtlasTiles x kAtlasTiles tiles
+
 // The lights of a frame, packed for the lit shaders (renderer.cpp's LightSet).
 struct PackedLights {
     const float* l0 = nullptr;              // xyz position, w range
@@ -29,6 +32,11 @@ struct PackedLights {
     bool has_sun = false;
     Vec3 sun_dir;                           // towards the sun
     Vec3 sun_color;
+    // Point and spot lights with an atlas shadow: the first nps point lights
+    // and the first nss spot lights of the packed order; `local` holds them
+    // in that order (points, then spots).
+    int nps = 0, nss = 0;
+    const RenderLight* local[kMaxLocalShadows] = {};
 };
 
 // What the tier needs from the renderer.
@@ -38,13 +46,17 @@ struct PassHost {
     // set (sets the model matrix, handles mirroring and the command budget).
     // `count` adds it to the frame's draw statistics (the main pass only).
     bool (*draw_mesh)(void* user, const DrawItem& it, bool count, bool* failed) = nullptr;
+    // A viewport that draw_mesh sets again after its own submits (a submit
+    // resets it); w == 0 turns it off.
+    void (*set_viewport)(void* user, int x, int y, int w, int h) = nullptr;
 };
 
 // What runs this frame: the features, limited by what the scene has.
 struct GpuPlan {
     bool shadows = false, ao = false, bloom = false, aa = false, pbr = false, fog = false;
+    bool local_shadows = false;             // a point or spot light with Shadows on
     bool hw = false;                        // FarcadeGL runs on a graphics card
-    bool any() const { return shadows || ao || bloom || aa || pbr || fog; }
+    bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows; }
 };
 
 class GpuTier {

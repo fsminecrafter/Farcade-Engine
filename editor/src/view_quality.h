@@ -31,6 +31,7 @@ public:
         double& k = cost_[draft ? 1 : 0];
         k = k > 0 ? k * 0.5 + c * 0.5 : c;
     }
+    double cost_ms_per_pixel(bool draft) const { return cost(draft); }
     bool known() const { return cost_[0] > 0 || cost_[1] > 0; }
 
 private:

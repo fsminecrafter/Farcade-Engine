@@ -57,6 +57,8 @@ public:
     ~SwUpscaler();
     // Returns the dw x dh XRGB pixels (valid until the next call).
     const uint32_t* run(const uint32_t* src, int sw, int sh, int dw, int dh);
+    // The buffer for a dw x dh image (kept, not cleared); null if out of memory.
+    uint32_t* buffer(int dw, int dh);
 
 private:
     uint32_t* buf_ = nullptr;

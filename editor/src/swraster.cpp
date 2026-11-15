@@ -357,18 +357,23 @@ inline SwRect union_rect(const SwRect& a, const SwRect& b) {
     return { imin(a.x0, b.x0), imin(a.y0, b.y0), imax(a.x1, b.x1), imax(a.y1, b.y1) };
 }
 
-inline bool touches(const SwRect& a, const SwRect& b) {
-    return a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
+// Worth drawing as one rectangle: little is drawn that neither needs (or both
+// are tiny: a pass over the lists costs more than a few pixels).
+inline bool worth_merging(const SwRect& a, const SwRect& b) {
+    if (!(a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1)) return false;
+    int64_t u = union_rect(a, b).area();
+    return u <= 4096 || u - a.area() - b.area() <= (a.area() + b.area()) / 4;
 }
 
-// Merges rectangles that touch, then the cheapest pairs until at most `max` remain.
+// Merges rectangles that overlap or touch when that wastes little, then the
+// cheapest pairs until at most `max` remain.
 void merge_rects(SwRect* r, int* count, int max) {
     int n = *count;
     for (;;) {
         bool merged = false;
         for (int i = 0; i < n && !merged; i++)
             for (int j = i + 1; j < n && !merged; j++)
-                if (touches(r[i], r[j])) {
+                if (worth_merging(r[i], r[j])) {
                     r[i] = union_rect(r[i], r[j]);
                     r[j] = r[--n];
                     merged = true;
@@ -401,13 +406,19 @@ SwRenderer::~SwRenderer() { free(verify_buf_); }
 
 SwUpscaler::~SwUpscaler() { free(buf_); free(map_); }
 
-const uint32_t* SwUpscaler::run(const uint32_t* src, int sw, int sh, int dw, int dh) {
-    if (!src || sw < 1 || sh < 1 || dw < 1 || dh < 1) return nullptr;
+uint32_t* SwUpscaler::buffer(int dw, int dh) {
+    if (dw < 1 || dh < 1) return nullptr;
     if (cap_ < (size_t)dw * dh) {
         free(buf_);
         buf_ = (uint32_t*)malloc((size_t)dw * dh * 4);
         cap_ = buf_ ? (size_t)dw * dh : 0;
     }
+    return buf_;
+}
+
+const uint32_t* SwUpscaler::run(const uint32_t* src, int sw, int sh, int dw, int dh) {
+    if (!src || sw < 1 || sh < 1 || dw < 1 || dh < 1) return nullptr;
+    buffer(dw, dh);
     if (map_cap_ < dw) {
         free(map_);
         map_ = (int*)malloc((size_t)dw * sizeof(int));

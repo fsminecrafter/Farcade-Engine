@@ -46,7 +46,7 @@ const char* const kPost =
     "    t = clamp((t - 0.18) * u_post.y + 0.18, 0.0, 1.0);\n"
     "    float luma = dot(t, vec3(0.2126, 0.7152, 0.0722));\n"
     "    t = mix(vec3(luma), t, u_post.z);\n"
-    "    vec2 q = gl_FragCoord.xy / u_res.xy - 0.5;\n"
+    "    vec2 q = (gl_FragCoord.xy + u_res.zw) / u_res.xy - 0.5;\n"
     "    float edge = clamp(length(q) * 1.4142136, 0.0, 1.0);\n"
     "    t = t * (1.0 - u_post.w * smoothstep(0.25, 1.0, edge));\n"
     "    return lin2srgb(clamp(t, 0.0, 1.0));\n"

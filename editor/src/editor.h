@@ -177,6 +177,7 @@ public:
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
     bool adaptive_view = false;         // render the viewport smaller while it changes (Minimal-OS: slow CPU/GPU emulation)
     int view_div_shown = 1;             // the shown viewport image was rendered at 1/this size
+    bool view_final = true;             // the shown viewport image is at its final quality
     int view_div_target = 1;            // ... and will be refined to this when the view stops changing
     int view_scale_div = 1;             // FarcadeGL renders at 1/view_scale_div of the viewport size (experiments)
     bool bench_interacting = false;     // benchmarks: behave as during a camera drag

@@ -316,7 +316,63 @@ void Editor::panel_viewport() {
     if (div < view_scale_div) div = view_scale_div;
     last_base = base;
     { uint8_t d8 = (uint8_t)(div | (use_fgl && moving ? 0x80 : 0)); hash ^= d8; hash *= 1099511628211ull; }
+    // FarcadeGL with adaptive_view: once the view stopped changing, the picture
+    // is redrawn at full size in bands (a few rows per frame, so the UI stays
+    // alive); a change of the view drops what is left of it.
+    static bool band_final = true, banding = false;
+    static int band_y = 0, band_rows = 0;
+    const bool progressive = adaptive_view && use_fgl;
     bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
+    if (progressive) {
+        need = (moving && hash != last_hash) || !fgl_tex.pixels;
+        if (moving) { band_final = false; banding = false; }
+    }
+    view_final = !progressive || (band_final && !need);
+    bool do_band = progressive && !need && !band_final && shown_tex.pixels && fgl.ready();
+    if (do_band) {
+        double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+        double t0 = clock();
+        const uint32_t* dst_base = nullptr;
+        if (!banding) {
+            // Start: the picture shown now becomes the full-size buffer the bands overwrite.
+            int rows = (int)(250.0 / (quality.cost_ms_per_pixel(false) > 0 ? quality.cost_ms_per_pixel(false) * full_w : 0.05 * full_w));
+            if (rows < 8) rows = 8;
+            if (rows > full_h) rows = full_h;
+            band_rows = rows;
+            band_y = 0;
+            banding = true;
+            const uint32_t* cur = (const uint32_t*)shown_tex.pixels;
+            if (shown_tex.format == SwTexture::XRGB8 && shown_tex.width == full_w && shown_tex.height == full_h && cur == upscaler.buffer(full_w, full_h)) {
+                dst_base = cur;
+            } else {
+                dst_base = upscaler.run(cur, shown_tex.width, shown_tex.height, full_w, full_h);
+            }
+            shown_tex.format = SwTexture::XRGB8;
+            shown_tex.pixels = (const uint8_t*)dst_base;
+            shown_tex.width = shown_tex.pitch = full_w;
+            shown_tex.height = full_h;
+        }
+        uint32_t* disp = upscaler.buffer(full_w, full_h);
+        bool ok = disp && ((fgl.width() == full_w && fgl.height() == full_h) || fgl.resize(full_w, full_h));
+        int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
+        if (ok) {
+            bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+            bridge.scene.draft = false;
+            ok = fgl.render_rows(bridge.scene, y, band_rows, disp + (size_t)y * full_w);
+        }
+        if (ok) {
+            view_ms = (float)((clock() - t0) * 1000.0);
+            view_renders++;
+            fgl_stats = fgl.stats();
+            quality.report((long)full_w * band_rows, view_ms, false);
+            shown_tex.version++;
+            band_y += band_rows;
+            if (band_y >= full_h) { band_final = true; banding = false; view_div_shown = 1; view_final = true; }
+        } else {
+            band_final = true;
+            banding = false;
+        }
+    }
     // A refine render only when it brings something (never to the same size).
     if (need) {
         last_hash = hash;
@@ -357,6 +413,7 @@ void Editor::panel_viewport() {
         view_ms = (float)((clock() - t0) * 1000.0);
         view_renders++;
         view_div_shown = div;
+        banding = false;
         if (use_fgl && rgba) quality.report((long)rw * rh, view_ms, adaptive_view && moving);
         else if (!use_fgl) quality_cpu.report((long)view3d.width() * view3d.height(), view_ms, false);
         // What the window shows: the image itself, or the small one stretched.

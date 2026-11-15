@@ -104,6 +104,14 @@ public:
     // FarcadeGL error (error() says which).
     bool render(const RenderScene& scene);
 
+    // Draws only rows [y0, y0 + rows) of the image (the same picture render()
+    // gives, up to rasterizer rounding at triangle edges) and writes them to
+    // dst as XRGB words (0x00RRGGBB, width() * rows of them), not to pixels().
+    // The cost is that of rows * width pixels: a full-size image can be drawn
+    // in bands, with the caller doing other work between them. The surfaces
+    // are recreated when `rows` changes.
+    bool render_rows(const RenderScene& scene, int y0, int rows, uint32_t* dst);
+
     // RGBA8 (R in the low byte, alpha 255), width() * height(), rows top to
     // bottom; valid until the next render() or resize().
     const uint32_t* pixels() const;

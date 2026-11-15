@@ -122,7 +122,7 @@ private:
     bool settle_frame(Editor& ed) {
         settle_frames_++;
         bool final_q = ed.view_div_shown <= ed.view_div_target && ed.view_div_shown == ed.view_div_target;
-        if (final_q || settle_frames_ >= 60) {
+        if (final_q || settle_frames_ >= 150) {
             double ms = (platform::time_seconds() - settle_start_) * 1000.0;
             printf("FE BENCH settle: %.1f ms and %ld frames (%u renders) until the viewport image was final (1/%d size%s)\n", ms, settle_frames_,
                    ed.view_renders - settle_renders_, ed.view_div_shown, final_q ? "" : ", NOT reached");

@@ -110,7 +110,10 @@ FGLMat4 to_fgl(const Mat4& m) {
 }  // namespace
 
 struct Renderer::Impl {
-    int width = 0, height = 0;
+    int width = 0, height = 0;              // the image
+    int surf_w = 0, surf_h = 0;             // the surfaces: the image, or a band of it (render_rows)
+    int band_y0 = 0;                        // the band being drawn: its first row in the image
+    bool banding = false;
     FGLContext* gl = nullptr;
     Shader unlit[2], sky[2];                // [draft]
     Variant variants[kMaxVariants];
@@ -137,11 +140,13 @@ struct Renderer::Impl {
 
     // ---- context
 
-    bool make_context() {
+    bool make_context(int w, int h) {
         FGLContextDesc d;
         memset(&d, 0, sizeof d);
-        d.width = (uint32_t)width;
-        d.height = (uint32_t)height;
+        surf_w = w;
+        surf_h = h;
+        d.width = (uint32_t)w;
+        d.height = (uint32_t)h;
         d.window_id = 0;                    // never presented: offscreen
         d.depth = 1;
         d.page_flip = 0;
@@ -150,6 +155,21 @@ struct Renderer::Impl {
         static const FGLAttribute attrs[2] = { { 0, 3 }, { 12, 3 } };
         fglVertexLayout(gl, kVertexBytes, 2, attrs);
         return true;
+    }
+
+    // Surfaces of w x h (buffers and shaders belong to the device, not to the
+    // context: only the surfaces are recreated).
+    bool ensure_surface(int w, int h) {
+        if (gl && surf_w == w && surf_h == h) return true;
+        if (gl) fglDestroyContext(gl);
+        gl = nullptr;
+        return make_context(w, h);
+    }
+
+    // A band is drawn through a viewport as big as the image, shifted up by
+    // the band's first row: the rasterizer clips to the (smaller) surface.
+    void emit_viewport() {
+        if (banding) fglViewport(gl, 0, -band_y0, width, height);
     }
 
     // ---- shaders
@@ -488,7 +508,7 @@ struct Renderer::Impl {
         const Locs& l = s.loc;
         fglUniform4f(s.sh, l.post, p.exposure, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
         fglUniform4f(s.sh, l.tint, p.tint.x, p.tint.y, p.tint.z, (float)(int)p.tonemap);
-        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, 0);
+        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, banding ? (float)band_y0 : 0.0f);
     }
 
     void set_lit_frame(const Shader& s, const RenderScene& scene, const LightSet& ls) {
@@ -556,10 +576,13 @@ struct Renderer::Impl {
             return false;
         }
         // Keep the command buffer under the kernel's size limit.
-        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget && submit() != 0) {
-            set_error("FarcadeGL: submit failed", gl->error);
-            *failed = true;
-            return false;
+        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget) {
+            if (submit() != 0) {
+                set_error("FarcadeGL: submit failed", gl->error);
+                *failed = true;
+                return false;
+            }
+            emit_viewport();                // the next buffer binds the target again, which resets it
         }
         // A mirroring model matrix (negative determinant) turns the triangles
         // inside out: draw both faces, the depth test keeps the right ones.
@@ -580,11 +603,16 @@ struct Renderer::Impl {
         return true;
     }
 
-    bool render(const RenderScene& scene) {
+    // rows == 0: the whole image into `pixels` (as RGBA); else rows
+    // [y0, y0 + rows) into dst (XRGB, width * rows words).
+    bool render(const RenderScene& scene, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
         double t0 = now_ms();
         stats = RendererStats();
         in_render = true;
         error[0] = 0;
+        banding = rows > 0;
+        band_y0 = y0;
+        if (!ensure_surface(width, banding ? rows : height)) return false;
         gl->error = 0;
         frame++;
 
@@ -608,6 +636,7 @@ struct Renderer::Impl {
 
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        emit_viewport();
         fglSetProjection(gl, to_fgl(scene.camera.proj));
         fglSetView(gl, to_fgl(scene.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
@@ -630,13 +659,17 @@ struct Renderer::Impl {
         free_temps();
         if (failed) return false;
         double tr = now_ms();
-        int rr = fglReadPixels(gl, pixels, (uint32_t)width * 4);
+        int rr = fglReadPixels(gl, banding ? dst : pixels, (uint32_t)width * 4);
         stats.read_ms = now_ms() - tr;
         if (rr != 0) {
             set_error("FarcadeGL: readback failed", gl->error);
             return false;
         }
         double ts = now_ms();
+        if (banding) {
+            stats.ms = now_ms() - t0;
+            return true;
+        }
         // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque.
         uint32_t n = (uint32_t)width * (uint32_t)height;
         for (uint32_t i = 0; i < n; i++) {
@@ -681,7 +714,7 @@ bool Renderer::init(int width, int height) {
     m.pixels = (uint32_t*)calloc((size_t)width * (size_t)height, 4);
     if (!m.scratch || !m.pixels) { m.set_error("out of memory"); return false; }
     double t0 = now_ms();
-    bool ok = m.make_context() && m.make_shaders();
+    bool ok = m.make_context(width, height) && m.make_shaders();
     m.init_ms = now_ms() - t0;
     return ok;
 }
@@ -718,7 +751,19 @@ bool Renderer::resize(int width, int height) {
     m.pixels = px;
     m.width = width;
     m.height = height;
-    return m.make_context();
+    return m.make_context(width, height);
+}
+
+bool Renderer::render_rows(const RenderScene& scene, int y0, int rows, uint32_t* dst) {
+    if (!ready()) {
+        if (impl_ && !impl_->error[0]) impl_->set_error("the renderer is not initialised");
+        return false;
+    }
+    if (!dst || rows < 1 || y0 < 0 || y0 + rows > impl_->height) {
+        impl_->set_error("render_rows: rows outside the image");
+        return false;
+    }
+    return impl_->render(scene, y0, rows, dst);
 }
 
 bool Renderer::render(const RenderScene& scene) {

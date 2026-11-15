@@ -2,9 +2,9 @@
 
 IMGUI_SRC := external/imgui/imgui.cpp external/imgui/imgui_draw.cpp external/imgui/imgui_tables.cpp \
              external/imgui/imgui_widgets.cpp external/imgui/imgui_demo.cpp external/imguizmo/ImGuizmo.cpp
-CORE_SRC  := engine/core/math.cpp engine/scene/modules.cpp
+CORE_SRC  := engine/core/math.cpp engine/scene/modules.cpp engine/script/props.cpp
 EDITOR_SRC := editor/src/editor.cpp editor/src/panels.cpp editor/src/viewport.cpp editor/src/scene.cpp \
-              editor/src/icons.cpp editor/src/swraster.cpp editor/src/view3d.cpp editor/src/widgets.cpp editor/src/script.cpp editor/src/render_bridge.cpp
+              editor/src/icons.cpp editor/src/swraster.cpp editor/src/view3d.cpp editor/src/widgets.cpp editor/src/render_bridge.cpp
 
 EDITOR_FONTS := fe_font_inter_regular=editor/fonts/Inter-Regular.otf \
                 fe_font_inter_medium=editor/fonts/Inter-Medium.otf \

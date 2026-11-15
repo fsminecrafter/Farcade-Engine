@@ -6,7 +6,7 @@
 #pragma once
 
 #include "core/math.h"
-#include "script.h"
+#include "script/props.h"
 #include "scene/modules.h"
 #include <stdint.h>
 

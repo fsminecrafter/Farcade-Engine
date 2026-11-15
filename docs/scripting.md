@@ -7,11 +7,12 @@ doors with different settings. An **object** input links to another object,
 and through that link a script reaches the other object's scripts. That is
 how scripts on different objects work together.
 
-Status: the editor side is done (the data model, reading declarations, the
-Inspector, links that survive duplicate and delete, Play/Stop), and so is the
-Lua 5.4 runtime (`engine/script/runtime.h`, tests in `tests/host/script_tests.cpp`,
-on Minimal-OS `script_smoke`). Wiring it into Play is the editor's part (see
-"Running scripts from C++" at the end).
+Status: scripts run. Press Play and every script on every object starts in
+the Lua 5.4 runtime (`engine/script/runtime.h`), with its inputs and object
+links. Scripts run before the physics step each frame. Trigger and collision
+events reach them, and `print` and errors (with `file:line`) go to the
+Console. Stop puts the scene back. Tested on the PC (`script_tests`, the
+editor tests) and on Minimal-OS (`script_smoke`).
 
 ## Declaring inputs
 

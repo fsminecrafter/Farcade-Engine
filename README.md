@@ -33,7 +33,7 @@ renders the editor headless on the PC, and from `tools/ci/run_os.sh` with
 
 | Directory | What |
 |---|---|
-| `engine/` | the engine libraries: core, `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`) |
+| `engine/` | the engine libraries: core, `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`), Lua scripts (`script/`), physics (`physics/`) |
 | `editor/` | the editor (Dear ImGui, drawn by a software rasterizer) |
 | `runtime/minimalos/` | the small C/C++ runtime the engine needs on Minimal-OS |
 | `tools/` | PC tools (model converter, CI scripts) |
@@ -54,12 +54,16 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 
 - **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows and bloom are not done yet.
 - **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
-- **Modules and scene objects**: `docs/modules.md`. **Scripts**: `docs/scripting.md`.
+- **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
+- **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box and sphere collisions, bounce, friction, triggers), a stand-in for Jolt.
+- **Modules and scene objects**: `docs/modules.md`.
 
 ```sh
 build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene
 tools/ci/run_os.sh build/os/bin/gfx_smoke.run 'FE GFX PASS' 'FE GFX FAIL'
 tools/ci/run_os.sh build/os/bin/ecs_smoke.run 'FE ECS PASS' 'FE ECS FAIL'
+tools/ci/run_os.sh build/os/bin/script_smoke.run 'FE SCRIPT PASS' 'FE SCRIPT FAIL'
+ARGS=--play tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 181'
 ARGS=--farcadegl tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 121'
 ```
 

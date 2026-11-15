@@ -6,6 +6,7 @@
 #include "physics/physics.h"
 #include "script/runtime.h"
 #include "audio/audio.h"
+#include "scene_io.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -57,6 +58,7 @@ static bool ext_is(const char* path, const char* const* list) {
 bool path_is_image(const char* p) { static const char* l[] = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", nullptr }; return ext_is(p, l); }
 bool path_is_model(const char* p) { static const char* l[] = { ".mof", ".gltf", ".glb", ".obj", nullptr }; return ext_is(p, l); }
 bool path_is_script(const char* p) { static const char* l[] = { ".lua", ".cpp", ".h", nullptr }; return ext_is(p, l); }
+bool path_is_scene(const char* p) { static const char* l[] = { ".fescene", nullptr }; return ext_is(p, l); }
 
 const char* Settings::program_for(const char* path) const {
     const char* ext = path_extension(path);
@@ -785,7 +787,99 @@ void Editor::stop() {
     log(LogLevel::Info, "Stop: scene restored (%.1f s of play)", play_time);
 }
 
+void Editor::project_path(const char* path, char* out, size_t cap) const {
+    // Full paths: "/..." on the host, "0:/..." (a drive) on Minimal-OS.
+    const char* colon = strchr(path, ':');
+    bool full = path[0] == '/' || (colon && colon[1] == '/' && !memchr(path, '/', (size_t)(colon - path)));
+    if (full || !project_dir[0]) snprintf(out, cap, "%s", path);
+    else snprintf(out, cap, "%s/%s", project_dir, path);
+}
+
+bool Editor::save_scene(const char* path) {
+    char full[512];
+    if (path && *path) project_path(path, full, sizeof full);
+    else if (scene_path[0]) snprintf(full, sizeof full, "%s", scene_path);
+    else project_path("scenes/main.fescene", full, sizeof full);
+    // The folder it goes in (scenes/) is made when missing.
+    if (const char* slash = strrchr(full, '/')) {
+        char dir[512];
+        snprintf(dir, sizeof dir, "%.*s", (int)(slash - full), full);
+        if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
+    }
+    Scene& src = playing() ? *play_backup_ : scene;
+    size_t size = 0;
+    char* text = save_scene_text(src, project_dir, &size);
+    if (!text) { log(LogLevel::Error, "Save: out of memory"); return false; }
+    bool ok = platform::write_file(full, text, size);
+    free(text);
+    if (!ok) { log(LogLevel::Error, "Could not write %s", full); return false; }
+    snprintf(scene_path, sizeof scene_path, "%s", full);
+    log(LogLevel::Info, "Saved %s (%d object%s)%s", path_filename(full), src.count(), src.count() == 1 ? "" : "s",
+        playing() ? ", as it was before Play" : "");
+    return true;
+}
+
+bool Editor::open_scene(const char* path) {
+    char full[512];
+    project_path(path, full, sizeof full);
+    size_t size = 0;
+    char* text = (char*)platform::read_file(full, &size);
+    if (!text) { log(LogLevel::Error, "Could not read %s", full); return false; }
+    Scene loaded;
+    SceneLoadReport rep;
+    bool ok = load_scene_text(loaded, text, size, &rep);
+    free(text);
+    if (!ok) { log(LogLevel::Error, "%s: %s", path_filename(full), rep.error); return false; }
+    stop();
+    ObjectId next = scene.next_id();
+    scene.copy_from(loaded);
+    scene.keep_ids_above(next);         // ids are never handed out twice in a session
+    scene.clear_selection();
+    edit_collider = false;
+    int failed = reload_all_scripts();  // inputs follow the files; saved values stay
+    snprintf(scene_path, sizeof scene_path, "%s", full);
+    log(LogLevel::Info, "Opened %s (%d object%s)", path_filename(full), rep.objects, rep.objects == 1 ? "" : "s");
+    if (rep.skipped) log(LogLevel::Warning, "%s: %d line%s skipped (first: line %d)", path_filename(full), rep.skipped, rep.skipped == 1 ? "" : "s", rep.first_bad_line);
+    if (failed) log(LogLevel::Warning, "%d script%s could not be read", failed, failed == 1 ? "" : "s");
+    return true;
+}
+
+void Editor::new_scene() {
+    stop();
+    scene.clear();
+    edit_collider = false;
+    scene_path[0] = 0;
+    log(LogLevel::Info, "New scene");
+}
+
+// File > Save scene as...: a name, saved under scenes/ in the project.
+void Editor::save_as_popup() {
+    if (want_save_as_) { ImGui::OpenPopup("Save scene as"); want_save_as_ = false; }
+    ImGui::SetNextWindowSize(ImVec2(360 * settings.ui_scale, 0));
+    if (!ImGui::BeginPopupModal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
+    ImGui::TextUnformatted("Name (saved in scenes/ as .fescene)");
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    bool enter = ImGui::InputText("##save_as_name", save_as_name, sizeof save_as_name, ImGuiInputTextFlags_EnterReturnsTrue);
+    track("save_as:name");
+    bool valid = save_as_name[0] != 0 && !strchr(save_as_name, '/');
+    ImGui::BeginDisabled(!valid);
+    bool save = ImGui::Button("Save") || (enter && valid);
+    track("save_as:save");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (save) {
+        char rel[128];
+        snprintf(rel, sizeof rel, "scenes/%s%s", save_as_name, path_is_scene(save_as_name) ? "" : ".fescene");
+        save_scene(rel);
+    }
+    if (save || cancel) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void Editor::open_file(const char* path) {
+    if (path_is_scene(path)) { open_scene(path); return; }
     const char* program = settings.program_for(path);
     if (!program || !*program) {
         log(LogLevel::Warning, "No editor set for %s files (Settings > File editors)", path_extension(path));
@@ -933,6 +1027,7 @@ bool Editor::frame() {
 
 void Editor::build_ui() {
     main_menu();
+    save_as_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -982,10 +1077,17 @@ void Editor::main_menu() {
     ImGui::Dummy(ImVec2(ls + 8, 1));
     ImGui::SameLine();
 
-    if (ImGui::BeginMenu("File")) {
-        if (menu_item("New scene")) { scene.clear(); log(LogLevel::Info, "New scene"); }
+    bool file_menu = ImGui::BeginMenu("File");
+    track("menubar:File");
+    if (file_menu) {
+        if (menu_item("New scene")) new_scene();
         menu_item("Open project...", nullptr, false, false);
-        menu_item("Save", "Ctrl+S", false, false);
+        if (menu_item("Save scene", "Ctrl+S")) save_scene();
+        if (menu_item("Save scene as...")) {
+            const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fescene";
+            snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 8 : 0)), cur);
+            want_save_as_ = true;
+        }
         ImGui::Separator();
         menu_item("Export game...", nullptr, false, false);
         ImGui::Separator();
@@ -1023,7 +1125,11 @@ void Editor::main_menu() {
     {
         const char* name = path_filename(project_dir);
         char title[160];
-        snprintf(title, sizeof(title), "%s", *name ? name : "No project");
+        // "project · scene" (the scene file without .fescene).
+        const char* sn = scene_path[0] ? path_filename(scene_path) : "";
+        int sl = (int)strlen(sn) - (path_is_scene(sn) ? 8 : 0);
+        if (sl > 0) snprintf(title, sizeof(title), "%s  \xC2\xB7  %.*s", *name ? name : "No project", sl, sn);
+        else snprintf(title, sizeof(title), "%s", *name ? name : "No project");
         float tw = ImGui::CalcTextSize(title).x;
         float x = (bar->Size.x - tw) * 0.5f;
         if (x > ImGui::GetCursorPosX() + 20) {
@@ -1218,6 +1324,7 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) delete_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selection();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) save_scene();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
 }

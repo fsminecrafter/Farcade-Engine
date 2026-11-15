@@ -10,6 +10,19 @@
   `allow_gpu_effects_on_cpu` forces it (slow; tests, screenshots).
 - **Fog** (`Sky.fog`) works in both tiers.
 
+## Materials
+
+Each mesh object has a material in the Inspector's Look section: color, Roughness, Metal, Unlit and Shadows. The editor passes these to `DrawItem` (`color`, `roughness`, `metallic`, `unlit`, `cast_shadows`).
+
+| Setting | Base tier | GPU tier |
+|---|---|---|
+| Unlit (draws the plain color) | yes | yes |
+| Roughness | no | yes |
+| Metal | no | yes |
+| Shadows (whether the object casts one) | no | yes |
+
+The defaults (roughness 0.6, metal 0, lit, casts shadows) give the same picture as before materials existed.
+
 ## What the editor calls
 
 - `set_settings(s)` on change (it is cheap; calling it every frame is fine).

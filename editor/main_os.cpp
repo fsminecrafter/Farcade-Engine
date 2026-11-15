@@ -18,7 +18,11 @@
 // prints "FE BENCH <phase> ..." lines (the first 5 frames of a phase are not
 // measured), then "FE BENCH DONE". --scales adds orbit phases with FarcadeGL at
 // 1/2 and 1/4 of the viewport size.
+// --scene-test saves the demo scene to <project>/scenes/os-test.fescene,
+// opens it again and prints "FE SCENE PASS <objects> <bytes>" when saving
+// the opened scene gives the same file (else "FE SCENE FAIL ...").
 #include "bench.h"
+#include "scene_io.h"
 #include "editor.h"
 #include "platform/platform.h"
 
@@ -33,7 +37,7 @@ using namespace fe;
 int main(int argc, char** argv) {
     long max_frames = 0;
     Bench bench;
-    bool farcadegl = false, play = false, profile = false, adaptive = true;
+    bool farcadegl = false, play = false, profile = false, adaptive = true, scene_test = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) max_frames = atol(argv[++i]);
         else if (strcmp(argv[i], "--farcadegl") == 0) farcadegl = true;
@@ -42,6 +46,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--scales") == 0) bench.scales = true;
         else if (strcmp(argv[i], "--no-adaptive") == 0) adaptive = false;
         else if (strcmp(argv[i], "--bench") == 0 && i + 1 < argc) bench.frames_per_phase = atol(argv[++i]);
+        else if (strcmp(argv[i], "--scene-test") == 0) scene_test = true;
     }
 
     static Editor ed;
@@ -54,6 +59,25 @@ int main(int argc, char** argv) {
     // the cursor there before the first mouse event arrives.
     ImGui::GetIO().AddMousePosEvent(platform::width() * 0.5f, platform::height() * 0.5f);
     demo_scene(ed);
+    if (scene_test) {
+        size_t n1 = 0, n2 = 0;
+        int count = ed.scene.count();
+        // Twice: the second save replaces the file (with a longer scene in
+        // between, so stale bytes would show).
+        ObjectId extra = ed.create_object("Extra object with a long name", MeshKind::Cube, Vec3(0, 0, 0));
+        bool saved = ed.save_scene("scenes/os-test.fescene");
+        ed.scene.remove(extra);
+        char* t1 = save_scene_text(ed.scene, ed.project_dir, &n1);     // next_id counts the removed object
+        saved = ed.save_scene("scenes/os-test.fescene") && saved;
+        ed.new_scene();
+        bool opened = ed.open_scene("scenes/os-test.fescene");
+        char* t2 = save_scene_text(ed.scene, ed.project_dir, &n2);
+        bool same = t1 && t2 && n1 == n2 && memcmp(t1, t2, n1) == 0;
+        if (saved && opened && same && ed.scene.count() == count) printf("FE SCENE PASS %d %u\n", count, (unsigned)n1);
+        else printf("FE SCENE FAIL saved %d opened %d same %d objects %d/%d (%s)\n", saved, opened, same, ed.scene.count(), count, ed.scene_path);
+        free(t1);
+        free(t2);
+    }
     ed.adaptive_view = adaptive;
     if (farcadegl) ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
 

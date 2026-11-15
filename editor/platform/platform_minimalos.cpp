@@ -295,17 +295,26 @@ void* read_file(const char* path, size_t* size) {
     return data;
 }
 
+// MinimaFS has no "create or truncate": the data goes into a new file next
+// to `path` (mos_create, then SYS_FWRITE), which then replaces the old one,
+// so a failed write leaves the old file as it was.
 bool write_file(const char* path, const void* data, size_t size) {
-    long fd = mos_open(path, 1);
-    if (fd < 0) return false;
+    char tmp[600];
+    snprintf(tmp, sizeof tmp, "%s.part", path);
+    if (mos_exists(tmp)) mos_delete(tmp);
+    if (mos_create(tmp, nullptr, nullptr) < 0) return false;
+    long fd = mos_open(tmp, SYS_O_RDWR);
+    if (fd < 0) { mos_delete(tmp); return false; }
     size_t done = 0;
     while (done < size) {
-        long w = mos_write(fd, (const uint8_t*)data + done, size - done);
+        long w = mos_fwrite(fd, (const uint8_t*)data + done, size - done);
         if (w <= 0) break;
         done += (size_t)w;
     }
     mos_close(fd);
-    return done == size;
+    if (done != size) { mos_delete(tmp); return false; }
+    if (mos_exists(path) && mos_delete(path) < 0) { mos_delete(tmp); return false; }
+    return mos_rename(tmp, path) == 0;
 }
 
 bool copy_file(const char* from, const char* to) {

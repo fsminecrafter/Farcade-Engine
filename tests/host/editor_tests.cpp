@@ -5,6 +5,7 @@
 #include "ecs/ecs.h"
 #include "script/runtime.h"
 #include "audio/audio.h"
+#include "scene_io.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -845,6 +846,35 @@ int main() {
         ed.settings.graphics.shadows = false;
         frames(2);
         CHECK(!ed.fgl_features.shadows, "a GPU effect's switch turns it off");
+        // Materials: with PBR on, making every mesh metal changes the picture.
+        {
+            auto px = [&](float fx, float fy) {
+                Framebuffer& fb = platform::framebuffer();
+                int x = (int)(ed.view_rect[0] + ed.view_rect[2] * fx), y = (int)(ed.view_rect[1] + ed.view_rect[3] * fy);
+                return fb.pixels[y * fb.pitch + x];
+            };
+            const float spots[3][2] = { { 0.5f, 0.5f }, { 0.4f, 0.6f }, { 0.6f, 0.7f } };
+            ObjectId ball = ed.create_object("Metal Ball", MeshKind::Sphere, ed.camera.target);
+            ed.scene.get(ball)->scale = Vec3(3, 3, 3);
+            ed.scene.get(ball)->color = Vec3(0.9f, 0.6f, 0.2f);
+            ObjectId sun = ed.create_light(LightType::Directional, Vec3(0, 4, 0));
+            ed.scene.get(sun)->rotation = Quat::euler_deg(Vec3(-50, 30, 0));
+            ed.scene.clear_selection();
+            frames(8);
+            uint32_t was[3];
+            for (int i = 0; i < 3; i++) was[i] = px(spots[i][0], spots[i][1]);
+            uint64_t h0 = ed.view_hash(100, 100);
+            for (int i = 0; i < ed.scene.count(); i++) { ed.scene.at(i).metallic = 1.0f; ed.scene.at(i).roughness = 0.15f; }
+            CHECK(ed.view_hash(100, 100) != h0, "the material is part of the viewport hash");
+            frames(8);
+            int changed = 0;
+            for (int i = 0; i < 3; i++) changed += px(spots[i][0], spots[i][1]) != was[i];
+            CHECK(changed > 0, "metal and roughness change the GPU tier picture (%d of 3 spots)", changed);
+            for (int i = 0; i < ed.scene.count(); i++) { ed.scene.at(i).metallic = 0.0f; ed.scene.at(i).roughness = 0.6f; }
+            ed.scene.remove(ball);
+            ed.scene.remove(sun);
+            frames(2);
+        }
         ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
         ed.settings.graphics.allow_gpu_effects_on_cpu = false;
         frames(2);
@@ -1081,6 +1111,141 @@ int main() {
         ed.stop();
         CHECK(!ed.play_audio(), "Stop ends audio");
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- scene files: save, load back, every field comes back
+    {
+        ed.new_scene();
+        mkdir("build/host/test-project/scripts", 0755);
+        const char* door =
+            "-- @prop speed  number = 5  range 0 20\n"
+            "-- @prop label  text = \"Front door\"\n"
+            "-- @prop open   toggle = true\n"
+            "-- @prop mode   list(closed, open, locked) = locked\n"
+            "-- @prop target object\n";
+        platform::write_file("build/host/test-project/scripts/gate.lua", door, strlen(door));
+        ObjectId base = ed.create_object("Base \"quoted\"", MeshKind::Cylinder, Vec3(1, 2, 3));
+        Object* ob = ed.scene.get(base);
+        ob->rotation = Quat::euler_deg(Vec3(10, 20, 30));
+        ob->scale = Vec3(0.5f, 2, 0.75f);
+        ob->color = Vec3(0.1f, 0.2f, 0.3f);
+        ob->roughness = 0.33f; ob->metallic = 0.8f; ob->unlit = true; ob->cast_shadows = false;
+        ob->visible = false;
+        snprintf(ob->texture_path, sizeof ob->texture_path, "%s/crate.png", ed.project_dir);
+        ed.scene.add_module(base, ModuleKind::Collider3D);
+        ob->modules.collider3d.shape = ColliderShape::Capsule;
+        ob->modules.collider3d.radius = 0.7f;
+        ob->modules.collider3d.layer = 0x8005;
+        ed.scene.add_module(base, ModuleKind::AudioSampler);
+        snprintf(ob->modules.audio_sampler.path, kPathMax, "%s/sounds/hit.wav", ed.project_dir);
+        ob->modules.audio_sampler.voices = 7;
+        ObjectId kid = ed.create_child("Kid", MeshKind::Sphere, base);
+        ObjectId lamp = ed.create_light(LightType::Spot, Vec3(0, 3, 0), kid);
+        ed.scene.get(lamp)->modules.light.spot_angle = 33.5f;
+        ObjectId cam1 = ed.create_kind("Cam 1", ObjectKind::Camera, Vec3(0, 1, 5));
+        ObjectId cam2 = ed.create_kind("Cam 2", ObjectKind::Camera, Vec3(0, 1, -5));
+        ed.scene.set_current(cam2, ModuleKind::Camera);
+        ed.scene.get(cam2)->modules.camera.fov = 72.0f;
+        char door_full[300];
+        snprintf(door_full, sizeof door_full, "%s/scripts/gate.lua", ed.project_dir);
+        CHECK(ed.add_script(kid, door_full) == 0, "a script with inputs goes on the kid");
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "speed")) p->number = 12.5f;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "label")) snprintf(p->text, sizeof p->text, "%s", "Back \"door\"");
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "open")) p->toggle = false;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "mode")) p->choice = 1;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "target")) p->object = cam1;
+
+        size_t size1 = 0;
+        char* text1 = save_scene_text(ed.scene, ed.project_dir, &size1);
+        CHECK(text1 && strstr(text1, "farcade-scene 1") && strstr(text1, "texture \"crate.png\"") && strstr(text1, "\"scripts/gate.lua\""),
+              "the file starts with its version and stores project paths relative");
+        Scene back;
+        SceneLoadReport rep;
+        CHECK(text1 && load_scene_text(back, text1, size1, &rep) && rep.skipped == 0, "it loads back (%s, %d skipped)", rep.error, rep.skipped);
+        size_t size2 = 0;
+        char* text2 = save_scene_text(back, ed.project_dir, &size2);
+        CHECK(text1 && text2 && size1 == size2 && memcmp(text1, text2, size1) == 0, "saving the loaded scene gives the same file");
+        free(text1);
+        free(text2);
+        Object* bb = back.get(base);
+        CHECK(back.count() == ed.scene.count() && bb && back.get(kid) && back.get(kid)->parent == base && back.get(lamp)->parent == kid,
+              "objects keep their ids and the tree");
+        CHECK(bb && !strcmp(bb->name, "Base \"quoted\"") && bb->mesh == MeshKind::Cylinder && bb->metallic == 0.8f && bb->roughness == 0.33f &&
+              bb->unlit && !bb->cast_shadows && !bb->visible && bb->scale.z == 0.75f && bb->rotation.w == ob->rotation.w,
+              "names, meshes, materials and transforms come back exactly");
+        CHECK(bb && bb->modules.has(ModuleKind::Collider3D) && bb->modules.collider3d.shape == ColliderShape::Capsule &&
+              bb->modules.collider3d.radius == 0.7f && bb->modules.collider3d.layer == 0x8005 && bb->modules.audio_sampler.voices == 7 &&
+              !strcmp(bb->modules.audio_sampler.path, "sounds/hit.wav"), "modules come back with every field");
+        CHECK(back.current(ModuleKind::Camera) == cam2 && back.get(cam2)->modules.camera.fov == 72.0f &&
+              back.get(lamp)->modules.light.type == LightType::Spot && back.get(lamp)->modules.light.spot_angle == 33.5f,
+              "special objects and the current flag come back");
+        CHECK(back.next_id() >= ed.scene.next_id(), "new objects get fresh ids after loading");
+        ScriptProp* sp = back.script_prop(kid, "gate", "label");
+        ScriptProp* sm = back.script_prop(kid, "gate", "mode");
+        ScriptProp* st = back.script_prop(kid, "gate", "target");
+        CHECK(sp && !strcmp(sp->text, "Back \"door\"") && sm && sm->choice == 1 && !strcmp(sm->choices[sm->choice], "open") && st && st->object == cam1 &&
+              back.script_prop(kid, "gate", "speed")->number == 12.5f && !back.script_prop(kid, "gate", "open")->toggle,
+              "script inputs come back with their values and links");
+
+        // Unknown lines are skipped, broken files are refused.
+        const char* future = "farcade-scene 1\nnext_id 5\nobject 2\n  name \"X\"\n  sparkle 3\n  module light\n    glow 1\n    intensity 2\n  end\n"
+                             "  module warp_drive\n    speed 9\n  end\nend\n";
+        Scene fs;
+        CHECK(load_scene_text(fs, future, strlen(future), &rep) && rep.skipped == 3 && fs.get(2) && fs.get(2)->modules.light.intensity == 2.0f,
+              "unknown fields and modules are skipped (%d)", rep.skipped);
+        const char* broken[] = { "", "hello\n", "farcade-scene 99\n", "farcade-scene 1\nobject 3\n  name \"A\"\n",
+                                 "farcade-scene 1\nobject 3\nend\nobject 3\nend\n" };
+        int refused = 0;
+        for (const char* t : broken) refused += !load_scene_text(fs, t, strlen(t), &rep) && fs.count() == 0;
+        CHECK(refused == 5, "broken files are refused (%d of 5)", refused);
+        const char* loop = "farcade-scene 1\nobject 1\n  parent 2\nend\nobject 2\n  parent 1\nend\nobject 3\n  parent 9\nend\n";
+        CHECK(load_scene_text(fs, loop, strlen(loop), &rep) && fs.depth(*fs.get(1)) < 3 && fs.depth(*fs.get(2)) < 3 && fs.get(3)->parent == kNoObject,
+              "parent loops and missing parents are cut");
+
+        // Through the editor: Ctrl+S saves to scenes/main.fescene, opening it brings the scene back.
+        frames(1);
+        const uint16_t key_s = (uint16_t)(platform::KEY_A + ('s' - 'a'));
+        ev_key(platform::KEY_LCTRL, true, platform::MOD_CTRL); ev_key(key_s, true, platform::MOD_CTRL); frames(1);
+        ev_key(key_s, false, platform::MOD_CTRL); ev_key(platform::KEY_LCTRL, false); frames(1);
+        CHECK(platform::file_exists("build/host/test-project/scenes/main.fescene") && strstr(ed.scene_path, "scenes/main.fescene"),
+              "Ctrl+S saves the scene (%s)", ed.scene_path);
+        int count = ed.scene.count();
+        ed.play();
+        ed.scene.get(base)->position = Vec3(9, 9, 9);
+        CHECK(ed.save_scene("scenes/during-play.fescene"), "saving while playing works");
+        ed.stop();
+        ed.new_scene();
+        CHECK(ed.scene.count() == 0 && !ed.scene_path[0], "New scene empties it");
+        CHECK(ed.open_scene("scenes/during-play.fescene") && ed.scene.count() == count && ed.scene.get(base)->position.x == 1.0f,
+              "the file saved during Play holds the scene from before Play");
+        CHECK(ed.scene.script_prop(kid, "gate", "speed") && ed.scene.script_prop(kid, "gate", "speed")->number == 12.5f &&
+              ed.scene.script_prop(kid, "gate", "speed")->max == 20.0f, "opening re-reads the script inputs and keeps the saved values");
+        ObjectId fresh = ed.create_object("Fresh", MeshKind::Cube, Vec3(0, 0, 0));
+        CHECK(fresh > lamp && fresh > cam2, "objects made after opening get new ids");
+        int before = ed.scene.count();
+        platform::write_file("build/host/test-project/scenes/bad.fescene", "nope", 4);
+        CHECK(!ed.open_scene("scenes/bad.fescene") && ed.scene.count() == before, "a broken file leaves the scene alone");
+        // File > Save scene as...
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Save scene as..."), "Save scene as... opens a prompt");
+        frames(2);
+        // Type the name: select all, then the letters.
+        ev_key(platform::KEY_LCTRL, true, platform::MOD_CTRL); ev_key(platform::KEY_A, true, platform::MOD_CTRL); frames(1);
+        ev_key(platform::KEY_A, false, platform::MOD_CTRL); ev_key(platform::KEY_LCTRL, false); frames(1);
+        for (const char* c = "level2"; *c; c++) {
+            platform::Event e;
+            e.type = platform::EventType::Text;
+            e.codepoint = (uint32_t)*c;
+            platform::headless_push(e);
+        }
+        frames(2);
+        CHECK(click_ui("save_as:save"), "the prompt's Save button");
+        frames(2);
+        CHECK(platform::file_exists("build/host/test-project/scenes/level2.fescene") && strstr(ed.scene_path, "level2.fescene"),
+              "Save scene as writes scenes/level2.fescene (%s)", ed.scene_path);
+        ed.new_scene();
         frames(2);
     }
 

@@ -38,6 +38,10 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
             d.mesh.key = (uint64_t)(uintptr_t)md.positions;     // built-in meshes never change
             d.model = m;
             d.color = o.color;
+            d.roughness = o.roughness;
+            d.metallic = o.metallic;
+            d.unlit = o.unlit;
+            d.cast_shadows = o.cast_shadows;
         }
         if (o.modules.has(ModuleKind::Light)) {
             const Light& l = o.modules.light;

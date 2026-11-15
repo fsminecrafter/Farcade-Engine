@@ -89,6 +89,8 @@ public:
     // What the FarcadeGL renderer reported last time it ran.
     char fgl_backend[64] = {};
     gfx::GraphicsFeatures fgl_features;
+    // Everything the viewport image depends on, hashed: a change redraws it.
+    uint64_t view_hash(int w, int h) const;
     // Collider 3D: the active object's collider is drawn in the viewport;
     // with edit_collider on, handles on it change its size/radius/height.
     bool edit_collider = false;
@@ -98,6 +100,20 @@ public:
     Palette pal = {};
     char project_dir[256] = {};
     char files_dir[256] = {};
+
+    // ---- scene files (.fescene, see scene_io.h). Paths are full or
+    // relative to the project.
+    char scene_path[256] = {};                  // the open scene's file; "" = not saved yet
+    char save_as_name[64] = {};                 // File > Save scene as...: the name typed (scenes/<name>.fescene)
+    // Saves the scene (while playing: the scene as it was before Play) to
+    // `path`, or to scene_path / scenes/main.fescene when null.
+    bool save_scene(const char* path = nullptr);
+    // Stops Play, then replaces the scene with the file's. The scene stays
+    // as it was when the file cannot be read.
+    bool open_scene(const char* path);
+    void new_scene();
+    // `path` made full: relative paths are joined to the project.
+    void project_path(const char* path, char* out, size_t cap) const;
 
     void log(LogLevel level, const char* fmt, ...);
     void open_file(const char* path);           // double-click in Files
@@ -238,7 +254,6 @@ private:
     void status_bar(float height);
     void dockspace(float top, float bottom);
     void viewport_overlays(float x, float y, float w, float h);
-    uint64_t view_hash(int w, int h) const;
     int render_w_ = 0, render_h_ = 0;   // size the next viewport render is made at
     bool view_interacting_ = false;     // a drag in the viewport (last frame)
     bool view_interacting() const { return view_interacting_ || bench_interacting; }
@@ -254,6 +269,8 @@ private:
     void window_settings();
     void shortcuts();
     Scene* play_backup_ = nullptr;
+    bool want_save_as_ = false;
+    void save_as_popup();
 };
 
 // File type helpers shared by the panels.
@@ -264,5 +281,6 @@ Icon module_icon(ModuleKind k);
 bool path_is_image(const char* path);
 bool path_is_model(const char* path);
 bool path_is_script(const char* path);
+bool path_is_scene(const char* path);
 
 }  // namespace fe

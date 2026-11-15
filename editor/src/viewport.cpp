@@ -99,6 +99,10 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.rotation, sizeof(o.rotation));
         mix(&o.scale, sizeof(o.scale));
         mix(&o.color, sizeof(o.color));
+        float mat[2] = { o.roughness, o.metallic };
+        bool matf[2] = { o.unlit, o.cast_shadows };
+        mix(mat, sizeof(mat));
+        mix(matf, sizeof(matf));
         mix(&o.mesh, sizeof(o.mesh));
         mix(&o.kind, sizeof(o.kind));
         mix(&o.modules.present, sizeof(o.modules.present));
@@ -214,7 +218,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
         if (o.kind != ObjectKind::Mesh) continue;
         const MeshData& mesh = Scene::mesh_for(o);
         if (!wire) {
-            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
+            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit || o.unlit);
             continue;
         }
         bool sel = scene.is_selected(o.id);

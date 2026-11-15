@@ -43,6 +43,12 @@ struct Object {
     ScriptSlot scripts[kMaxScripts];    // the scripts on the object, in the order they run
     int script_count = 0;
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);
+    // Material. Roughness, metal and shadows show with the GPU tier (PBR);
+    // unlit draws the plain color everywhere.
+    float roughness = 0.6f;
+    float metallic = 0.0f;
+    bool unlit = false;
+    bool cast_shadows = true;
     bool visible = true;
 
     Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
@@ -66,6 +72,9 @@ public:
     void keep_ids_above(ObjectId next) { if (next > next_id_) next_id_ = next; }
 
     ObjectId create(const char* name, MeshKind mesh);
+    // An empty object with a given id (loading a scene file); null when the
+    // id is 0 or taken. Later ids are handed out above it.
+    Object* create_with_id(ObjectId id);
     void remove(ObjectId id);           // with all its children
     void clear();
 

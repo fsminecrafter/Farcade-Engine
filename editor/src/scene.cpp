@@ -48,6 +48,22 @@ ObjectId Scene::create(const char* name, MeshKind mesh) {
     return o->id;
 }
 
+Object* Scene::create_with_id(ObjectId id) {
+    if (id == kNoObject || get(id)) return nullptr;
+    if (count_ == cap_) {
+        int ncap = cap_ ? cap_ * 2 : 32;
+        Object** n = (Object**)realloc(objects_, sizeof(Object*) * ncap);
+        if (!n) return nullptr;
+        objects_ = n;
+        cap_ = ncap;
+    }
+    Object* o = new Object();
+    o->id = id;
+    objects_[count_++] = o;
+    keep_ids_above(id + 1);
+    return o;
+}
+
 void Scene::remove(ObjectId id) {
     // The object and everything below it: list them while the parent links
     // still exist, then delete.

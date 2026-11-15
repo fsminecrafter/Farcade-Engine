@@ -1011,6 +1011,23 @@ void Editor::panel_inspector() {
         prop_label("Color");
         ImGui::ColorEdit3("##color", &o->color.x, ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_DisplayHex);
         slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image, Icon::Image);
+        prop_label("Roughness");
+        ImGui::SliderFloat("##roughness", &o->roughness, 0.0f, 1.0f, "%.2f");
+        track("inspector:roughness");
+        prop_label("Metal");
+        ImGui::SliderFloat("##metallic", &o->metallic, 0.0f, 1.0f, "%.2f");
+        track("inspector:metallic");
+        prop_label("Unlit");
+        toggle_switch("##unlit", &o->unlit);
+        track("inspector:unlit");
+        prop_label("Shadows");
+        toggle_switch("##cast_shadows", &o->cast_shadows);
+        track("inspector:cast_shadows");
+        if (!fgl_features.pbr && !o->unlit) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+            ImGui::TextWrapped("Roughness, metal and shadows show with FarcadeGL's GPU tier (Settings > Graphics).");
+            ImGui::PopStyleColor();
+        }
         ImGui::Dummy(ImVec2(0, 4));
     }
     // ---- modules (Rigidbody 3D, Light, ...), then "Add module".
@@ -1074,6 +1091,7 @@ Icon file_icon(const platform::DirEntry& e) {
     if (path_is_image(e.name)) return Icon::Image;
     if (path_is_model(e.name)) return Icon::Model;
     if (path_is_script(e.name)) return Icon::Script;
+    if (path_is_scene(e.name)) return Icon::Layers;
     return Icon::File;
 }
 
@@ -1082,6 +1100,7 @@ ImU32 file_color(const platform::DirEntry& e) {
     if (path_is_image(e.name)) return IM_COL32(120, 200, 140, 255);
     if (path_is_model(e.name)) return IM_COL32(110, 160, 255, 255);
     if (path_is_script(e.name)) return IM_COL32(200, 140, 230, 255);
+    if (path_is_scene(e.name)) return IM_COL32(240, 150, 90, 255);
     return ImGui::GetColorU32(ImGuiCol_TextDisabled);
 }
 }  // namespace

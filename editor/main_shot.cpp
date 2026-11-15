@@ -42,9 +42,12 @@ static void demo_scene(Editor& ed) {
     ObjectId sphere = ed.create_object("Ball", MeshKind::Sphere, Vec3(0.9f, 0.6f, -0.3f));
     ed.scene.get(sphere)->scale = Vec3(1.2f, 1.2f, 1.2f);
     ed.scene.get(sphere)->color = Vec3(0.35f, 0.62f, 0.95f);
+    ed.scene.get(sphere)->roughness = 0.25f;      // glossy
     ObjectId pillar = ed.create_object("Pillar", MeshKind::Cylinder, Vec3(2.6f, 1.0f, 1.6f));
     ed.scene.get(pillar)->scale = Vec3(0.6f, 2.0f, 0.6f);
     ed.scene.get(pillar)->color = Vec3(0.75f, 0.76f, 0.80f);
+    ed.scene.get(pillar)->metallic = 0.9f;        // brushed metal (GPU tier)
+    ed.scene.get(pillar)->roughness = 0.3f;
     ObjectId small = ed.create_object("Crate", MeshKind::Cube, Vec3(-2.4f, 0.3f, -1.6f));
     ed.scene.get(small)->scale = Vec3(0.6f, 0.6f, 0.6f);
     ed.scene.get(small)->color = Vec3(0.55f, 0.75f, 0.45f);
@@ -264,6 +267,22 @@ int main(int argc, char** argv) {
         snprintf(path, sizeof(path), "%s/editor-farcadegl-ultra.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
+        // The pillar's material in the Inspector (Look: roughness, metal),
+        // with the scene saved as scenes/main.fescene (its name in the title).
+        for (int i = 0; i < ed.scene.count(); i++)
+            if (!strcmp(ed.scene.at(i).name, "Pillar")) ed.scene.select_only(ed.scene.at(i).id);
+        ed.save_scene();
+        for (int i = 0; i < 2; i++) ed.frame();
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) {
+            const Editor::UiRect* r = ed.find_rect("inspector:roughness");
+            if (r) ImGui::SetScrollY(iw2, iw2->Scroll.y + (r->y - iw2->Pos.y) - 160);
+        }
+        for (int i = 0; i < 3; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-material.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) ImGui::SetScrollY(iw2, 0);
+        ed.scene.select_only(kNoObject);
         ed.play();
         for (int i = 0; i < 3; i++) ed.frame();
         snprintf(path, sizeof(path), "%s/editor-farcadegl-play.png", out);

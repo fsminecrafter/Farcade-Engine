@@ -75,6 +75,11 @@ struct RendererStats {
     int triangles = 0;
     int uploads = 0;                    // mesh buffers uploaded this frame
     double ms = 0;                      // render + readback, wall clock
+    // Where the time of the last render() went (ms): compiling shaders,
+    // uploading meshes, the GPU run (fglSubmit), the readback syscall, the
+    // CPU pass that turns XRGB into RGBA. The rest is recording commands.
+    double shader_ms = 0, upload_ms = 0, submit_ms = 0, read_ms = 0, swizzle_ms = 0;
+    int shaders_compiled = 0;
 };
 
 class Renderer {
@@ -102,6 +107,9 @@ public:
     int width() const;
     int height() const;
     const RendererStats& stats() const;
+    // init(): context + shader creation time, and the shader part of it (ms).
+    double init_ms() const;
+    double init_shader_ms() const;
     const char* error() const;
     // Drops cached GPU meshes (for example when a model file changed).
     void forget_meshes();

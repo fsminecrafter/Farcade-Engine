@@ -242,7 +242,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     view3d.finish(0xFFB13B, 0xD98A1C, settings.dark_theme ? 0.42f : 0.30f);
     view_triangles = view3d.triangles() + wire_tris;
     view_ms = (float)((clock() - t0) * 1000.0);
-
+    view_renders++;
 }
 
 void Editor::panel_viewport() {
@@ -293,7 +293,9 @@ void Editor::panel_viewport() {
             double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
             double t0 = clock();
             int w = (int)v.size.x, h = (int)v.size.y;
+            bool first = !fgl.ready();
             bool ok = fgl.ready() ? ((fgl.width() == w && fgl.height() == h) || fgl.resize(w, h)) : fgl.init(w, h);
+            if (first) { fgl_init_ms = fgl.init_ms(); fgl_init_shader_ms = fgl.init_shader_ms(); }
             if (ok) {
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
                 ok = fgl.render(bridge.scene);
@@ -305,6 +307,7 @@ void Editor::panel_viewport() {
                 fgl_tex.pitch = fgl.width();
                 fgl_tex.pixels = (const uint8_t*)fgl.pixels();
                 view_triangles = fgl.stats().triangles;
+                fgl_stats = fgl.stats();
             } else {
                 log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
                 fgl_failed = true;
@@ -313,6 +316,7 @@ void Editor::panel_viewport() {
                 render_view(view3d, &v);
             }
             view_ms = (float)((clock() - t0) * 1000.0);
+            view_renders++;
         } else {
             render_view(view3d, &v);
         }

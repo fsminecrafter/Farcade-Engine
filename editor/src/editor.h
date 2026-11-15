@@ -3,6 +3,8 @@
 
 #include "scene.h"
 #include "widgets.h"
+#include "gfx/renderer.h"
+#include "swraster.h"
 #include <stdint.h>
 
 struct ImFont;
@@ -156,6 +158,21 @@ public:
     // Viewport statistics of the last frame.
     int view_triangles = 0;
     float view_ms = 0.0f;
+    // Frame profile: milliseconds summed over the frames since the caller last
+    // cleared it (main_os --profile prints and clears it every 60 frames).
+    struct Perf {
+        double build = 0;               // ImGui NewFrame .. Render (includes the viewport render)
+        double view = 0;                // the viewport render inside build
+        double raster = 0;              // clearing and rasterizing the UI
+        double present = 0;             // copying to the screen
+        double wait = 0;                // waiting for input (filled by the main loop)
+        int frames = 0, view_renders = 0;
+    } perf;
+    uint32_t view_renders = 0;          // how many times the viewport image was rendered
+    SwStats raster_stats;               // the last UI rasterization
+    gfx::RendererStats fgl_stats;       // the last FarcadeGL render
+    double fgl_init_ms = 0, fgl_init_shader_ms = 0;
+    bool bench_interacting = false;     // benchmarks: behave as during a camera drag
     double (*perf_clock)() = nullptr;           // a real clock for view_ms (default: platform::time_seconds)
     struct TileRect { char path[256]; float x, y, w, h; };
     static constexpr int kMaxTiles = 64;
@@ -194,8 +211,9 @@ private:
     void viewport_overlays(float x, float y, float w, float h);
     uint64_t view_hash(int w, int h) const;
     bool view_interacting_ = false;     // a drag in the viewport (last frame)
-    bool view_supersample_now() const { return settings.view_supersample && !view_interacting_; }
-    bool view_shadows_now() const { return settings.view_shadows && !view_interacting_; }
+    bool view_interacting() const { return view_interacting_ || bench_interacting; }
+    bool view_supersample_now() const { return settings.view_supersample && !view_interacting(); }
+    bool view_shadows_now() const { return settings.view_shadows && !view_interacting(); }
     void render_view(View3D& view3d, const void* view);
     void orientation_gizmo(float x, float y, float size);
     void panel_hierarchy();

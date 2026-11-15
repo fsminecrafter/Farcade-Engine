@@ -117,6 +117,8 @@ struct Renderer::Impl {
     uint32_t* pixels = nullptr;
     char error[200] = "";
     RendererStats stats;
+    double init_ms = 0, init_shader_ms = 0; // init(): all, and the shader compiles in it
+    bool in_render = false;
     uint64_t frame = 0;
 
     // Mesh cache: open addressing on key, entries never move between rebuilds.
@@ -174,7 +176,11 @@ struct Renderer::Impl {
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
+        double t0 = now_ms();
         FGLShader* sh = fglCreateShader(gl, vs, fs);
+        stats.shader_ms += now_ms() - t0;
+        stats.shaders_compiled++;
+        if (!in_render) init_shader_ms += now_ms() - t0;
         if (!sh) {
             snprintf(error, sizeof error, "%s shader: %s", what, fglShaderLog(gl));
             return false;
@@ -345,7 +351,10 @@ struct Renderer::Impl {
                         o[3] = ns[t].x; o[4] = ns[t].y; o[5] = ns[t].z;
                     }
                 }
-                if (fglBufferData(gl, b, s * kVertexBytes, scratch, k * kVertexBytes) != 0) {
+                double tu = now_ms();
+                int ur = fglBufferData(gl, b, s * kVertexBytes, scratch, k * kVertexBytes);
+                stats.upload_ms += now_ms() - tu;
+                if (ur != 0) {
                     set_error("FarcadeGL: cannot upload a vertex buffer");
                     return false;
                 }
@@ -531,6 +540,13 @@ struct Renderer::Impl {
 
     // ---- frame
 
+    int submit() {
+        double t = now_ms();
+        int r = fglSubmit(gl);
+        stats.submit_ms += now_ms() - t;
+        return r;
+    }
+
     bool draw_item(const DrawItem& it, const Shader& s, bool* failed) {
         MeshEntry temp_entry;
         MeshEntry* e = mesh_buffers(it.mesh, &temp_entry);
@@ -540,7 +556,7 @@ struct Renderer::Impl {
             return false;
         }
         // Keep the command buffer under the kernel's size limit.
-        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget && fglSubmit(gl) != 0) {
+        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget && submit() != 0) {
             set_error("FarcadeGL: submit failed", gl->error);
             *failed = true;
             return false;
@@ -567,6 +583,7 @@ struct Renderer::Impl {
     bool render(const RenderScene& scene) {
         double t0 = now_ms();
         stats = RendererStats();
+        in_render = true;
         error[0] = 0;
         gl->error = 0;
         frame++;
@@ -601,22 +618,27 @@ struct Renderer::Impl {
             fglUseShader(gl, sky.sh);
             fglSetModel(gl, to_fgl(Mat4::identity()));
             fglDraw(gl, sky_buffer, 0, 3);
-            if (fglSubmit(gl) != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
+            if (submit() != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
         } else {
-            fglSubmit(gl);
+            submit();
         }
         free_temps();
         if (failed) return false;
-        if (fglReadPixels(gl, pixels, (uint32_t)width * 4) != 0) {
+        double tr = now_ms();
+        int rr = fglReadPixels(gl, pixels, (uint32_t)width * 4);
+        stats.read_ms = now_ms() - tr;
+        if (rr != 0) {
             set_error("FarcadeGL: readback failed", gl->error);
             return false;
         }
+        double ts = now_ms();
         // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque.
         uint32_t n = (uint32_t)width * (uint32_t)height;
         for (uint32_t i = 0; i < n; i++) {
             uint32_t p = pixels[i];
             pixels[i] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
         }
+        stats.swizzle_ms = now_ms() - ts;
         stats.ms = now_ms() - t0;
         return true;
     }
@@ -654,9 +676,14 @@ bool Renderer::init(int width, int height) {
     m.scratch = (float*)malloc((size_t)kUploadSlice * kVertexBytes);
     m.pixels = (uint32_t*)calloc((size_t)width * (size_t)height, 4);
     if (!m.scratch || !m.pixels) { m.set_error("out of memory"); return false; }
-    if (!m.make_context() || !m.make_shaders()) return false;
-    return true;
+    double t0 = now_ms();
+    bool ok = m.make_context() && m.make_shaders();
+    m.init_ms = now_ms() - t0;
+    return ok;
 }
+
+double Renderer::init_ms() const { return impl_ ? impl_->init_ms : 0; }
+double Renderer::init_shader_ms() const { return impl_ ? impl_->init_shader_ms : 0; }
 
 void Renderer::shutdown() {
     if (!impl_) return;

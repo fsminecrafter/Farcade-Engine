@@ -845,16 +845,27 @@ bool Editor::frame() {
     }
 
     ui_rect_count = 0;
+    double t_build = platform::time_seconds();
+    uint32_t renders_before = view_renders;
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
     build_ui();
     ImGui::Render();
+    double t_raster = platform::time_seconds();
 
     static SwRenderer renderer;
     Framebuffer& fb = platform::framebuffer();
     SwRenderer::clear(fb, settings.dark_theme ? 0x101215 : 0xD9DCE1);
     renderer.render(ImGui::GetDrawData(), fb);
+    raster_stats = renderer.stats();
+    double t_present = platform::time_seconds();
     platform::present();
+    double t_end = platform::time_seconds();
+    perf.build += (t_raster - t_build) * 1000.0;
+    perf.raster += (t_present - t_raster) * 1000.0;
+    perf.present += (t_end - t_present) * 1000.0;
+    if (view_renders != renders_before) { perf.view += view_ms; perf.view_renders++; }
+    perf.frames++;
     return !quit;
 }
 

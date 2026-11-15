@@ -12,6 +12,7 @@ namespace fe {
 class View3D;
 class World;
 class PhysicsWorld;
+class ScriptRuntime;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -120,6 +121,9 @@ public:
     // the scene so the viewport shows them.
     World* play_world() { return world_; }
     PhysicsWorld* play_physics() { return physics_; }
+    ScriptRuntime* play_scripts() { return scripts_; }
+    // A script file's text (full path, or relative to the project); malloc'd, or null.
+    char* read_script_text(const char* path, size_t* size);
     uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
     ObjectId object_of(uint64_t entity) const;
     // Physics events while playing ("entered" / "left" a trigger, "hit"):
@@ -168,9 +172,11 @@ public:
 private:
     World* world_ = nullptr;
     PhysicsWorld* physics_ = nullptr;
+    ScriptRuntime* scripts_ = nullptr;
     ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
     uint64_t* world_entities_ = nullptr;
     int world_count_ = 0;
+    int script_count_ = 0;
     void build_world();
     void step_world(float dt);
     void free_world();

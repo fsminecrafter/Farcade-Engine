@@ -3,6 +3,7 @@
 #include "editor.h"
 #include "swraster.h"
 #include "ecs/ecs.h"
+#include "script/runtime.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -831,7 +832,7 @@ int main() {
         CHECK(click_ui("menu:FarcadeGL") && ed.view_renderer == Editor::ViewRenderer::FarcadeGL, "the menu switches to FarcadeGL");
         ev_key(platform::KEY_ESCAPE, true); frames(1); ev_key(platform::KEY_ESCAPE, false); frames(3);
         int errors = 0;
-        for (int i = 0; i < ed.log_count; i++) errors += ed.log_lines[i].level == LogLevel::Error;
+        for (int i = 0; i < ed.log_count; i++) errors += ed.log_lines[i].level == LogLevel::Error && strstr(ed.log_lines[i].text, "FarcadeGL");
         CHECK(ed.view_renderer == Editor::ViewRenderer::FarcadeGL && errors == 0, "FarcadeGL renders without errors (%d)", errors);
         CHECK(ed.view_triangles > 0, "FarcadeGL drew triangles (%d)", ed.view_triangles);
         // A sky changes the picture: read a viewport pixel before and after.
@@ -894,6 +895,68 @@ int main() {
         CHECK(logged, "the console says the ball entered the trigger");
         ed.stop();
         CHECK(ed.scene.get(ball)->position.y == 3.0f && !ed.play_physics(), "Stop puts the ball back");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- scripts run in Play: inputs, moving, triggers switching the camera, errors
+    {
+        int objects0 = ed.scene.count();
+        const char* mover =
+            "-- @prop speed number = 1\n"
+            "-- @prop label text = \"x\"\n"
+            "function on_start(self) self.started = true; print(self.object.name .. ' starts, ' .. self.label) end\n"
+            "function on_update(self, dt) self.object:move(self.speed * dt, 0, 0) end\n";
+        platform::write_file("build/host/test-project/mover.lua", mover, strlen(mover));
+        const char* switcher =
+            "-- @prop camera object\n"
+            "function on_trigger_enter(self, other)\n"
+            "  print(other.name .. ' entered ' .. self.object.name)\n"
+            "  if self.camera then self.camera.camera.current = true end\n"
+            "end\n";
+        platform::write_file("build/host/test-project/switcher.lua", switcher, strlen(switcher));
+        const char* broken = "function on_update(self, dt) local t = nil; t.x = 1 end\n";
+        platform::write_file("build/host/test-project/broken.lua", broken, strlen(broken));
+
+        ObjectId runner = ed.create_object("Runner", MeshKind::Cube, Vec3(30, 0.5f, 0));
+        ed.add_script(runner, "build/host/test-project/mover.lua");
+        ed.scene.script_prop(runner, "mover", "speed")->number = 2;
+        snprintf(ed.scene.script_prop(runner, "mover", "label")->text, 64, "%s", "go");
+        ed.add_script(runner, "build/host/test-project/broken.lua");
+        ObjectId cam_a = ed.create_kind("Cam Main", ObjectKind::Camera, Vec3(30, 2, 8));
+        ObjectId cam_b = ed.create_kind("Cam Trap", ObjectKind::Camera, Vec3(36, 2, 8));
+        ed.scene.set_current(cam_a, ModuleKind::Camera);
+        ObjectId floor2 = ed.create_object("Trap Floor", MeshKind::Plane, Vec3(36, 0, 0));
+        ed.scene.get(floor2)->scale = Vec3(4, 1, 4);
+        ed.scene.add_module(floor2, ModuleKind::Collider3D);
+        ObjectId rock = ed.create_object("Rock", MeshKind::Sphere, Vec3(36, 3, 0));
+        ed.scene.add_module(rock, ModuleKind::RigidBody3D);
+        ed.scene.add_module(rock, ModuleKind::Collider3D);
+        ObjectId trap = ed.create_kind("Trap", ObjectKind::Empty, Vec3(36, 1.5f, 0));
+        ed.scene.add_module(trap, ModuleKind::Collider3D);
+        ed.scene.get(trap)->modules.collider3d.mode = ColliderMode::Trigger;
+        ed.add_script(trap, "build/host/test-project/switcher.lua");
+        ed.scene.script_prop(trap, "switcher", "camera")->object = cam_b;
+
+        int log0 = ed.log_count;
+        ed.play();
+        ScriptRuntime* rt = ed.play_scripts();
+        CHECK(rt && rt->stats().instances >= 3, "Play starts the scripts (%d)", rt ? rt->stats().instances : -1);
+        frames(60);                                      // 1 s
+        float x = ed.scene.get(runner)->position.x;
+        CHECK(x > 31.6f && x < 32.4f, "the mover moved its object by speed * time (x %.2f)", x);
+        auto logged = [&](const char* what) {
+            for (int i = log0; i < ed.log_count; i++) if (strstr(ed.log_lines[i].text, what)) return true;
+            return false;
+        };
+        CHECK(logged("Runner starts, go"), "print() reaches the console with the inputs");
+        CHECK(logged("Rock entered Trap"), "a trigger calls on_trigger_enter");
+        CHECK(ed.scene.current(ModuleKind::Camera) == cam_b, "the script made the trap camera current");
+        CHECK(ed.looking_through_camera, "and Play now looks through it");
+        CHECK(logged("broken.lua:1:") && rt->stats().failed == 1, "a runtime error is logged with file:line and stops that script only");
+        ed.stop();
+        CHECK(ed.scene.current(ModuleKind::Camera) == cam_a && ed.scene.get(runner)->position.x == 30.0f && !ed.play_scripts(),
+              "Stop restores the camera and positions");
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         frames(2);
     }

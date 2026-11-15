@@ -4,6 +4,7 @@
 #include "platform/platform.h"
 #include "ecs/ecs.h"
 #include "physics/physics.h"
+#include "script/runtime.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -407,18 +408,23 @@ int Editor::add_script(ObjectId id, const char* path) {
     return i;
 }
 
+char* Editor::read_script_text(const char* path, size_t* size) {
+    char* text = (char*)platform::read_file(path, size);
+    if (!text && project_dir[0] && path[0] != '/') {
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", project_dir, path);
+        text = (char*)platform::read_file(full, size);
+    }
+    return text;
+}
+
 bool Editor::reload_script(ObjectId id, int index) {
     Object* o = scene.get(id);
     if (!o || index < 0 || index >= o->script_count) return false;
     ScriptSlot& slot = o->scripts[index];
     // Paths from the Files panel are full; others are relative to the project.
     size_t size = 0;
-    char* text = (char*)platform::read_file(slot.path, &size);
-    if (!text && project_dir[0] && slot.path[0] != '/') {
-        char full[600];
-        snprintf(full, sizeof(full), "%s/%s", project_dir, slot.path);
-        text = (char*)platform::read_file(full, &size);
-    }
+    char* text = read_script_text(slot.path, &size);
     if (!text) {
         if (!slot.missing) log(LogLevel::Warning, "%s: cannot read %s; its inputs keep their values", o->name, slot.path);
         slot.missing = true;
@@ -566,7 +572,7 @@ void Editor::play() {
     play_backup_->copy_from(scene);
     play_time = 0.0;
     build_world();
-    log(LogLevel::Info, "Play: the scene runs as %d entities and comes back on Stop. Scripts do not run yet (they need the Lua runtime).", world_count_);
+    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", world_count_, script_count_, script_count_ == 1 ? "" : "s");
 }
 
 void Editor::build_world() {
@@ -621,6 +627,35 @@ void Editor::build_world() {
         if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
     }
     world_->update_transforms();
+    // Scripts (Lua): one instance per script on each object, in Inspector
+    // order; object inputs become the linked objects' entities.
+    scripts_ = new ScriptRuntime();
+    ScriptHost host;
+    host.user = this;
+    host.log = [](ScriptLogLevel level, const char* text, void* u) {
+        LogLevel l = level == ScriptLogLevel::Error ? LogLevel::Error : (level == ScriptLogLevel::Warning ? LogLevel::Warning : LogLevel::Info);
+        ((Editor*)u)->log(l, "%s", text);
+    };
+    script_count_ = 0;
+    if (scripts_->init(world_, host)) {
+        for (int i = 0; i < world_count_; i++) {
+            Object* o = scene.get(world_objects_[i]);
+            if (!o) continue;
+            for (int s = 0; s < o->script_count; s++) {
+                ScriptSlot& sl = o->scripts[s];
+                size_t size = 0;
+                char* text = read_script_text(sl.path, &size);
+                if (!text) { log(LogLevel::Error, "%s: cannot read %s", o->name, sl.path); continue; }
+                Entity links[kMaxProps] = {};
+                for (int k = 0; k < sl.prop_count; k++)
+                    if (sl.props[k].type == PropType::Object) links[k] = entity_of(sl.props[k].object);
+                if (scripts_->add_instance(world_entities_[i], sl.path, text, (uint32_t)size, sl.props, sl.prop_count, links)) script_count_++;
+                free(text);
+            }
+        }
+    } else {
+        log(LogLevel::Error, "Play: the Lua runtime could not start");
+    }
     // Physics on the bodies and colliders (the built-in step, see physics.h).
     physics_ = new PhysicsWorld();
     PhysicsEvents pe;
@@ -640,6 +675,12 @@ ObjectId Editor::object_of(uint64_t e) const {
 
 void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
     physics_event_count++;
+    // Scripts get them as on_trigger_enter / on_trigger_exit / on_collision.
+    if (scripts_) {
+        if (what[0] == 'e') scripts_->trigger_enter(a, b);
+        else if (what[0] == 'l') scripts_->trigger_exit(a, b);
+        else scripts_->collision(a, b);
+    }
     if (on_physics_event) { on_physics_event(this, what, a, b); return; }
     Object* oa = scene.get(object_of(a));
     Object* ob = scene.get(object_of(b));
@@ -670,10 +711,15 @@ void Editor::step_world(float dt) {
             o->rotation = t->rotation;
             o->scale = t->scale;
         }
+        // Modules too: scripts and physics change them (a light's
+        // intensity, a body's velocity, which camera is current).
+        world_->store(e, &o->modules);
     }
 }
 
 void Editor::free_world() {
+    if (scripts_) { scripts_->shutdown(); delete scripts_; }
+    scripts_ = nullptr;
     if (physics_) { physics_->shutdown(); delete physics_; }
     physics_ = nullptr;
     if (world_) { world_->shutdown(); delete world_; }

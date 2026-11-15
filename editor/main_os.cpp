@@ -1,12 +1,14 @@
 // farcade-editor: the editor on Minimal-OS (full screen).
 //
-//   run 0:/programs/farcade-editor.run [--frames N] [--farcadegl]
+//   run 0:/programs/farcade-editor.run [--frames N] [--farcadegl] [--play]
 //
 // Prints "FE EDITOR READY" once the first frame is on the screen, then every
 // 60 frames the average frame time. With --frames N it quits after N frames
 // and prints "FE EDITOR DONE". --farcadegl draws the viewport with FarcadeGL
 // (the kernel's FGPU) instead of the CPU preview and reports, every 60
 // frames, whether it still does ("renderer FarcadeGL" or "renderer CPU").
+// --play presses Play after the first frame (the ball has physics) and adds
+// the ball's height to the report.
 #include "editor.h"
 #include "platform/platform.h"
 
@@ -37,6 +39,11 @@ static void demo_scene(Editor& ed) {
     ed.create_kind("Sky Light", ObjectKind::SkyLight, Vec3(-2.7f, 2.2f, -3.0f));
     ObjectId cam = ed.create_kind("Main Camera", ObjectKind::Camera, Vec3(-3.5f, 2.2f, 4.5f));
     ed.scene.get(cam)->rotation = Quat::euler_deg(Vec3(-18, -35, 0));
+    // Physics: the ball falls onto the ground when Play starts.
+    ed.scene.get(sphere)->position.y = 2.5f;
+    ed.scene.add_module(sphere, ModuleKind::RigidBody3D);
+    ed.scene.add_module(sphere, ModuleKind::Collider3D);
+    ed.scene.add_module(ground, ModuleKind::Collider3D);
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
     ed.tool = Tool::Move;
@@ -45,10 +52,11 @@ static void demo_scene(Editor& ed) {
 
 int main(int argc, char** argv) {
     long max_frames = 0;
-    bool farcadegl = false;
+    bool farcadegl = false, play = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) max_frames = atol(argv[++i]);
         else if (strcmp(argv[i], "--farcadegl") == 0) farcadegl = true;
+        else if (strcmp(argv[i], "--play") == 0) play = true;
     }
 
     static Editor ed;
@@ -72,10 +80,16 @@ int main(int argc, char** argv) {
             printf("FE EDITOR READY (%dx%d, first frame %.1f ms)\n", platform::width(), platform::height(),
                    (platform::time_seconds() - t0) * 1000.0);
             window_start = platform::time_seconds();
+            if (play) ed.play();
         } else if ((frames - 1) % 60 == 0) {
             double now = platform::time_seconds();
             printf("FE EDITOR frames %ld: %.1f ms/frame (last 60), renderer %s, viewport %.1f ms\n", frames, (now - window_start) * 1000.0 / 60.0,
                    ed.view_renderer == Editor::ViewRenderer::FarcadeGL ? "FarcadeGL" : "CPU", ed.view_ms);
+            if (ed.playing()) {
+                Object* ball = nullptr;
+                for (int i = 0; i < ed.scene.count(); i++) if (!strcmp(ed.scene.at(i).name, "Ball")) ball = &ed.scene.at(i);
+                printf("FE EDITOR playing %.1f s, ball y %.2f\n", ed.play_time, ball ? ball->position.y : -1.0f);
+            }
             window_start = now;
         }
         if (max_frames && frames >= max_frames) break;

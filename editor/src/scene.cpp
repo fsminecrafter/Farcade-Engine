@@ -48,6 +48,22 @@ ObjectId Scene::create(const char* name, MeshKind mesh) {
     return o->id;
 }
 
+Object* Scene::create_with_id(ObjectId id) {
+    if (id == kNoObject || get(id)) return nullptr;
+    if (count_ == cap_) {
+        int ncap = cap_ ? cap_ * 2 : 32;
+        Object** n = (Object**)realloc(objects_, sizeof(Object*) * ncap);
+        if (!n) return nullptr;
+        objects_ = n;
+        cap_ = ncap;
+    }
+    Object* o = new Object();
+    o->id = id;
+    objects_[count_++] = o;
+    keep_ids_above(id + 1);
+    return o;
+}
+
 void Scene::remove(ObjectId id) {
     // The object and everything below it: list them while the parent links
     // still exist, then delete.
@@ -77,6 +93,85 @@ void Scene::remove_one(ObjectId id) {
             for (int k = 0; k < sl.prop_count; k++)
                 if (sl.props[k].type == PropType::Object && sl.props[k].object == id) sl.props[k].object = kNoObject;
         }
+}
+
+bool Scene::add_module(ObjectId id, ModuleKind kind) {
+    Object* o = get(id);
+    if (!o || !is_module(kind) || o->modules.has(kind)) return false;
+    o->modules.reset(kind);
+    o->modules.add(kind);
+    // A collider starts fitted to the object's mesh (built-in meshes fill -0.5..0.5).
+    if (kind == ModuleKind::Collider3D && o->kind == ObjectKind::Mesh) {
+        Collider3D& c = o->modules.collider3d;
+        if (o->mesh == MeshKind::Sphere) c.shape = ColliderShape::Sphere;
+        else if (o->mesh == MeshKind::Cylinder) { c.shape = ColliderShape::Cylinder; c.radius = 0.5f; c.height = 1.0f; }
+        else if (o->mesh == MeshKind::Plane) { c.size = Vec3(1, 0.1f, 1); c.center = Vec3(0, -0.05f, 0); }
+    }
+    // A listener becomes the current one when there is none yet.
+    if (module_info(kind).has_current && current(kind) == kNoObject) set_current(id, kind);
+    return true;
+}
+
+void Scene::remove_module(ObjectId id, ModuleKind kind) {
+    Object* o = get(id);
+    if (!o || !is_module(kind)) return;
+    o->modules.remove(kind);
+    o->modules.reset(kind);
+}
+
+void Scene::set_kind(ObjectId id, ObjectKind kind) {
+    Object* o = get(id);
+    if (!o) return;
+    ModuleKind old = settings_of(o->kind);
+    if (old != ModuleKind::Count) { o->modules.remove(old); o->modules.reset(old); }
+    o->kind = kind;
+    ModuleKind k = settings_of(kind);
+    if (k == ModuleKind::Count) return;
+    o->modules.reset(k);
+    o->modules.add(k);
+    if (module_info(k).has_current && current(k) == kNoObject) set_current(id, k);
+}
+
+void Scene::set_current(ObjectId id, ModuleKind kind) {
+    const ModuleInfo& mi = module_info(kind);
+    Object* o = get(id);
+    if (!mi.has_current || !o || !o->modules.has(kind)) return;
+    for (int i = 0; i < count_; i++) {
+        Object& x = *objects_[i];
+        if (x.modules.has(kind)) set_current_flag(mi, x.modules.data(kind), x.id == id);
+    }
+}
+
+void Scene::clear_current(ObjectId id, ModuleKind kind) {
+    Object* o = get(id);
+    if (o && o->modules.has(kind)) set_current_flag(module_info(kind), o->modules.data(kind), false);
+}
+
+bool Scene::is_current(ObjectId id, ModuleKind kind) {
+    Object* o = get(id);
+    return o && o->modules.has(kind) && get_current(module_info(kind), o->modules.data(kind));
+}
+
+ObjectId Scene::current(ModuleKind kind) {
+    const ModuleInfo& mi = module_info(kind);
+    if (!mi.has_current) return kNoObject;
+    for (int i = 0; i < count_; i++) {
+        Object& x = *objects_[i];
+        if (x.modules.has(kind) && get_current(mi, x.modules.data(kind))) return x.id;
+    }
+    return kNoObject;
+}
+
+void Scene::fix_current() {
+    for (int k = 0; k < kModuleKindCount; k++) {
+        ObjectId c = current((ModuleKind)k);
+        if (c) set_current(c, (ModuleKind)k);
+    }
+}
+
+void* Scene::current_data(ModuleKind kind) {
+    Object* o = get(current(kind));
+    return o ? o->modules.data(kind) : nullptr;
 }
 
 int Scene::add_script(ObjectId id, const char* path) {
@@ -358,6 +453,17 @@ ObjectId Scene::pick(const Ray& ray, float* distance) {
         Object& o = *objects_[i];
         if (!visible_in_tree(o)) continue;
         Mat4 m = world_matrix(o), inv;
+        if (o.kind != ObjectKind::Mesh) {
+            // No mesh: a small sphere around its origin (where its icon is).
+            Vec3 c(m.m[12], m.m[13], m.m[14]);
+            Vec3 oc = ray.origin - c;
+            float a = dot(ray.dir, ray.dir), b = dot(oc, ray.dir), cc = dot(oc, oc) - 0.35f * 0.35f;
+            float disc = b * b - a * cc;
+            if (disc < 0 || a <= 0) continue;
+            float t = (-b - fsqrt(disc)) / a;
+            if (t > 0 && t < best_t) { best_t = t; best = o.id; }
+            continue;
+        }
         if (!invert(m, &inv)) continue;
         // Into object space; t stays comparable because the direction is
         // transformed without normalizing.

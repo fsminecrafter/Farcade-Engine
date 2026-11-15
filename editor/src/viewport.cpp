@@ -5,9 +5,11 @@
 // FarcadeGL renderer replaces that drawing later; picking, camera and
 // gizmos stay.
 #include "editor.h"
+#include "render_bridge.h"
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "view_quality.h"
 #include "platform/platform.h"
 
 #include "imgui/imgui.h"
@@ -97,7 +99,18 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.rotation, sizeof(o.rotation));
         mix(&o.scale, sizeof(o.scale));
         mix(&o.color, sizeof(o.color));
+        float mat[2] = { o.roughness, o.metallic };
+        bool matf[2] = { o.unlit, o.cast_shadows };
+        mix(mat, sizeof(mat));
+        mix(matf, sizeof(matf));
         mix(&o.mesh, sizeof(o.mesh));
+        mix(&o.kind, sizeof(o.kind));
+        mix(&o.modules.present, sizeof(o.modules.present));
+        mix(&o.modules.light, sizeof(o.modules.light));
+        mix(&o.modules.camera, sizeof(o.modules.camera));
+        mix(&o.modules.sky, sizeof(o.modules.sky));
+        mix(&o.modules.sky_light, sizeof(o.modules.sky_light));
+        mix(&o.modules.post_process, sizeof(o.modules.post_process));
         mix(&o.visible, sizeof(o.visible));
         mix(&o.parent, sizeof(o.parent));
     }
@@ -107,6 +120,80 @@ uint64_t Editor::view_hash(int w, int h) const {
     return hsh;
 }
 
+// Lines for what has no mesh: a camera's frustum, a light's shape, a small
+// cross for empties and the scene settings objects.
+void Editor::draw_object_shape(View3D& view3d, const Object& o, const Mat4& model) {
+    bool sel = scene.is_selected(o.id);
+    uint32_t col = sel ? 0xFFB13B : (settings.dark_theme ? 0xAEB6C2 : 0x4A515C);
+    int alpha = sel ? 255 : 170;
+    auto P = [&](float x, float y, float z) { return transform_point(model, Vec3(x, y, z)); };
+    auto L = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, col, alpha); };
+    if (o.modules.has(ModuleKind::Light)) {
+        const Light& l = o.modules.light;
+        uint32_t lc = sel ? col : 0xF2C94C;
+        auto LL = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, lc, alpha); };
+        if (l.type == LightType::Directional) {
+            // A few parallel rays along -Z.
+            static const float off[5][2] = { { 0, 0 }, { 0.25f, 0 }, { -0.25f, 0 }, { 0, 0.25f }, { 0, -0.25f } };
+            for (auto& d : off) {
+                LL(P(d[0], d[1], 0), P(d[0], d[1], -1.2f));
+                LL(P(d[0], d[1], -1.2f), P(d[0] + 0.07f, d[1], -1.05f));
+                LL(P(d[0], d[1], -1.2f), P(d[0] - 0.07f, d[1], -1.05f));
+            }
+        } else if (l.type == LightType::Point) {
+            for (int axis = 0; axis < 3; axis++)
+                for (int i = 0; i < 16; i++) {
+                    float a0 = 2 * kPi * i / 16, a1 = 2 * kPi * (i + 1) / 16, r = 0.25f;
+                    float c0 = fcos(a0) * r, s0 = fsin(a0) * r, c1 = fcos(a1) * r, s1 = fsin(a1) * r;
+                    if (axis == 0) LL(P(c0, s0, 0), P(c1, s1, 0));
+                    else if (axis == 1) LL(P(c0, 0, s0), P(c1, 0, s1));
+                    else LL(P(0, c0, s0), P(0, c1, s1));
+                }
+        } else {
+            float d = l.range < 2.0f ? l.range : 2.0f;
+            float r = ftan(radians(l.spot_angle * 0.5f)) * d;
+            Vec3 tip = P(0, 0, 0);
+            for (int i = 0; i < 24; i++) {
+                float a0 = 2 * kPi * i / 24, a1 = 2 * kPi * (i + 1) / 24;
+                LL(P(fcos(a0) * r, fsin(a0) * r, -d), P(fcos(a1) * r, fsin(a1) * r, -d));
+                if (i % 6 == 0) LL(tip, P(fcos(a0) * r, fsin(a0) * r, -d));
+            }
+        }
+    }
+    switch (o.kind) {
+        case ObjectKind::Camera: {
+            const Camera& c = o.modules.camera;
+            float d = 0.8f, hh, hw;
+            if (c.projection == Projection::Perspective) hh = ftan(radians(c.fov * 0.5f)) * d;
+            else hh = 0.45f;
+            hw = hh * (16.0f / 9.0f);
+            uint32_t cc = sel ? col : (c.current ? 0x6EA3FF : col);
+            auto C = [&](const Vec3& a, const Vec3& b) { view3d.line(a, b, cc, alpha); };
+            Vec3 e = P(0, 0, 0);
+            Vec3 q[4] = { P(-hw, -hh, -d), P(hw, -hh, -d), P(hw, hh, -d), P(-hw, hh, -d) };
+            if (c.projection == Projection::Orthographic) {
+                Vec3 b[4] = { P(-hw, -hh, 0), P(hw, -hh, 0), P(hw, hh, 0), P(-hw, hh, 0) };
+                for (int i = 0; i < 4; i++) { C(b[i], q[i]); C(b[i], b[(i + 1) % 4]); }
+            } else {
+                for (int i = 0; i < 4; i++) C(e, q[i]);
+            }
+            for (int i = 0; i < 4; i++) C(q[i], q[(i + 1) % 4]);
+            // Which way is up: a small triangle on the top edge.
+            C(P(-hw * 0.3f, hh * 1.1f, -d), P(0, hh * 1.45f, -d));
+            C(P(hw * 0.3f, hh * 1.1f, -d), P(0, hh * 1.45f, -d));
+            C(P(-hw * 0.3f, hh * 1.1f, -d), P(hw * 0.3f, hh * 1.1f, -d));
+            break;
+        }
+        case ObjectKind::Empty:
+            if (o.modules.has(ModuleKind::Light)) break;
+            L(P(-0.25f, 0, 0), P(0.25f, 0, 0));
+            L(P(0, -0.25f, 0), P(0, 0.25f, 0));
+            L(P(0, 0, -0.25f), P(0, 0, 0.25f));
+            break;
+        default: break;
+    }
+}
+
 void Editor::render_view(View3D& view3d, const void* view_ptr) {
     const View& v = *(const View*)view_ptr;
     double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
@@ -114,7 +201,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
 
     uint32_t top = settings.dark_theme ? 0x2B3038 : 0xC9D0DA;
     uint32_t bottom = settings.dark_theme ? 0x16181C : 0xEEF1F5;
-    view3d.begin((int)v.size.x, (int)v.size.y, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
+    view3d.begin(render_w_, render_h_, v.view, v.proj, top, bottom, view_supersample_now() ? 2 : 1);
     bool wire = view_mode == ViewMode::Wireframe;
     {
         uint16_t sel_ids[256];
@@ -126,10 +213,12 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
         if (!scene.visible_in_tree(o)) continue;
-        const MeshData& mesh = Scene::mesh_for(o);
         Mat4 model = scene.world_matrix(o);
+        draw_object_shape(view3d, o, model);
+        if (o.kind != ObjectKind::Mesh) continue;
+        const MeshData& mesh = Scene::mesh_for(o);
         if (!wire) {
-            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit);
+            view3d.mesh(mesh.positions, mesh.normals, mesh.vertex_count, model, o.color, (uint16_t)o.id, view_mode == ViewMode::Unlit || o.unlit);
             continue;
         }
         bool sel = scene.is_selected(o.id);
@@ -148,7 +237,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
-            if (!scene.visible_in_tree(o) || o.mesh == MeshKind::Plane) continue;
+            if (!scene.visible_in_tree(o) || o.kind != ObjectKind::Mesh || o.mesh == MeshKind::Plane) continue;
             const MeshData& mesh = Scene::mesh_for(o);
             view3d.shadow(mesh.positions, mesh.vertex_count, scene.world_matrix(o));
         }
@@ -158,7 +247,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     view3d.finish(0xFFB13B, 0xD98A1C, settings.dark_theme ? 0.42f : 0.30f);
     view_triangles = view3d.triangles() + wire_tris;
     view_ms = (float)((clock() - t0) * 1000.0);
-
+    view_renders++;
 }
 
 void Editor::panel_viewport() {
@@ -173,6 +262,15 @@ void Editor::panel_viewport() {
     view_rect[0] = v.pos.x; view_rect[1] = v.pos.y; view_rect[2] = v.size.x; view_rect[3] = v.size.y;
     v.view = camera.view();
     v.proj = camera.projection(v.size.x / v.size.y);
+    Vec3 eye = camera.eye();
+    float znear = 0.1f, zfar = 500.0f;
+    // In Play, the view of the current Camera object (the game's view).
+    looking_through_camera = false;
+    if (playing() && settings.play_through_camera) {
+        ObjectId cam = scene.current(ModuleKind::Camera);
+        if (cam && RenderBridge::camera_view(scene, cam, v.size.x / v.size.y, &v.view, &v.proj, &eye, &znear, &zfar))
+            looking_through_camera = true;
+    }
     v.viewproj = v.proj * v.view;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 end(v.pos.x + v.size.x, v.pos.y + v.size.y);
@@ -180,14 +278,206 @@ void Editor::panel_viewport() {
 
     // The scene into the viewport image, redrawn only when something it
     // shows has changed (the CPU preview is not cheap; idle frames are free).
+    // With adaptive_view the image is rendered at 1/d of the size while the
+    // scene keeps changing (view_quality.h) and once more, sharper, when it
+    // stopped.
     static View3D view3d;
-    static uint64_t last_hash = 0;
-    uint64_t hash = view_hash((int)v.size.x, (int)v.size.y);
-    if (hash != last_hash || !view3d.width()) {
-        last_hash = hash;
-        render_view(view3d, &v);
+    static uint64_t last_hash = 0, last_base = 0;
+    static gfx::Renderer fgl;
+    static RenderBridge bridge;
+    static SwTexture fgl_tex, shown_tex;
+    static SwUpscaler upscaler;
+    static ViewQuality quality_fgl(true), quality_cpu(false);
+    static bool fgl_failed = false;
+    bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
+    ViewQuality& quality = use_fgl ? quality_fgl : quality_cpu;
+    const int full_w = (int)v.size.x, full_h = (int)v.size.y;
+    uint64_t hash, base;
+    {
+        // base: what the image shows, as if nothing were dragged (shadows and
+        // smoothing come back after a drag, that alone is no scene change).
+        bool keep_a = view_interacting_, keep_b = bench_interacting;
+        view_interacting_ = bench_interacting = false;
+        base = view_hash(full_w, full_h);
+        view_interacting_ = keep_a;
+        bench_interacting = keep_b;
+        hash = view_hash(full_w, full_h);
+        uint8_t extra[2] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera };
+        uint64_t* hps[2] = { &hash, &base };
+        for (uint64_t* hp : hps) {
+            for (uint8_t eb : extra) { *hp ^= eb; *hp *= 1099511628211ull; }
+            // The graphics settings change the picture.
+            const uint8_t* gb = (const uint8_t*)&settings.graphics;
+            for (size_t i = 0; i < sizeof(settings.graphics); i++) { *hp ^= gb[i]; *hp *= 1099511628211ull; }
+            if (looking_through_camera)
+                for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); *hp ^= u; *hp *= 1099511628211ull; }
+        }
     }
-    dl->AddImage((ImTextureID)SwRenderer::texture_id(view3d.texture()), v.pos, ImVec2(v.pos.x + view3d.width(), v.pos.y + view3d.height()));
+    int div = 1;
+    bool moving = false;
+    if (adaptive_view) {
+        moving = view_interacting() || base != last_base;
+        div = moving ? quality.interactive_div(full_w, full_h) : quality.settled_div(full_w, full_h);
+        view_div_target = quality.settled_div(full_w, full_h);
+    }
+    if (div < view_scale_div) div = view_scale_div;
+    last_base = base;
+    { uint8_t d8 = (uint8_t)(div | (use_fgl && moving ? 0x80 : 0)); hash ^= d8; hash *= 1099511628211ull; }
+    // FarcadeGL with adaptive_view: once the view stopped changing, the picture
+    // is redrawn at full size in bands (a few rows per frame, so the UI stays
+    // alive); a change of the view drops what is left of it.
+    static bool band_final = true, banding = false;
+    static int band_y = 0, band_rows = 0;
+    // Bands need the base tier without fog (the GPU tier's passes work on
+    // whole images): with those on, settled views are rendered whole.
+    fgl.set_settings(settings.graphics);
+    const Sky* cur_sky = (const Sky*)scene.current_data(ModuleKind::Sky);
+    const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f);
+    const bool progressive = adaptive_view && use_fgl && !whole_only;
+    bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
+    if (progressive) {
+        need = (moving && hash != last_hash) || !fgl_tex.pixels;
+        if (moving) { band_final = false; banding = false; }
+    }
+    view_final = !progressive || (band_final && !need);
+    bool do_band = progressive && !need && !band_final && shown_tex.pixels && fgl.ready();
+    if (do_band) {
+        double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+        double t0 = clock();
+        const uint32_t* dst_base = nullptr;
+        if (!banding) {
+            // Start: the picture shown now becomes the full-size buffer the bands overwrite.
+            int rows = (int)(250.0 / (quality.cost_ms_per_pixel(false) > 0 ? quality.cost_ms_per_pixel(false) * full_w : 0.05 * full_w));
+            if (rows < 8) rows = 8;
+            if (rows > full_h) rows = full_h;
+            band_rows = rows;
+            band_y = 0;
+            banding = true;
+            const uint32_t* cur = (const uint32_t*)shown_tex.pixels;
+            if (shown_tex.format == SwTexture::XRGB8 && shown_tex.width == full_w && shown_tex.height == full_h && cur == upscaler.buffer(full_w, full_h)) {
+                dst_base = cur;
+            } else {
+                dst_base = upscaler.run(cur, shown_tex.width, shown_tex.height, full_w, full_h);
+            }
+            shown_tex.format = SwTexture::XRGB8;
+            shown_tex.pixels = (const uint8_t*)dst_base;
+            shown_tex.width = shown_tex.pitch = full_w;
+            shown_tex.height = full_h;
+        }
+        uint32_t* disp = upscaler.buffer(full_w, full_h);
+        bool ok = disp && ((fgl.width() == full_w && fgl.height() == full_h) || fgl.resize(full_w, full_h));
+        int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
+        if (ok) {
+            bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+            bridge.scene.draft = false;
+            ok = fgl.render_rows(bridge.scene, y, band_rows, disp + (size_t)y * full_w);
+        }
+        if (ok) {
+            view_ms = (float)((clock() - t0) * 1000.0);
+            view_renders++;
+            fgl_stats = fgl.stats();
+            quality.report((long)full_w * band_rows, view_ms, false);
+            shown_tex.version++;
+            band_y += band_rows;
+            if (band_y >= full_h) { band_final = true; banding = false; view_div_shown = 1; view_final = true; }
+        } else {
+            band_final = true;
+            banding = false;
+        }
+    }
+    // A refine render only when it brings something (never to the same size).
+    if (need) {
+        last_hash = hash;
+        int rw = div > 1 ? (full_w + div - 1) / div : full_w, rh = div > 1 ? (full_h + div - 1) / div : full_h;
+        if (rw < 16) rw = 16;
+        if (rh < 16) rh = 16;
+        render_w_ = rw;
+        render_h_ = rh;
+        double (*clock)() = perf_clock ? perf_clock : platform::time_seconds;
+        double t0 = clock();
+        const uint32_t* rgba = nullptr;
+        if (use_fgl) {
+            bool first = !fgl.ready();
+            bool ok = fgl.ready() ? ((fgl.width() == rw && fgl.height() == rh) || fgl.resize(rw, rh)) : fgl.init(rw, rh);
+            if (first) { fgl_init_ms = fgl.init_ms(); fgl_init_shader_ms = fgl.init_shader_ms(); }
+            if (ok) {
+                fgl.set_settings(settings.graphics);
+                bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+                bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
+                ok = fgl.render(bridge.scene);
+                // What runs, for Settings > Graphics.
+                snprintf(fgl_backend, sizeof(fgl_backend), "%s", fgl.backend());
+                fgl_features = fgl.features();
+            }
+            if (ok) {
+                rgba = fgl.pixels();
+                view_triangles = fgl.stats().triangles;
+                fgl_stats = fgl.stats();
+            } else {
+                log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
+                fgl_failed = true;
+                view_renderer = ViewRenderer::CpuPreview;
+                use_fgl = false;
+                div = 1;
+                render_w_ = full_w;
+                render_h_ = full_h;
+                render_view(view3d, &v);
+            }
+        } else {
+            render_view(view3d, &v);
+        }
+        view_ms = (float)((clock() - t0) * 1000.0);
+        view_renders++;
+        view_div_shown = div;
+        banding = false;
+        if (use_fgl && rgba) quality.report((long)rw * rh, view_ms, adaptive_view && moving);
+        else if (!use_fgl) quality_cpu.report((long)view3d.width() * view3d.height(), view_ms, false);
+        // What the window shows: the image itself, or the small one stretched.
+        SwTexture& t = shown_tex;
+        const uint32_t* src = use_fgl ? rgba : (const uint32_t*)view3d.texture()->pixels;
+        int sw = use_fgl ? rw : view3d.width(), sh = use_fgl ? rh : view3d.height();
+        if (div > 1 && src) {
+            const uint32_t* up = upscaler.run(src, sw, sh, full_w, full_h);
+            t.format = SwTexture::XRGB8;
+            t.pixels = (const uint8_t*)up;
+            t.width = full_w;
+            t.height = full_h;
+            t.pitch = full_w;
+        } else {
+            t.format = SwTexture::RGBA8;
+            t.pixels = (const uint8_t*)src;
+            t.width = sw;
+            t.height = sh;
+            t.pitch = sw;
+        }
+        t.opaque = true;
+        t.linear = false;
+        t.version++;
+        fgl_tex.pixels = use_fgl ? (const uint8_t*)rgba : nullptr;     // "there is an image" marker
+    }
+    if (shown_tex.pixels) dl->AddImage((ImTextureID)SwRenderer::texture_id(&shown_tex), v.pos, ImVec2(v.pos.x + shown_tex.width, v.pos.y + shown_tex.height));
+    // Icons for objects without a mesh (cameras, lights, sky ...), where
+    // they are: they are picked by clicking near them.
+    {
+        float fs = ImGui::GetFontSize();
+        for (int i = 0; i < scene.count(); i++) {
+            Object& o = scene.at(i);
+            if (o.kind == ObjectKind::Mesh || !scene.visible_in_tree(o) || looking_through_camera) continue;
+            Mat4 m = scene.world_matrix(o);
+            Vec4 c = v.viewproj * Vec4{ m.m[12], m.m[13], m.m[14], 1.0f };
+            if (c.w <= 0.05f) continue;
+            float sx = v.pos.x + (c.x / c.w * 0.5f + 0.5f) * v.size.x;
+            float sy = v.pos.y + (0.5f - c.y / c.w * 0.5f) * v.size.y;
+            bool sel = scene.is_selected(o.id);
+            float r = fs * 0.85f;
+            dl->AddCircleFilled(ImVec2(sx, sy), r, sel ? pal.accent : (pal.overlay & 0xE0FFFFFFu), 20);
+            dl->AddCircle(ImVec2(sx, sy), r, pal.border, 20);
+            draw_icon(dl, object_icon(o), ImVec2(sx - fs * 0.5f, sy - fs * 0.5f), fs, sel ? IM_COL32(255, 255, 255, 255) : pal.text);
+            char key[32];
+            snprintf(key, sizeof(key), "vicon:%u", o.id);
+            track_rect(key, sx - r, sy - r, r * 2, r * 2);
+        }
+    }
 
     // Gizmo on the active object. It comes before the input area: ImGuizmo
     // only starts a drag when no other item is hovered, so the input area is
@@ -195,7 +485,10 @@ void Editor::panel_viewport() {
     bool gizmo_active = false;
     ImGuiIO& gio = ImGui::GetIO();
     Object* act = scene.get(scene.active());
-    if (act && tool != Tool::Select) {
+    // The collider's shape and its handles come first: a handle under the
+    // mouse wins over the gizmo.
+    if (!looking_through_camera && collider_overlay(v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y)) gizmo_active = true;
+    if (act && tool != Tool::Select && !gizmo_active) {
         ImGuizmo::SetDrawlist(dl);
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetRect(v.pos.x, v.pos.y, v.size.x, v.size.y);
@@ -469,7 +762,7 @@ void Editor::viewport_overlays(float x, float y, float w, float h) {
                 }
                 ImGui::Separator();
                 if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
-                if (menu_item("Reset view")) camera = Camera();
+                if (menu_item("Reset view")) camera = ViewCamera();
                 ImGui::EndPopup();
             }
             ImGui::EndChild();

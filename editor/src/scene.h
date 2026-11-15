@@ -6,7 +6,8 @@
 #pragma once
 
 #include "core/math.h"
-#include "script.h"
+#include "script/props.h"
+#include "scene/modules.h"
 #include <stdint.h>
 
 namespace fe {
@@ -27,6 +28,7 @@ struct MeshData {
 struct Object {
     ObjectId id = kNoObject;
     char name[64] = {};
+    ObjectKind kind = ObjectKind::Mesh;  // Mesh draws `mesh`; Camera, Sky ... carry their settings in `modules`
     ObjectId parent = kNoObject;    // kNoObject = at the root; the transform is relative to the parent
     bool expanded = true;           // children shown in the hierarchy
     Vec3 position;
@@ -35,9 +37,18 @@ struct Object {
     MeshKind mesh = MeshKind::Cube;
     char model_path[256] = {};      // MeshKind::Model: the .mof file
     char texture_path[256] = {};    // a texture dropped on the object
+    // Modules (Rigidbody 3D, Light, ...) and, for special objects, their
+    // settings (Camera, Sky, ...): see engine/scene/modules.h.
+    ModuleSet modules;
     ScriptSlot scripts[kMaxScripts];    // the scripts on the object, in the order they run
     int script_count = 0;
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);
+    // Material. Roughness, metal and shadows show with the GPU tier (PBR);
+    // unlit draws the plain color everywhere.
+    float roughness = 0.6f;
+    float metallic = 0.0f;
+    bool unlit = false;
+    bool cast_shadows = true;
     bool visible = true;
 
     Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
@@ -61,6 +72,9 @@ public:
     void keep_ids_above(ObjectId next) { if (next > next_id_) next_id_ = next; }
 
     ObjectId create(const char* name, MeshKind mesh);
+    // An empty object with a given id (loading a scene file); null when the
+    // id is 0 or taken. Later ids are handed out above it.
+    Object* create_with_id(ObjectId id);
     void remove(ObjectId id);           // with all its children
     void clear();
 
@@ -92,6 +106,27 @@ public:
     bool set_parent(ObjectId id, ObjectId parent);
     // True when one of the object's parents is selected (it moves with it).
     bool has_selected_ancestor(ObjectId id);
+
+    // ---- modules and special objects
+    // Adds a module (with its defaults) to an object; false when it has one
+    // of that kind already or `kind` is a special object's settings.
+    bool add_module(ObjectId id, ModuleKind kind);
+    void remove_module(ObjectId id, ModuleKind kind);
+    // Turns an object into a special object (Camera, Sky, ...) with default
+    // settings; it becomes the current one when its kind has no current yet.
+    void set_kind(ObjectId id, ObjectKind kind);
+    // The "current" flag: only one object per kind has it (the camera the
+    // game renders with, the active sky, the listener). Setting one clears
+    // the others. Kinds without the flag are ignored.
+    void set_current(ObjectId id, ModuleKind kind);
+    void clear_current(ObjectId id, ModuleKind kind);
+    bool is_current(ObjectId id, ModuleKind kind);
+    ObjectId current(ModuleKind kind);              // kNoObject when none
+    // Makes sure at most one object per kind is current (the one with the
+    // lowest position in the list wins); used after loading or pasting.
+    void fix_current();
+    // Settings of the current object of a kind, or nullptr.
+    void* current_data(ModuleKind kind);
 
     // ---- scripts. An object holds up to kMaxScripts; the same file may sit
     // on it more than once.

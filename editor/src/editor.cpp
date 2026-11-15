@@ -2,6 +2,11 @@
 #include "icons.h"
 #include "swraster.h"
 #include "platform/platform.h"
+#include "ecs/ecs.h"
+#include "physics/physics.h"
+#include "script/runtime.h"
+#include "audio/audio.h"
+#include "scene_io.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -53,6 +58,7 @@ static bool ext_is(const char* path, const char* const* list) {
 bool path_is_image(const char* p) { static const char* l[] = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", nullptr }; return ext_is(p, l); }
 bool path_is_model(const char* p) { static const char* l[] = { ".mof", ".gltf", ".glb", ".obj", nullptr }; return ext_is(p, l); }
 bool path_is_script(const char* p) { static const char* l[] = { ".lua", ".cpp", ".h", nullptr }; return ext_is(p, l); }
+bool path_is_scene(const char* p) { static const char* l[] = { ".fscene", nullptr }; return ext_is(p, l); }
 
 const char* Settings::program_for(const char* path) const {
     const char* ext = path_extension(path);
@@ -69,15 +75,15 @@ const char* Settings::program_for(const char* path) const {
 
 // ---------------------------------------------------------------- camera
 
-Vec3 Camera::eye() const {
+Vec3 ViewCamera::eye() const {
     float y = radians(yaw), p = radians(pitch);
     Vec3 dir(fcos(p) * fsin(y), fsin(p), fcos(p) * fcos(y));
     return target + dir * distance;
 }
 
-Mat4 Camera::view() const { return Mat4::look_at(eye(), target, Vec3(0, 1, 0)); }
+Mat4 ViewCamera::view() const { return Mat4::look_at(eye(), target, Vec3(0, 1, 0)); }
 
-Mat4 Camera::projection(float aspect) const { return Mat4::perspective(radians(fov), aspect, 0.1f, 500.0f); }
+Mat4 ViewCamera::projection(float aspect) const { return Mat4::perspective(radians(fov), aspect, 0.1f, 500.0f); }
 
 // ---------------------------------------------------------------- theme
 //
@@ -258,7 +264,7 @@ bool Editor::init(int width, int height) {
     apply_theme();
 
     // Default file editors: text files in MOSdesk's editor.
-    static const char* text_exts[] = { ".lua", ".txt", ".md", ".json", ".fescene", ".cfg", ".cpp", ".h" };
+    static const char* text_exts[] = { ".lua", ".txt", ".md", ".json", ".fscene", ".cfg", ".cpp", ".h" };
     for (const char* e : text_exts) {
         FileEditor& fe_ = settings.editors[settings.editor_count++];
         snprintf(fe_.extension, sizeof(fe_.extension), "%s", e);
@@ -278,7 +284,11 @@ void Editor::shutdown() {
     platform::shutdown();
 }
 
-Editor::~Editor() { delete play_backup_; }
+Editor::~Editor() {
+    free_world();
+    if (audio_device_) { audio_device_->shutdown(); delete audio_device_; }
+    delete play_backup_;
+}
 
 // ---------------------------------------------------------------- UI rects
 
@@ -379,6 +389,9 @@ ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, Ob
     memcpy(o->name, name, sizeof(name));
     o->parent = parent;
     if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    // Only one object per kind is current: the copy is not.
+    for (int k = 0; k < kModuleKindCount; k++)
+        if (o->modules.has((ModuleKind)k)) set_current_flag(module_info((ModuleKind)k), o->modules.data((ModuleKind)k), false);
     if (*pairs < 256) { from[*pairs] = src_id; to[*pairs] = id; (*pairs)++; }
     // The children, in their order (the list grows while copying).
     int n = scene.count();
@@ -402,18 +415,23 @@ int Editor::add_script(ObjectId id, const char* path) {
     return i;
 }
 
+char* Editor::read_script_text(const char* path, size_t* size) {
+    char* text = (char*)platform::read_file(path, size);
+    if (!text && project_dir[0] && path[0] != '/') {
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", project_dir, path);
+        text = (char*)platform::read_file(full, size);
+    }
+    return text;
+}
+
 bool Editor::reload_script(ObjectId id, int index) {
     Object* o = scene.get(id);
     if (!o || index < 0 || index >= o->script_count) return false;
     ScriptSlot& slot = o->scripts[index];
     // Paths from the Files panel are full; others are relative to the project.
     size_t size = 0;
-    char* text = (char*)platform::read_file(slot.path, &size);
-    if (!text && project_dir[0] && slot.path[0] != '/') {
-        char full[600];
-        snprintf(full, sizeof(full), "%s/%s", project_dir, slot.path);
-        text = (char*)platform::read_file(full, &size);
-    }
+    char* text = read_script_text(slot.path, &size);
     if (!text) {
         if (!slot.missing) log(LogLevel::Warning, "%s: cannot read %s; its inputs keep their values", o->name, slot.path);
         slot.missing = true;
@@ -467,6 +485,65 @@ ObjectId Editor::create_child(const char* name, MeshKind mesh, ObjectId parent) 
     return id;
 }
 
+ObjectId Editor::create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent) {
+    ObjectId id = create_object(name, MeshKind::Cube, at);
+    scene.set_kind(id, kind);
+    if (Object* o = scene.get(id)) {
+        if (parent && scene.get(parent)) {
+            o->parent = parent;
+            o->position = Vec3(0, 1, 0);
+            scene.get(parent)->expanded = true;
+        }
+        if (kind == ObjectKind::Camera) {
+            // Looking at the middle of the scene from where the view is.
+            o->rotation = Quat::euler_deg(Vec3(-15, 0, 0));
+        }
+        ModuleKind k = settings_of(kind);
+        if (k != ModuleKind::Count && module_info(k).has_current)
+            log(LogLevel::Info, "%s created%s", o->name, scene.is_current(id, k) ? " (current)" : "");
+    }
+    return id;
+}
+
+ObjectId Editor::create_light(LightType type, const Vec3& at, ObjectId parent) {
+    static const char* names[] = { "Directional Light", "Point Light", "Spot Light" };
+    ObjectId id = create_kind(names[(int)type], ObjectKind::Empty, at, parent);
+    scene.add_module(id, ModuleKind::Light);
+    if (Object* o = scene.get(id)) {
+        o->modules.light.type = type;
+        // Directional and spot lights point down (along their -Z, tipped over).
+        if (type != LightType::Point) o->rotation = Quat::euler_deg(Vec3(type == LightType::Directional ? -50.0f : -90.0f, 30.0f, 0));
+        if (type == LightType::Directional) o->modules.light.intensity = 2.0f;
+    }
+    return id;
+}
+
+void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
+    Vec3 ground(at.x, 0.5f, at.z), flat(at.x, 0, at.z);
+    auto mesh = [&](const char* name, MeshKind k, const Vec3& p) {
+        if (!menu_item(name)) return;
+        if (parent) create_child(name, k, parent);
+        else create_object(name, k, p);
+    };
+    mesh("Cube", MeshKind::Cube, ground);
+    mesh("Sphere", MeshKind::Sphere, ground);
+    mesh("Cylinder", MeshKind::Cylinder, ground);
+    mesh("Plane", MeshKind::Plane, flat);
+    if (menu_item("Empty")) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Light")) {
+        if (menu_item("Directional Light")) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
+        if (menu_item("Point Light")) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
+        if (menu_item("Spot Light")) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
+        ImGui::EndMenu();
+    }
+    if (menu_item("Camera")) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
+    ImGui::Separator();
+    if (menu_item("Sky")) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky Light")) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Post Processing")) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+}
+
 void Editor::frame_selection() {
     if (!scene.selected_count()) return;
     Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
@@ -501,12 +578,208 @@ void Editor::play() {
     play_backup_ = new Scene();
     play_backup_->copy_from(scene);
     play_time = 0.0;
-    log(LogLevel::Info, "Play: the scene is saved and comes back on Stop. Scripts do not run yet (they need the Lua runtime).");
+    build_world();
+    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", world_count_, script_count_, script_count_ == 1 ? "" : "s");
+}
+
+void Editor::build_world() {
+    free_world();
+    world_ = new World();
+    if (!world_->init()) {
+        log(LogLevel::Error, "Play: the ECS world could not start");
+        free_world();
+        return;
+    }
+    int n = scene.count();
+    world_objects_ = (ObjectId*)malloc(sizeof(ObjectId) * (n ? n : 1));
+    world_entities_ = (uint64_t*)malloc(sizeof(uint64_t) * (n ? n : 1));
+    world_count_ = 0;
+    // All at the root first (a child can come before its parent in the
+    // list), then the parents.
+    for (int i = 0; i < n; i++) {
+        Object& o = scene.at(i);
+        Entity e = world_->create(o.name);
+        if (!e) e = world_->create(nullptr);    // a name taken by a sibling, or reserved
+        if (!e) continue;
+        Transform* t = world_->transform(e);
+        t->position = o.position;
+        t->rotation = o.rotation;
+        t->scale = o.scale;
+        world_->load(e, o.modules);
+        if (o.kind == ObjectKind::Mesh) {
+            Renderable* r = world_->add_renderable(e);
+            r->mesh = (uint8_t)o.mesh;
+            memcpy(r->model_path, o.model_path, sizeof(r->model_path));
+            r->color = o.color;
+            r->visible = o.visible;
+        }
+        world_objects_[world_count_] = o.id;
+        world_entities_[world_count_] = e;
+        world_count_++;
+    }
+    for (int i = 0; i < world_count_; i++) {
+        Object* o = scene.get(world_objects_[i]);
+        if (o && o->parent) {
+            Entity pe = entity_of(o->parent);
+            if (pe && !world_->set_parent(world_entities_[i], pe)) {
+                // A sibling has the same name: flecs names are unique per parent.
+                world_->set_name(world_entities_[i], nullptr);
+                world_->set_parent(world_entities_[i], pe);
+            }
+        }
+    }
+    // The current flags as the scene has them.
+    for (int k = 0; k < kModuleKindCount; k++) {
+        ObjectId c = scene.current((ModuleKind)k);
+        if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
+    }
+    world_->update_transforms();
+    // Scripts (Lua): one instance per script on each object, in Inspector
+    // order; object inputs become the linked objects' entities.
+    scripts_ = new ScriptRuntime();
+    ScriptHost host;
+    host.user = this;
+    host.log = [](ScriptLogLevel level, const char* text, void* u) {
+        LogLevel l = level == ScriptLogLevel::Error ? LogLevel::Error : (level == ScriptLogLevel::Warning ? LogLevel::Warning : LogLevel::Info);
+        ((Editor*)u)->log(l, "%s", text);
+    };
+    script_count_ = 0;
+    if (scripts_->init(world_, host)) {
+        for (int i = 0; i < world_count_; i++) {
+            Object* o = scene.get(world_objects_[i]);
+            if (!o) continue;
+            for (int s = 0; s < o->script_count; s++) {
+                ScriptSlot& sl = o->scripts[s];
+                size_t size = 0;
+                char* text = read_script_text(sl.path, &size);
+                if (!text) { log(LogLevel::Error, "%s: cannot read %s", o->name, sl.path); continue; }
+                Entity links[kMaxProps] = {};
+                for (int k = 0; k < sl.prop_count; k++)
+                    if (sl.props[k].type == PropType::Object) links[k] = entity_of(sl.props[k].object);
+                if (scripts_->add_instance(world_entities_[i], sl.path, text, (uint32_t)size, sl.props, sl.prop_count, links)) script_count_++;
+                free(text);
+            }
+        }
+    } else {
+        log(LogLevel::Error, "Play: the Lua runtime could not start");
+    }
+    // Audio: Audio Streams with "play on start" begin now; samplers play
+    // when scripts call obj.audio_sampler:play(). The device stays open
+    // between plays.
+    if (!audio_device_) {
+        audio_device_ = new AudioDevice();
+        if (!audio_device_->init()) log(LogLevel::Warning, "Audio: no device (sound is mixed but not heard)");
+    }
+    audio_ = new AudioSystem();
+    AudioHost ah;
+    ah.user = this;
+    ah.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
+    ah.log = [](const char* line, void* u) { ((Editor*)u)->log(LogLevel::Warning, "Audio: %s", line); };
+    if (audio_->init(world_, audio_device_, ah)) {
+        audio_->restart();
+        audio_->clear_cache();      // the files may have changed since the last Play
+        if (scripts_) {
+            ScriptRuntime* rt = scripts_;
+            rt->add_module_method(ModuleKind::AudioSampler, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_sampler(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_stream(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "stop", [](Entity e, void* u) { ((AudioSystem*)u)->stop_stream(e); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "pause", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, true); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "resume", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, false); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioSampler, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
+        }
+    } else {
+        log(LogLevel::Error, "Play: the audio system could not start");
+    }
+    // Physics on the bodies and colliders (the built-in step, see physics.h).
+    physics_ = new PhysicsWorld();
+    PhysicsEvents pe;
+    pe.user = this;
+    pe.trigger_enter = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("entered", t, o); };
+    pe.trigger_exit = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("left", t, o); };
+    pe.collision = [](Entity a, Entity b, void* u) { ((Editor*)u)->physics_event("hit", a, b); };
+    physics_->init(world_, pe);
+    for (int i = 0; i < world_count_; i++) {
+        physics_->add(world_entities_[i]);
+        // A Mesh collider is the convex hull of its object's mesh.
+        Object* o = scene.get(world_objects_[i]);
+        if (o && o->kind == ObjectKind::Mesh && o->modules.has(ModuleKind::Collider3D) && o->modules.collider3d.shape == ColliderShape::Mesh) {
+            const MeshData& md = Scene::mesh_for(*o);
+            physics_->set_mesh(world_entities_[i], md.positions, (int)md.vertex_count);
+        }
+    }
+}
+
+ObjectId Editor::object_of(uint64_t e) const {
+    for (int i = 0; i < world_count_; i++)
+        if (world_entities_[i] == e) return world_objects_[i];
+    return kNoObject;
+}
+
+void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
+    physics_event_count++;
+    // Scripts get them as on_trigger_enter / on_trigger_exit / on_collision.
+    if (scripts_) {
+        if (what[0] == 'e') scripts_->trigger_enter(a, b);
+        else if (what[0] == 'l') scripts_->trigger_exit(a, b);
+        else scripts_->collision(a, b);
+    }
+    if (on_physics_event) { on_physics_event(this, what, a, b); return; }
+    Object* oa = scene.get(object_of(a));
+    Object* ob = scene.get(object_of(b));
+    if (!oa || !ob) return;
+    // "Ball entered Zone" / "Ball hit Crate"
+    if (what[0] == 'h') log(LogLevel::Info, "Physics: %s hit %s", oa->name, ob->name);
+    else log(LogLevel::Info, "Physics: %s %s trigger %s", ob->name, what, oa->name);
+}
+
+uint64_t Editor::entity_of(ObjectId id) const {
+    if (!id) return 0;
+    for (int i = 0; i < world_count_; i++)
+        if (world_objects_[i] == id) return world_entities_[i];
+    return 0;
+}
+
+void Editor::step_world(float dt) {
+    if (!world_) return;
+    world_->progress(dt);
+    // Transforms and current flags back into the scene, for the viewport
+    // and the Inspector.
+    for (int i = 0; i < world_count_; i++) {
+        Object* o = scene.get(world_objects_[i]);
+        Entity e = world_entities_[i];
+        if (!o || !world_->alive(e)) continue;
+        if (const Transform* t = world_->transform(e)) {
+            o->position = t->position;
+            o->rotation = t->rotation;
+            o->scale = t->scale;
+        }
+        // Modules too: scripts and physics change them (a light's
+        // intensity, a body's velocity, which camera is current).
+        world_->store(e, &o->modules);
+    }
+}
+
+void Editor::free_world() {
+    if (audio_) { audio_->shutdown(); delete audio_; }
+    audio_ = nullptr;
+    if (scripts_) { scripts_->shutdown(); delete scripts_; }
+    scripts_ = nullptr;
+    if (physics_) { physics_->shutdown(); delete physics_; }
+    physics_ = nullptr;
+    if (world_) { world_->shutdown(); delete world_; }
+    world_ = nullptr;
+    free(world_objects_);
+    free(world_entities_);
+    world_objects_ = nullptr;
+    world_entities_ = nullptr;
+    world_count_ = 0;
 }
 
 void Editor::stop() {
     if (!playing()) return;
     ObjectId next = scene.next_id();
+    free_world();
     scene.copy_from(*play_backup_);
     scene.keep_ids_above(next);         // objects made while playing keep their ids retired
     delete play_backup_;
@@ -514,7 +787,102 @@ void Editor::stop() {
     log(LogLevel::Info, "Stop: scene restored (%.1f s of play)", play_time);
 }
 
+void Editor::project_path(const char* path, char* out, size_t cap) const {
+    // Full paths: "/..." on the host, "0:/..." (a drive) on Minimal-OS.
+    const char* colon = strchr(path, ':');
+    bool full = path[0] == '/' || (colon && colon[1] == '/' && !memchr(path, '/', (size_t)(colon - path)));
+    // Paths from the Files panel already start with the project folder.
+    size_t pl = strlen(project_dir);
+    bool in_project = pl && strncmp(path, project_dir, pl) == 0 && path[pl] == '/';
+    if (full || in_project || !project_dir[0]) snprintf(out, cap, "%s", path);
+    else snprintf(out, cap, "%s/%s", project_dir, path);
+}
+
+bool Editor::save_scene(const char* path) {
+    char full[512];
+    if (path && *path) project_path(path, full, sizeof full);
+    else if (scene_path[0]) snprintf(full, sizeof full, "%s", scene_path);
+    else project_path("scenes/main.fscene", full, sizeof full);
+    // The folder it goes in (scenes/) is made when missing.
+    if (const char* slash = strrchr(full, '/')) {
+        char dir[512];
+        snprintf(dir, sizeof dir, "%.*s", (int)(slash - full), full);
+        if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
+    }
+    Scene& src = playing() ? *play_backup_ : scene;
+    size_t size = 0;
+    char* text = save_scene_text(src, project_dir, &size);
+    if (!text) { log(LogLevel::Error, "Save: out of memory"); return false; }
+    bool ok = platform::write_file(full, text, size);
+    free(text);
+    if (!ok) { log(LogLevel::Error, "Could not write %s", full); return false; }
+    snprintf(scene_path, sizeof scene_path, "%s", full);
+    log(LogLevel::Info, "Saved %s (%d object%s)%s", path_filename(full), src.count(), src.count() == 1 ? "" : "s",
+        playing() ? ", as it was before Play" : "");
+    return true;
+}
+
+bool Editor::open_scene(const char* path) {
+    char full[512];
+    project_path(path, full, sizeof full);
+    size_t size = 0;
+    char* text = (char*)platform::read_file(full, &size);
+    if (!text) { log(LogLevel::Error, "Could not read %s", full); return false; }
+    Scene loaded;
+    SceneLoadReport rep;
+    bool ok = load_scene_text(loaded, text, size, &rep);
+    free(text);
+    if (!ok) { log(LogLevel::Error, "%s: %s", path_filename(full), rep.error); return false; }
+    stop();
+    ObjectId next = scene.next_id();
+    scene.copy_from(loaded);
+    scene.keep_ids_above(next);         // ids are never handed out twice in a session
+    scene.clear_selection();
+    edit_collider = false;
+    int failed = reload_all_scripts();  // inputs follow the files; saved values stay
+    snprintf(scene_path, sizeof scene_path, "%s", full);
+    log(LogLevel::Info, "Opened %s (%d object%s)", path_filename(full), rep.objects, rep.objects == 1 ? "" : "s");
+    if (rep.skipped) log(LogLevel::Warning, "%s: %d line%s skipped (first: line %d)", path_filename(full), rep.skipped, rep.skipped == 1 ? "" : "s", rep.first_bad_line);
+    if (failed) log(LogLevel::Warning, "%d script%s could not be read", failed, failed == 1 ? "" : "s");
+    return true;
+}
+
+void Editor::new_scene() {
+    stop();
+    scene.clear();
+    edit_collider = false;
+    scene_path[0] = 0;
+    log(LogLevel::Info, "New scene");
+}
+
+// File > Save scene as...: a name, saved under scenes/ in the project.
+void Editor::save_as_popup() {
+    if (want_save_as_) { ImGui::OpenPopup("Save scene as"); want_save_as_ = false; }
+    ImGui::SetNextWindowSize(ImVec2(360 * settings.ui_scale, 0));
+    if (!ImGui::BeginPopupModal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
+    ImGui::TextUnformatted("Name (saved in scenes/ as .fscene)");
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1);
+    bool enter = ImGui::InputText("##save_as_name", save_as_name, sizeof save_as_name, ImGuiInputTextFlags_EnterReturnsTrue);
+    track("save_as:name");
+    bool valid = save_as_name[0] != 0 && !strchr(save_as_name, '/');
+    ImGui::BeginDisabled(!valid);
+    bool save = ImGui::Button("Save") || (enter && valid);
+    track("save_as:save");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (save) {
+        char rel[128];
+        snprintf(rel, sizeof rel, "scenes/%s%s", save_as_name, path_is_scene(save_as_name) ? "" : ".fscene");
+        save_scene(rel);
+    }
+    if (save || cancel) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void Editor::open_file(const char* path) {
+    if (path_is_scene(path)) { open_scene(path); return; }
     const char* program = settings.program_for(path);
     if (!program || !*program) {
         log(LogLevel::Warning, "No editor set for %s files (Settings > File editors)", path_extension(path));
@@ -611,19 +979,50 @@ bool Editor::frame() {
         }
     }
     io.DisplaySize = ImVec2((float)platform::width(), (float)platform::height());
-    if (playing()) play_time += io.DeltaTime;
+    if (playing()) {
+        play_time += io.DeltaTime;
+        step_world(io.DeltaTime);
+    }
 
     ui_rect_count = 0;
+    double t_build = platform::time_seconds();
+    uint32_t renders_before = view_renders;
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
     build_ui();
     ImGui::Render();
+    double t_raster = platform::time_seconds();
 
     static SwRenderer renderer;
+    renderer.set_verify(verify_damage);
     Framebuffer& fb = platform::framebuffer();
-    SwRenderer::clear(fb, settings.dark_theme ? 0x101215 : 0xD9DCE1);
-    renderer.render(ImGui::GetDrawData(), fb);
-    platform::present();
+    SwRect damage[SwRenderer::kMaxDamage];
+    int nd = renderer.render_incremental(ImGui::GetDrawData(), fb, settings.dark_theme ? 0x101215 : 0xD9DCE1, damage);
+    damage_mismatches = renderer.verify_mismatches();
+    raster_stats = renderer.stats();
+    double t_present = platform::time_seconds();
+    if (nd > 0) {
+        // Rectangles close together go to the screen as one.
+        SwRect all;
+        int64_t sum = 0;
+        for (int i = 0; i < nd; i++) {
+            all = all.empty() ? damage[i] : SwRect{ damage[i].x0 < all.x0 ? damage[i].x0 : all.x0, damage[i].y0 < all.y0 ? damage[i].y0 : all.y0,
+                                                    damage[i].x1 > all.x1 ? damage[i].x1 : all.x1, damage[i].y1 > all.y1 ? damage[i].y1 : all.y1 };
+            sum += damage[i].area();
+        }
+        if (nd == 1 || sum * 3 > all.area() * 2) platform::present_region(all.x0, all.y0, all.x1 - all.x0, all.y1 - all.y0);
+        else for (int i = 0; i < nd; i++) platform::present_region(damage[i].x0, damage[i].y0, damage[i].x1 - damage[i].x0, damage[i].y1 - damage[i].y0);
+        perf.drawn++;
+    } else {
+        perf.skipped++;
+    }
+    last_frame_idle = nd == 0;
+    double t_end = platform::time_seconds();
+    perf.build += (t_raster - t_build) * 1000.0;
+    perf.raster += (t_present - t_raster) * 1000.0;
+    perf.present += (t_end - t_present) * 1000.0;
+    if (view_renders != renders_before) { perf.view += view_ms; perf.view_renders++; }
+    perf.frames++;
     return !quit;
 }
 
@@ -631,6 +1030,7 @@ bool Editor::frame() {
 
 void Editor::build_ui() {
     main_menu();
+    save_as_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -680,10 +1080,17 @@ void Editor::main_menu() {
     ImGui::Dummy(ImVec2(ls + 8, 1));
     ImGui::SameLine();
 
-    if (ImGui::BeginMenu("File")) {
-        if (menu_item("New scene")) { scene.clear(); log(LogLevel::Info, "New scene"); }
+    bool file_menu = ImGui::BeginMenu("File");
+    track("menubar:File");
+    if (file_menu) {
+        if (menu_item("New scene")) new_scene();
         menu_item("Open project...", nullptr, false, false);
-        menu_item("Save", "Ctrl+S", false, false);
+        if (menu_item("Save scene", "Ctrl+S")) save_scene();
+        if (menu_item("Save scene as...")) {
+            const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fscene";
+            snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 7 : 0)), cur);
+            want_save_as_ = true;
+        }
         ImGui::Separator();
         menu_item("Export game...", nullptr, false, false);
         ImGui::Separator();
@@ -701,12 +1108,7 @@ void Editor::main_menu() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Create")) {
-        Vec3 at = camera.target;
-        at.y = 0.5f;
-        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, at);
-        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, at);
-        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, at);
-        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
+        create_menu_items(kNoObject, camera.target);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -726,7 +1128,11 @@ void Editor::main_menu() {
     {
         const char* name = path_filename(project_dir);
         char title[160];
-        snprintf(title, sizeof(title), "%s", *name ? name : "No project");
+        // "project · scene" (the scene file without .fscene).
+        const char* sn = scene_path[0] ? path_filename(scene_path) : "";
+        int sl = (int)strlen(sn) - (path_is_scene(sn) ? 7 : 0);
+        if (sl > 0) snprintf(title, sizeof(title), "%s  \xC2\xB7  %.*s", *name ? name : "No project", sl, sn);
+        else snprintf(title, sizeof(title), "%s", *name ? name : "No project");
         float tw = ImGui::CalcTextSize(title).x;
         float x = (bar->Size.x - tw) * 0.5f;
         if (x > ImGui::GetCursorPosX() + 20) {
@@ -748,7 +1154,7 @@ void Editor::run_controls() {
     float bar_h = bar->Size.y;
     float bs = ImGui::GetFrameHeight();
     char chip_label[64];
-    snprintf(chip_label, sizeof(chip_label), "CPU preview  %.1f ms", view_ms);
+    snprintf(chip_label, sizeof(chip_label), "%s  %.1f ms", view_renderer == ViewRenderer::FarcadeGL ? "FarcadeGL" : "CPU preview", view_ms);
     float chip_w = ImGui::CalcTextSize("CPU preview  000.0 ms").x + bs + 14;
     float group_w = bs * 2 + 8;
     float total = group_w + 10 + chip_w + 6 + bs + 8;
@@ -791,7 +1197,16 @@ void Editor::run_controls() {
     ImGui::SetNextWindowPos(ImVec2(cp.x + chip_w, cp.y + bs + 4), ImGuiCond_Always, ImVec2(1, 0));
     if (ImGui::BeginPopup("##renderer_popup")) {
         heading("Viewport renderer");
-        ImGui::TextDisabled("CPU preview: a stand-in until the FarcadeGL renderer");
+        if (ImGui::RadioButton("CPU preview", view_renderer == ViewRenderer::CpuPreview)) view_renderer = ViewRenderer::CpuPreview;
+        track("menu:CPU preview");
+        ImGui::SameLine();
+        ImGui::TextDisabled("grid, outline, shadows");
+        if (ImGui::RadioButton("FarcadeGL", view_renderer == ViewRenderer::FarcadeGL)) view_renderer = ViewRenderer::FarcadeGL;
+        track("menu:FarcadeGL");
+        ImGui::SameLine();
+        ImGui::TextDisabled("lights, sky, post processing");
+        ImGui::Checkbox("Play through the current camera", &settings.play_through_camera);
+        track("menu:Play camera");
         ImGui::Separator();
         ImGui::TextDisabled("Display");
         if (ImGui::RadioButton("Lit", view_mode == ViewMode::Lit)) view_mode = ViewMode::Lit;
@@ -912,6 +1327,7 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) frame_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) delete_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selection();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) save_scene();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
 }

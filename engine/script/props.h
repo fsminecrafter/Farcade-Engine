@@ -22,7 +22,7 @@
 
 namespace fe {
 
-typedef uint32_t ObjectId;
+typedef uint32_t ObjectId;      // an object in the scene document (the editor's id)
 
 enum class PropType : uint8_t { Number, Text, Toggle, List, Object };
 

@@ -15,6 +15,39 @@ namespace fe {
 
 static const char* kFilePayload = "FE_FILE";   // drag-and-drop payload: a NUL-terminated path
 
+static Icon mesh_icon(MeshKind k);
+// The icon of an object: its kind, or for empties the module that says most.
+Icon object_icon(const Object& o) {
+    switch (o.kind) {
+        case ObjectKind::Camera: return Icon::Camera;
+        case ObjectKind::Sky: return Icon::Cloud;
+        case ObjectKind::SkyLight: return Icon::Sun;
+        case ObjectKind::PostProcess: return Icon::Wand;
+        case ObjectKind::Empty:
+            if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
+            if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
+            if (o.modules.has(ModuleKind::AudioListener)) return Icon::Ear;
+            return Icon::Empty;
+        default: return mesh_icon(o.mesh);
+    }
+}
+
+Icon module_icon(ModuleKind k) {
+    switch (k) {
+        case ModuleKind::RigidBody3D: return Icon::Body;
+        case ModuleKind::Collider3D: return Icon::Collider;
+        case ModuleKind::AudioListener: return Icon::Ear;
+        case ModuleKind::AudioStream: return Icon::Wave;
+        case ModuleKind::AudioSampler: return Icon::Speaker;
+        case ModuleKind::Light: return Icon::Bulb;
+        case ModuleKind::Camera: return Icon::Camera;
+        case ModuleKind::SkyLight: return Icon::Sun;
+        case ModuleKind::Sky: return Icon::Cloud;
+        case ModuleKind::PostProcess: return Icon::Wand;
+        default: return Icon::File;
+    }
+}
+
 static Icon mesh_icon(MeshKind k) {
     switch (k) {
         case MeshKind::Sphere: return Icon::Sphere;
@@ -65,11 +98,7 @@ void Editor::panel_hierarchy() {
     if (icon_button(Icon::Plus, "Add an object", false, bs)) ImGui::OpenPopup("##add");
     track("hier:add");
     if (ImGui::BeginPopup("##add")) {
-        Vec3 at = camera.target;
-        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, Vec3(at.x, 0.5f, at.z));
-        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, Vec3(at.x, 0.5f, at.z));
-        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, Vec3(at.x, 0.5f, at.z));
-        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(at.x, 0, at.z));
+        create_menu_items(kNoObject, camera.target);
         ImGui::EndPopup();
     }
     ImGui::Dummy(ImVec2(0, 2));
@@ -177,7 +206,7 @@ void Editor::panel_hierarchy() {
         if (ImGui::BeginDragDropSource()) {
             ObjectId id = o.id;
             ImGui::SetDragDropPayload(kObjectPayload, &id, sizeof(id));
-            draw_icon(ImGui::GetWindowDrawList(), mesh_icon(o.mesh), ImGui::GetCursorScreenPos(), fs, pal.accent_text);
+            draw_icon(ImGui::GetWindowDrawList(), object_icon(o), ImGui::GetCursorScreenPos(), fs, pal.accent_text);
             ImGui::Dummy(ImVec2(fs + 4, fs));
             ImGui::SameLine();
             ImGui::TextUnformatted(o.name);
@@ -194,10 +223,7 @@ void Editor::panel_hierarchy() {
             if (menu_item("Duplicate", "Ctrl+D")) duplicate_selection();
             if (menu_item(o.visible ? "Hide" : "Show")) o.visible = !o.visible;
             if (ImGui::BeginMenu("Add child")) {
-                if (menu_item("Cube")) create_child("Cube", MeshKind::Cube, o.id);
-                if (menu_item("Sphere")) create_child("Sphere", MeshKind::Sphere, o.id);
-                if (menu_item("Cylinder")) create_child("Cylinder", MeshKind::Cylinder, o.id);
-                if (menu_item("Plane")) create_child("Plane", MeshKind::Plane, o.id);
+                create_menu_items(o.id, Vec3(0, 0, 0));
                 ImGui::EndMenu();
             }
             if (o.parent && menu_item("Move to the top")) scene.set_parent(o.id, kNoObject);
@@ -221,8 +247,19 @@ void Editor::panel_hierarchy() {
         float icon_x = x0 + fs + 2;
         bool shown = scene.visible_in_tree(o);
         ImU32 icol = sel ? pal.accent_text : (shown ? pal.text_dim : pal.text_faint);
-        draw_icon(dl, mesh_icon(o.mesh), ImVec2(icon_x, ty), fs, icol);
+        draw_icon(dl, object_icon(o), ImVec2(icon_x, ty), fs, icol);
         dl->AddText(ImVec2(icon_x + fs + 7, ty), shown ? pal.text : pal.text_faint, o.name);
+        // A star after the name of a current camera, sky, listener ...
+        {
+            bool cur = false;
+            for (int k = 0; k < kModuleKindCount && !cur; k++) cur = scene.is_current(o.id, (ModuleKind)k);
+            if (cur) {
+                float nx = icon_x + fs + 7 + ImGui::CalcTextSize(o.name).x + 6;
+                draw_icon(dl, Icon::Star, ImVec2(nx, ty + fs * 0.1f), fs * 0.8f, pal.warning);
+                snprintf(key, sizeof(key), "current:%u", o.id);
+                track_rect(key, nx, ty, fs * 0.8f, fs * 0.8f);
+            }
+        }
         // Fold arrow for objects with children.
         if (kids) {
             ImGui::SameLine(0, 0);
@@ -269,10 +306,7 @@ void Editor::panel_hierarchy() {
     }
     if (ImGui::BeginPopupContextItem("##create")) {
         ImGui::TextDisabled("Add");
-        if (menu_item("Cube")) create_object("Cube", MeshKind::Cube, Vec3(0, 0.5f, 0));
-        if (menu_item("Sphere")) create_object("Sphere", MeshKind::Sphere, Vec3(0, 0.5f, 0));
-        if (menu_item("Cylinder")) create_object("Cylinder", MeshKind::Cylinder, Vec3(0, 0.5f, 0));
-        if (menu_item("Plane")) create_object("Plane", MeshKind::Plane, Vec3(0, 0, 0));
+        create_menu_items(kNoObject, Vec3(0, 0, 0));
         ImGui::EndPopup();
     }
     ImGui::EndChild();
@@ -342,6 +376,236 @@ static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bo
         if (icon_button(Icon::Close, "Clear", false, bs)) path[0] = 0;
     }
     ImGui::PopID();
+}
+
+// Whether a field means something with the other settings as they are
+// (a spot angle only for spot lights, a radius only for round colliders).
+static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f) {
+    const char* n = f.name;
+    switch (kind) {
+        case ModuleKind::Light: {
+            const Light& l = *(const Light*)data;
+            if (!strcmp(n, "range")) return l.type != LightType::Directional;
+            if (!strcmp(n, "spot_angle") || !strcmp(n, "spot_blend")) return l.type == LightType::Spot;
+            return true;
+        }
+        case ModuleKind::Collider3D: {
+            const Collider3D& c = *(const Collider3D*)data;
+            if (!strcmp(n, "size")) return c.shape == ColliderShape::Box;
+            bool round = c.shape == ColliderShape::Capsule || c.shape == ColliderShape::Cylinder;
+            if (!strcmp(n, "radius")) return c.shape == ColliderShape::Sphere || round;
+            if (!strcmp(n, "height")) return round;
+            if (!strcmp(n, "friction") || !strcmp(n, "bounciness")) return c.mode == ColliderMode::Collision;
+            return true;
+        }
+        case ModuleKind::RigidBody3D: {
+            const RigidBody3D& b = *(const RigidBody3D*)data;
+            if (b.type == BodyType::Static) return !strcmp(n, "type");
+            if (!strcmp(n, "gravity_scale")) return b.use_gravity && b.type == BodyType::Dynamic;
+            return true;
+        }
+        case ModuleKind::Camera: {
+            const Camera& c = *(const Camera*)data;
+            if (!strcmp(n, "fov")) return c.projection == Projection::Perspective;
+            if (!strcmp(n, "ortho_size")) return c.projection == Projection::Orthographic;
+            return true;
+        }
+        case ModuleKind::Sky: {
+            const Sky& sk = *(const Sky*)data;
+            if (sk.mode == SkyMode::Color) return strcmp(n, "horizon") && strcmp(n, "ground") && strcmp(n, "sun_size");
+            return true;
+        }
+        case ModuleKind::AudioStream:
+        case ModuleKind::AudioSampler: {
+            bool spatial = kind == ModuleKind::AudioStream ? ((const AudioStream*)data)->spatial : ((const AudioSampler*)data)->spatial;
+            if (!strcmp(n, "min_distance") || !strcmp(n, "max_distance")) return spatial;
+            return true;
+        }
+        default: return true;
+    }
+}
+
+static bool path_any(const char*) { return true; }
+
+// One module (or a special object's settings): its fields, drawn from the
+// reflection table, and a remove button for modules.
+bool Editor::module_section(Object* o, ModuleKind kind) {
+    const Palette& pal = ui_palette();
+    const ModuleInfo& mi = module_info(kind);
+    void* data = o->modules.data(kind);
+    char title[96];
+    snprintf(title, sizeof(title), "%s##module%d", mi.label, (int)kind);
+    char key[64];
+    snprintf(key, sizeof(key), "module:%s", mi.name);
+    bool open = section_header(title, module_icon(kind));
+    track(key);
+    if (!open) return true;
+    ImGui::PushID(title);
+    float bs = ImGui::GetFrameHeight();
+    if (is_module(kind)) {
+        // Remove, at the right of a short description line.
+        static const char* about[] = {
+            "Physics: gravity, velocity, collisions.", "A shape that collides or triggers.", "Where the game hears from.",
+            "A long sound streamed from a file.", "Short sounds played on demand.", "Lights the scene.",
+        };
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(about[(int)kind]);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - bs);
+        if (icon_button(Icon::Trash, "Remove the module", false, bs)) {
+            log(LogLevel::Info, "%s: removed %s", o->name, mi.label);
+            scene.remove_module(o->id, kind);
+            ImGui::PopID();
+            return false;
+        }
+        snprintf(key, sizeof(key), "module:%s:remove", mi.name);
+        track(key);
+        if (kind == ModuleKind::Collider3D) {
+            // Shape the collider in the viewport by dragging handles.
+            prop_label("Edit shape");
+            toggle_switch("##edit_shape", &edit_collider);
+            track("module:collider3d:edit");
+            if (edit_collider) {
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("drag the dots");
+                ImGui::PopStyleColor();
+            }
+        }
+    }
+    for (int i = 0; i < mi.field_count; i++) {
+        const FieldInfo& f = mi.fields[i];
+        if (!field_relevant(kind, data, f)) continue;
+        void* fp = (char*)data + f.offset;
+        ImGui::PushID(i);
+        snprintf(key, sizeof(key), "module:%s:%s", mi.name, f.name);
+        bool tracked = false;
+        switch (f.type) {
+            case FieldType::Float: {
+                prop_label(f.label);
+                float* v = (float*)fp;
+                if (f.min < f.max && f.max - f.min <= 20.0f) ImGui::SliderFloat("##v", v, f.min, f.max, "%.2f");
+                else if (ImGui::DragFloat("##v", v, 0.05f, f.min, f.max, "%.2f", f.min < f.max ? ImGuiSliderFlags_AlwaysClamp : 0)) {}
+                break;
+            }
+            case FieldType::Int: {
+                prop_label(f.label);
+                int* v = (int*)fp;
+                if (f.min < f.max) ImGui::SliderInt("##v", v, (int)f.min, (int)f.max);
+                else ImGui::DragInt("##v", v);
+                break;
+            }
+            case FieldType::Bool: {
+                prop_label(f.label);
+                bool* v = (bool*)fp;
+                if (!strcmp(f.name, "current")) {
+                    // Only one current per kind: turning it on takes it from the others.
+                    bool on = *v;
+                    bool flipped = toggle_switch("##v", &on);
+                    track(key);
+                    tracked = true;
+                    if (flipped) {
+                        if (on) {
+                            ObjectId was = scene.current(kind);
+                            scene.set_current(o->id, kind);
+                            Object* w = scene.get(was);
+                            if (w && was != o->id) log(LogLevel::Info, "%s is now the current %s (was %s)", o->name, mi.label, w->name);
+                        } else {
+                            scene.clear_current(o->id, kind);
+                        }
+                    }
+                    if (!on) {
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                        ImGui::AlignTextToFramePadding();
+                        Object* c = scene.get(scene.current(kind));
+                        if (c) ImGui::Text("(now: %s)", c->name);
+                        else ImGui::TextUnformatted("(none)");
+                        ImGui::PopStyleColor();
+                    }
+                } else {
+                    toggle_switch("##v", v);
+                }
+                break;
+            }
+            case FieldType::Enum: {
+                prop_label(f.label);
+                uint8_t* v = (uint8_t*)fp;
+                int count = 0;
+                while (f.enum_names[count]) count++;
+                int cur = *v < count ? *v : 0;
+                if (ImGui::Combo("##v", &cur, f.enum_names, count)) *v = (uint8_t)cur;
+                break;
+            }
+            case FieldType::Color:
+                prop_label(f.label);
+                ImGui::ColorEdit3("##v", (float*)fp, ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_DisplayHex);
+                break;
+            case FieldType::Vec3:
+                vec3_field(f.label, (Vec3*)fp, 0.05f, "%.2f");
+                break;
+            case FieldType::Path:
+                slot_field(f.label, (char*)fp, kPathMax, this, path_any, Icon::Wave);
+                break;
+            case FieldType::Bits: {
+                prop_label(f.label);
+                ImGui::InputScalar("##v", ImGuiDataType_U32, fp, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
+                break;
+            }
+        }
+        if (!tracked) track(key);
+        ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PopID();
+    return true;
+}
+
+// "Add module": a menu of the modules the object does not have yet.
+void Editor::add_module_button(Object* o) {
+    const Palette& pal = ui_palette();
+    float bs = ImGui::GetFrameHeight();
+    ImGui::Dummy(ImVec2(0, 2));
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    bool clicked = ImGui::InvisibleButton("##add_module", ImVec2(w, bs + 4));
+    bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + bs + 4), pal.hover, 4.0f);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + bs + 4), hov ? pal.text_faint : pal.border, 4.0f, 0, 1.0f);
+    float fs = ImGui::GetFontSize();
+    const char* label = "Add module";
+    float tw = ImGui::CalcTextSize(label).x;
+    float x = p.x + (w - tw - fs - 6) * 0.5f;
+    draw_icon(dl, Icon::Plus, ImVec2(x, p.y + (bs + 4 - fs) * 0.5f), fs, pal.accent_text);
+    dl->AddText(ImVec2(x + fs + 6, p.y + (bs + 4 - fs) * 0.5f), pal.text_dim, label);
+    track("inspector:add_module");
+    if (clicked) ImGui::OpenPopup("##add_module_menu");
+    if (ImGui::BeginPopup("##add_module_menu")) {
+        static const char* groups[] = { "Physics", nullptr, "Audio", nullptr, nullptr, "Rendering" };
+        for (int k = 0; k < kFirstObjectSettings; k++) {
+            ModuleKind mk = (ModuleKind)k;
+            if (groups[k]) { if (k) ImGui::Separator(); ImGui::TextDisabled("%s", groups[k]); }
+            const ModuleInfo& mi = module_info(mk);
+            bool have = o->modules.has(mk);
+            ImVec2 ip = ImGui::GetCursorScreenPos();
+            ImGui::BeginDisabled(have);
+            char item[64];
+            snprintf(item, sizeof(item), "      %s%s", mi.label, have ? "  (added)" : "");
+            if (ImGui::Selectable(item)) {
+                scene.add_module(o->id, mk);
+                log(LogLevel::Info, "%s: added %s", o->name, mi.label);
+            }
+            ImGui::EndDisabled();
+            draw_icon(ImGui::GetWindowDrawList(), module_icon(mk), ImVec2(ip.x + 2, ip.y + 1), fs * 0.95f, have ? pal.text_faint : pal.accent_text);
+            char k2[64];
+            snprintf(k2, sizeof(k2), "addmodule:%s", mi.name);
+            track(k2);
+        }
+        ImGui::EndPopup();
+    }
 }
 
 // One script on the object: its file, buttons, and the inputs it declares.
@@ -552,6 +816,92 @@ void Editor::add_script_button(Object* o) {
     }
 }
 
+// Settings > Graphics: FarcadeGL quality. The GPU effects run only when
+// FarcadeGL is on a graphics card, unless forced on the CPU.
+void Editor::settings_graphics() {
+    const Palette& pal = ui_palette();
+    gfx::GraphicsSettings& g = settings.graphics;
+    bool gpu = fgl_features.gpu;
+    ImGui::Dummy(ImVec2(0, 4));
+    auto faint = [&](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    if (section_header("Device", Icon::Monitor)) {
+        prop_label("FarcadeGL on");
+        ImGui::AlignTextToFramePadding();
+        if (fgl_backend[0]) ImGui::Text("%s  (%s)", fgl_backend, gpu ? "graphics card" : "CPU");
+        else ImGui::TextDisabled("not started yet: switch the viewport to FarcadeGL");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Quality", Icon::Sun)) {
+        static const char* presets[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+        int p = (int)g.preset;
+        prop_label("Preset");
+        if (ImGui::Combo("##preset", &p, presets, 5)) g.apply_preset((gfx::GraphicsPreset)p);
+        track("gfx:preset");
+        prop_label("Render scale");
+        ImGui::SliderFloat("##rscale", &g.render_scale, 0.25f, 1.0f, "%.2f");
+        faint("Fog is set on the Sky object.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("GPU effects", Icon::Wand)) {
+        bool active = gpu || g.allow_gpu_effects_on_cpu;
+        if (!gpu) {
+            faint("These run when FarcadeGL is on a graphics card (the kernel's NVIDIA backend, RTX 20 / GTX 16). "
+                  "This machine draws on the CPU, so they are off unless forced (slow).");
+            prop_label("Use on the CPU");
+            toggle_switch("##force", &g.allow_gpu_effects_on_cpu);
+            track("gfx:force");
+        }
+        ImGui::BeginDisabled(!active);
+        bool changed = false;
+        prop_label("Shadows");
+        changed |= toggle_switch("##shadows", &g.shadows);
+        track("gfx:shadows");
+        if (g.shadows) {
+            static const int sizes[] = { 512, 1024, 2048, 4096 };
+            static const char* size_names[] = { "512", "1024", "2048", "4096" };
+            int si = 0;
+            for (int i = 0; i < 4; i++) if (sizes[i] == g.shadow_resolution) si = i;
+            prop_label("  Resolution");
+            if (ImGui::Combo("##sres", &si, size_names, 4)) { g.shadow_resolution = sizes[si]; changed = true; }
+            prop_label("  Distance");
+            changed |= ImGui::SliderFloat("##sdist", &g.shadow_distance, 5.0f, 200.0f, "%.0f m");
+            prop_label("  Soft");
+            changed |= toggle_switch("##soft", &g.soft_shadows);
+        }
+        prop_label("Ambient occlusion");
+        changed |= toggle_switch("##ao", &g.ambient_occlusion);
+        track("gfx:ao");
+        if (g.ambient_occlusion) {
+            prop_label("  Radius");
+            changed |= ImGui::SliderFloat("##aor", &g.ao_radius, 0.1f, 2.0f, "%.2f m");
+            prop_label("  Strength");
+            changed |= ImGui::SliderFloat("##aos", &g.ao_strength, 0.0f, 2.0f, "%.2f");
+        }
+        prop_label("Bloom");
+        changed |= toggle_switch("##bloom", &g.bloom);
+        track("gfx:bloom");
+        prop_label("Antialiasing");
+        changed |= toggle_switch("##aa", &g.antialiasing);
+        track("gfx:aa");
+        prop_label("PBR shading");
+        changed |= toggle_switch("##pbr", &g.pbr);
+        track("gfx:pbr");
+        if (changed) g.preset = gfx::GraphicsPreset::Custom;
+        ImGui::EndDisabled();
+        if (fgl_backend[0]) {
+            char on[128];
+            snprintf(on, sizeof(on), "Running now: %s%s%s%s%s", fgl_features.shadows ? "shadows  " : "", fgl_features.ambient_occlusion ? "AO  " : "",
+                     fgl_features.bloom ? "bloom  " : "", fgl_features.antialiasing ? "AA  " : "", fgl_features.pbr ? "PBR" : "");
+            faint(fgl_features.gpu_tier ? on : "Running now: base tier only");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+}
+
 void Editor::panel_inspector() {
     ImGui::Begin("Inspector");
     int n = scene.selected_count();
@@ -586,7 +936,7 @@ void Editor::panel_inspector() {
         dl->AddRectFilled(p, ImVec2(p.x + big, p.y + big), tint, 6.0f);
         // The icon in the object's color, lifted on dark and deepened on light.
         float lift = settings.dark_theme ? 0.4f : 0.0f, keep = settings.dark_theme ? 0.6f : 0.75f;
-        draw_icon(dl, mesh_icon(o->mesh), ImVec2(p.x + big * 0.22f, p.y + big * 0.22f), big * 0.56f,
+        draw_icon(dl, object_icon(*o), ImVec2(p.x + big * 0.22f, p.y + big * 0.22f), big * 0.56f,
                   IM_COL32(ch(o->color.x * keep + lift), ch(o->color.y * keep + lift), ch(o->color.z * keep + lift), 255));
         ImGui::Dummy(ImVec2(big, big));
         ImGui::SameLine(0, 8);
@@ -598,8 +948,9 @@ void Editor::panel_inspector() {
         static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model" };
         ImGui::AlignTextToFramePadding();
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
-        if (n > 1) ImGui::Text("%s   #%u   +%d more selected", kinds[(int)o->mesh], o->id, n - 1);
-        else ImGui::Text("%s   #%u", kinds[(int)o->mesh], o->id);
+        const char* kind_text = o->kind == ObjectKind::Mesh ? kinds[(int)o->mesh] : object_kind_name(o->kind);
+        if (n > 1) ImGui::Text("%s   #%u   +%d more selected", kind_text, o->id, n - 1);
+        else ImGui::Text("%s   #%u", kind_text, o->id);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
     }
@@ -642,7 +993,10 @@ void Editor::panel_inspector() {
         if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
         ImGui::Dummy(ImVec2(0, 4));
     }
-    if (section_header("Mesh", Icon::Cube)) {
+    // A special object's own settings (Camera, Sky, ...) come right after
+    // the transform.
+    if (settings_of(o->kind) != ModuleKind::Count) module_section(o, settings_of(o->kind));
+    if (o->kind == ObjectKind::Mesh && section_header("Mesh", Icon::Cube)) {
         static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model (.mof)" };
         int k = (int)o->mesh;
         prop_label("Shape");
@@ -653,12 +1007,33 @@ void Editor::panel_inspector() {
         track("inspector:visible");
         ImGui::Dummy(ImVec2(0, 4));
     }
-    if (section_header("Look", Icon::Sun)) {
+    if (o->kind == ObjectKind::Mesh && section_header("Look", Icon::Sun)) {
         prop_label("Color");
         ImGui::ColorEdit3("##color", &o->color.x, ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_DisplayHex);
         slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image, Icon::Image);
+        prop_label("Roughness");
+        ImGui::SliderFloat("##roughness", &o->roughness, 0.0f, 1.0f, "%.2f");
+        track("inspector:roughness");
+        prop_label("Metal");
+        ImGui::SliderFloat("##metallic", &o->metallic, 0.0f, 1.0f, "%.2f");
+        track("inspector:metallic");
+        prop_label("Unlit");
+        toggle_switch("##unlit", &o->unlit);
+        track("inspector:unlit");
+        prop_label("Shadows");
+        toggle_switch("##cast_shadows", &o->cast_shadows);
+        track("inspector:cast_shadows");
+        if (!fgl_features.pbr && !o->unlit) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+            ImGui::TextWrapped("Roughness, metal and shadows show with FarcadeGL's GPU tier (Settings > Graphics).");
+            ImGui::PopStyleColor();
+        }
         ImGui::Dummy(ImVec2(0, 4));
     }
+    // ---- modules (Rigidbody 3D, Light, ...), then "Add module".
+    for (int k = 0; k < kFirstObjectSettings; k++)
+        if (o->modules.has((ModuleKind)k)) module_section(o, (ModuleKind)k);
+    add_module_button(o);
     // ---- scripts: one section each, in the order they run, then "Add script".
     for (int si = 0; si < o->script_count; si++) script_section(o, si);
     add_script_button(o);
@@ -716,6 +1091,7 @@ Icon file_icon(const platform::DirEntry& e) {
     if (path_is_image(e.name)) return Icon::Image;
     if (path_is_model(e.name)) return Icon::Model;
     if (path_is_script(e.name)) return Icon::Script;
+    if (path_is_scene(e.name)) return Icon::Layers;
     return Icon::File;
 }
 
@@ -724,6 +1100,7 @@ ImU32 file_color(const platform::DirEntry& e) {
     if (path_is_image(e.name)) return IM_COL32(120, 200, 140, 255);
     if (path_is_model(e.name)) return IM_COL32(110, 160, 255, 255);
     if (path_is_script(e.name)) return IM_COL32(200, 140, 230, 255);
+    if (path_is_scene(e.name)) return IM_COL32(240, 150, 90, 255);
     return ImGui::GetColorU32(ImGuiCol_TextDisabled);
 }
 }  // namespace
@@ -1002,10 +1379,14 @@ void Editor::window_settings() {
                 prop_label("Ground shadows");
                 toggle_switch("##shadows", &settings.view_shadows);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
-                ImGui::TextWrapped("The viewport is drawn on the CPU until the FarcadeGL renderer lands. While you drag the camera "
-                                   "or an object it draws without smoothing and shadows, and redraws in full when you let go.");
+                ImGui::TextWrapped("The CPU preview is the editor's own quick renderer (renderer menu, top right). While you drag "
+                                   "the camera or an object it draws without smoothing and shadows, and redraws in full when you let go.");
                 ImGui::PopStyleColor();
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Graphics")) {
+            settings_graphics();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("File editors")) {

@@ -7,11 +7,39 @@ on a PC (Linux) and tested there and in QEMU.
 The plan behind it is `docs/farcade-engine-plan.md` in the Minimal-OS
 repository.
 
+![The Farcade editor: scene tree, viewport with gizmo, inspector and files](docs/screenshots/editor-dark.png)
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Light theme](docs/screenshots/editor-light.png) | ![Modules on an object: Rigidbody 3D, Collider 3D, Audio Sampler](docs/screenshots/editor-modules.png) |
+| **Light theme**: the same scene; the parent/child tree in the Hierarchy | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
+| ![A camera object and its Current switch](docs/screenshots/editor-camera.png) | ![Play mode](docs/screenshots/editor-play.png) |
+| **Scene objects**: a camera with its Current switch; cameras, lights, sky, sky light and post processing in the tree (current ones starred) | **Play mode**: the scene is saved and comes back on Stop |
+| ![The viewport drawn by FarcadeGL](docs/screenshots/editor-farcadegl.png) | ![Play through the current camera, drawn by FarcadeGL](docs/screenshots/editor-farcadegl-play.png) |
+| **FarcadeGL** draws the viewport: the sun, the sky, the sky light and post processing (renderer menu, top right) | **Play** looks through the current camera (Main Camera) |
+| ![FarcadeGL base tier](docs/screenshots/gfx-low.png) | ![FarcadeGL GPU tier](docs/screenshots/gfx-ultra.png) |
+| **FarcadeGL, base tier** (runs everywhere, also on the CPU) | **GPU tier** (Ultra): sun shadows, ambient occlusion, bloom, PBR metals, FXAA, fog. On by default only on a graphics card |
+| ![Shaping a collider](docs/screenshots/editor-collider.png) | ![GPU tier in the editor](docs/screenshots/editor-farcadegl-ultra.png) |
+| **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
+| ![Material settings in the Inspector](docs/screenshots/editor-material.png) | |
+| **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fscene` | |
+
+![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
+
+*The editor running full screen on Minimal-OS (QEMU, 1024x768), with the
+entity system linked in.*
+
+The screenshots come from `build/host/bin/fe-editor-shot <dir>`, which
+renders the editor headless on the PC, and from `tools/ci/run_os.sh` with
+`SCREENDUMP` on Minimal-OS.
+
 ## Layout
 
 | Directory | What |
 |---|---|
-| `engine/` | the engine libraries (core, `.mof` models, ...) |
+| `engine/` | the engine libraries: core, `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`), Lua scripts (`script/`), physics (`physics/`) |
 | `editor/` | the editor (Dear ImGui, drawn by a software rasterizer) |
 | `runtime/minimalos/` | the small C/C++ runtime the engine needs on Minimal-OS |
 | `tools/` | PC tools (model converter, CI scripts) |
@@ -26,6 +54,25 @@ git submodule update --init
 make host      # Linux: tools, tests, headless editor
 make test      # run the host tests
 make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
+```
+
+## Rendering and the entity system
+
+- **Graphics settings** (Settings > Graphics, `engine/gfx/graphics_settings.h`, `docs/graphics.md`): presets Low to Ultra. The GPU tier (shadow maps with soft PCF, SSAO, bloom, FXAA, GGX PBR) runs only when FarcadeGL is on a graphics card, unless forced with "Use on the CPU".
+- **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows, AO and bloom are in the GPU tier (above).
+- **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
+- **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
+- **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box, sphere, capsule, cylinder and convex mesh collisions, rolling and tipping, bounce, friction, triggers), a stand-in for Jolt.
+- **Modules and scene objects**: `docs/modules.md`.
+- **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files.
+
+```sh
+build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene
+tools/ci/run_os.sh build/os/bin/gfx_smoke.run 'FE GFX PASS' 'FE GFX FAIL'
+tools/ci/run_os.sh build/os/bin/ecs_smoke.run 'FE ECS PASS' 'FE ECS FAIL'
+tools/ci/run_os.sh build/os/bin/script_smoke.run 'FE SCRIPT PASS' 'FE SCRIPT FAIL'
+ARGS=--play tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 181'
+ARGS=--farcadegl tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 121'
 ```
 
 ## Models: `.mof`

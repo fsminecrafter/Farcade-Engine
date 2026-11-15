@@ -1,4 +1,4 @@
-#include "script.h"
+#include "script/props.h"
 
 #include <string.h>
 

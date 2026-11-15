@@ -10,6 +10,7 @@
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,9 +42,12 @@ static void demo_scene(Editor& ed) {
     ObjectId sphere = ed.create_object("Ball", MeshKind::Sphere, Vec3(0.9f, 0.6f, -0.3f));
     ed.scene.get(sphere)->scale = Vec3(1.2f, 1.2f, 1.2f);
     ed.scene.get(sphere)->color = Vec3(0.35f, 0.62f, 0.95f);
+    ed.scene.get(sphere)->roughness = 0.25f;      // glossy
     ObjectId pillar = ed.create_object("Pillar", MeshKind::Cylinder, Vec3(2.6f, 1.0f, 1.6f));
     ed.scene.get(pillar)->scale = Vec3(0.6f, 2.0f, 0.6f);
     ed.scene.get(pillar)->color = Vec3(0.75f, 0.76f, 0.80f);
+    ed.scene.get(pillar)->metallic = 0.9f;        // brushed metal (GPU tier)
+    ed.scene.get(pillar)->roughness = 0.3f;
     ObjectId small = ed.create_object("Crate", MeshKind::Cube, Vec3(-2.4f, 0.3f, -1.6f));
     ed.scene.get(small)->scale = Vec3(0.6f, 0.6f, 0.6f);
     ed.scene.get(small)->color = Vec3(0.55f, 0.75f, 0.45f);
@@ -63,6 +67,24 @@ static void demo_scene(Editor& ed) {
     if (ScriptProp* p = ed.scene.script_prop(sphere, "ball", "mode")) p->choice = 1;
     ed.add_script(lamp, "scripts/lamp.lua");
     if (ScriptProp* p = ed.scene.script_prop(lamp, "lamp", "follow")) p->object = sphere;
+    // Scene objects: a camera (current, with the listener), a sun, sky,
+    // sky light and post processing; physics on the ball and the ground.
+    ObjectId cam = ed.create_kind("Main Camera", ObjectKind::Camera, Vec3(-3.5f, 2.2f, 4.5f));
+    ed.scene.get(cam)->rotation = Quat::euler_deg(Vec3(-18, -35, 0));
+    ed.scene.add_module(cam, ModuleKind::AudioListener);
+    ObjectId cam2 = ed.create_kind("Overview Camera", ObjectKind::Camera, Vec3(4.5f, 5.0f, -4.0f));
+    ed.scene.get(cam2)->rotation = Quat::euler_deg(Vec3(-40, 135, 0));
+    ed.create_light(LightType::Directional, Vec3(-1.5f, 4.0f, -2.5f));
+    ObjectId pl = ed.create_light(LightType::Point, Vec3(0, 0.9f, 0), lamp);
+    ed.scene.get(pl)->modules.light.color = Vec3(1.0f, 0.8f, 0.45f);
+    ed.create_kind("Sky", ObjectKind::Sky, Vec3(-4.2f, 2.2f, -3.0f));
+    ed.create_kind("Sky Light", ObjectKind::SkyLight, Vec3(-3.4f, 2.2f, -3.0f));
+    ed.create_kind("Post Processing", ObjectKind::PostProcess, Vec3(-2.6f, 2.2f, -3.0f));
+    ed.scene.add_module(sphere, ModuleKind::RigidBody3D);
+    ed.scene.add_module(sphere, ModuleKind::Collider3D);
+    ed.scene.add_module(sphere, ModuleKind::AudioSampler);
+    snprintf(ed.scene.get(sphere)->modules.audio_sampler.path, kPathMax, "%s", "sounds/bounce.wav");
+    ed.scene.add_module(ground, ModuleKind::Collider3D);
     // Crate selected, then shift-click on the ball: two selected, the ball active.
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);
@@ -192,6 +214,86 @@ int main(int argc, char** argv) {
     ed.settings.dark_theme = true;
     ed.apply_theme();
     ed.frame();
+    // The ball's modules (Inspector scrolled down), then the overview
+    // camera selected: its settings and the Current switch.
+    {
+        auto by_name = [&](const char* n) { for (int i = 0; i < ed.scene.count(); i++) if (!strcmp(ed.scene.at(i).name, n)) return ed.scene.at(i).id; return kNoObject; };
+        ObjectId sphere = by_name("Ball"), cam2 = by_name("Overview Camera");
+        ed.scene.select_only(sphere);
+        ed.frame();
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 330); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-modules.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.scene.select_only(cam2);
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 0); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-camera.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+    // Shaping a collider: the pillar's cylinder collider with its handles.
+    {
+        ObjectId pil = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) if (!strcmp(ed.scene.at(i).name, "Pillar")) pil = ed.scene.at(i).id;
+        ed.scene.add_module(pil, ModuleKind::Collider3D);
+        ed.scene.get(pil)->modules.collider3d.radius = 0.6f;
+        ed.scene.select_only(pil);
+        ed.edit_collider = true;
+        ed.tool = Tool::Select;
+        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 300); ed.frame(); }
+        snprintf(path, sizeof(path), "%s/editor-collider.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.edit_collider = false;
+        ed.tool = Tool::Move;
+        if (iw) ImGui::SetScrollY(iw, 0);
+    }
+    // The FarcadeGL renderer: the editor view, then Play through the current camera.
+    {
+        ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
+        ed.scene.select_only(kNoObject);
+        for (int i = 0; i < 3; i++) ed.frame();
+        printf("FarcadeGL viewport: %.1f ms\n", ed.view_ms);
+        snprintf(path, sizeof(path), "%s/editor-farcadegl.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        // The GPU tier (shadows, AO, bloom, AA, PBR), forced on the CPU backend.
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::Ultra);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        for (int i = 0; i < 3; i++) ed.frame();
+        printf("FarcadeGL viewport, GPU tier: %.1f ms\n", ed.view_ms);
+        snprintf(path, sizeof(path), "%s/editor-farcadegl-ultra.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        // The pillar's material in the Inspector (Look: roughness, metal),
+        // with the scene saved as scenes/main.fscene (its name in the title).
+        for (int i = 0; i < ed.scene.count(); i++)
+            if (!strcmp(ed.scene.at(i).name, "Pillar")) ed.scene.select_only(ed.scene.at(i).id);
+        ed.save_scene();
+        for (int i = 0; i < 2; i++) ed.frame();
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) {
+            const Editor::UiRect* r = ed.find_rect("inspector:roughness");
+            if (r) ImGui::SetScrollY(iw2, iw2->Scroll.y + (r->y - iw2->Pos.y) - 160);
+        }
+        for (int i = 0; i < 3; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-material.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) ImGui::SetScrollY(iw2, 0);
+        ed.scene.select_only(kNoObject);
+        ed.play();
+        for (int i = 0; i < 3; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-farcadegl-play.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.stop();
+        ed.settings.graphics.allow_gpu_effects_on_cpu = false;
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
+        ed.view_renderer = Editor::ViewRenderer::CpuPreview;
+        ed.frame();
+    }
     if (const Editor::UiRect* r = ed.find_rect("run:renderer")) {
         float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
         platform::Event e;

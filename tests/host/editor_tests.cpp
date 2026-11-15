@@ -1,6 +1,11 @@
 // Editor interaction tests on the headless platform: mouse and keyboard
 // events go in, the editor's state is checked after a few frames.
 #include "editor.h"
+#include "swraster.h"
+#include "ecs/ecs.h"
+#include "script/runtime.h"
+#include "audio/audio.h"
+#include "scene_io.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -125,6 +130,7 @@ int main() {
     static Editor ed;
     E = &ed;
     CHECK(ed.init(1280, 800), "init");
+    ed.verify_damage = true;        // every incremental redraw is compared with a full one
     snprintf(ed.project_dir, sizeof(ed.project_dir), "%s", dir);
     snprintf(ed.files_dir, sizeof(ed.files_dir), "%s", dir);
     ed.camera.target = Vec3(0, 0.5f, 0);
@@ -679,6 +685,623 @@ int main() {
         frames(2);
     }
 
+    // ---- modules and special objects, the one-current rule
+    {
+        CHECK(module_by_name("camera") == ModuleKind::Camera && module_by_name("rigidbody3d") == ModuleKind::RigidBody3D &&
+              module_by_name("nope") == ModuleKind::Count, "modules are found by their Lua names");
+        int with_current = 0;
+        for (int k = 0; k < kModuleKindCount; k++) {
+            const ModuleInfo& mi = module_info((ModuleKind)k);
+            with_current += mi.has_current;
+            const FieldInfo* cf = find_field(mi, "current");
+            CHECK(mi.has_current == (cf != nullptr), "%s: has_current matches a 'current' field", mi.name);
+            if (cf) CHECK(cf->offset == mi.current_offset && cf->type == FieldType::Bool, "%s: current offset", mi.name);
+        }
+        CHECK(with_current == 5, "camera, sky, sky light, post processing and listener have Current (%d)", with_current);
+
+        int objects0 = ed.scene.count();
+        ObjectId c1 = ed.create_kind("Cam A", ObjectKind::Camera, Vec3(0, 2, 5));
+        CHECK(ed.scene.get(c1)->kind == ObjectKind::Camera && ed.scene.get(c1)->modules.has(ModuleKind::Camera), "a camera object has camera settings");
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "the first camera becomes current");
+        ObjectId c2 = ed.create_kind("Cam B", ObjectKind::Camera, Vec3(3, 2, 5));
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1 && !ed.scene.is_current(c2, ModuleKind::Camera), "a second camera is not current");
+        ed.scene.set_current(c2, ModuleKind::Camera);
+        CHECK(ed.scene.is_current(c2, ModuleKind::Camera) && !ed.scene.get(c1)->modules.camera.current, "setting B current clears A");
+        ed.scene.clear_current(c2, ModuleKind::Camera);
+        CHECK(ed.scene.current(ModuleKind::Camera) == kNoObject, "clearing leaves none current");
+        ed.scene.set_current(c1, ModuleKind::Camera);
+        // Turned on by hand in the data (as a script or a loaded file may do), fix_current keeps one.
+        ed.scene.get(c2)->modules.camera.current = true;
+        ed.scene.fix_current();
+        int cur = ed.scene.get(c1)->modules.camera.current + ed.scene.get(c2)->modules.camera.current;
+        CHECK(cur == 1, "fix_current leaves exactly one current (%d)", cur);
+        ed.scene.set_current(c1, ModuleKind::Camera);
+        // Duplicate: the copy is not current.
+        ed.scene.select_only(c1);
+        ed.duplicate_selection();
+        ObjectId c3 = ed.scene.active();
+        CHECK(c3 != c1 && ed.scene.get(c3)->kind == ObjectKind::Camera && !ed.scene.get(c3)->modules.camera.current &&
+              ed.scene.current(ModuleKind::Camera) == c1, "a duplicated camera is not current");
+        // Play/Stop: the current camera comes back.
+        ed.play();
+        ed.scene.set_current(c3, ModuleKind::Camera);
+        ed.stop();
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "Stop puts the current camera back");
+        // Kinds without the flag ignore it; set_current needs the module.
+        ObjectId e = ed.create_kind("Holder", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.set_current(e, ModuleKind::Camera);
+        CHECK(ed.scene.current(ModuleKind::Camera) == c1, "set_current on an object without a camera does nothing");
+        CHECK(ed.scene.add_module(e, ModuleKind::RigidBody3D) && !ed.scene.add_module(e, ModuleKind::RigidBody3D), "one module of a kind per object");
+        CHECK(!ed.scene.add_module(e, ModuleKind::Camera), "camera settings are not a module");
+        ed.scene.set_current(e, ModuleKind::RigidBody3D);
+        CHECK(ed.scene.current(ModuleKind::RigidBody3D) == kNoObject, "a rigidbody has no Current");
+        // A listener is a module with Current: the first one added is current.
+        ed.scene.add_module(c1, ModuleKind::AudioListener);
+        ed.scene.add_module(e, ModuleKind::AudioListener);
+        CHECK(ed.scene.current(ModuleKind::AudioListener) == c1, "the first listener is current");
+        // Deleting the current camera leaves none (the others stay as they were).
+        ed.scene.select_only(c1);
+        ed.delete_selection();
+        CHECK(ed.scene.current(ModuleKind::Camera) == kNoObject && ed.scene.current(ModuleKind::AudioListener) == kNoObject,
+              "deleting the current camera leaves no current camera or listener");
+        // Lights are empties with a Light module.
+        ObjectId l = ed.create_light(LightType::Spot, Vec3(0, 3, 0));
+        CHECK(ed.scene.get(l)->kind == ObjectKind::Empty && ed.scene.get(l)->modules.has(ModuleKind::Light) &&
+              ed.scene.get(l)->modules.light.type == LightType::Spot, "a spot light");
+        // Special objects are picked around their origin.
+        ed.scene.clear_selection();
+        frames(2);
+        ed.camera.target = Vec3(0, 0.5f, 0); ed.camera.yaw = 0; ed.camera.pitch = 20; ed.camera.distance = 14;
+        ed.tool = Tool::Select;
+        frames(2);
+        char vk[32];
+        snprintf(vk, sizeof(vk), "vicon:%u", c2);
+        CHECK(ui(vk) != nullptr, "the camera has an icon in the viewport");
+        CHECK(click_ui(vk) && ed.scene.is_selected(c2), "clicking a camera's icon selects it (selected %u)", ed.scene.active());
+
+        // ---- the Inspector: Current switch, Add module, remove
+        ed.scene.select_only(c2);
+        frames(3);
+        CHECK(ui("module:camera") && ui("module:camera:current") && ui("module:camera:fov"), "the Inspector shows the camera's settings");
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == c2, "the Current switch makes it current");
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == kNoObject, "and off again");
+        click_ui("module:camera:current");
+        ed.scene.select_only(c3);
+        frames(3);
+        CHECK(click_ui("module:camera:current") && ed.scene.current(ModuleKind::Camera) == c3 && !ed.scene.is_current(c2, ModuleKind::Camera),
+              "switching another camera on turns the first off");
+        CHECK(!ui("module:camera:ortho_size"), "perspective cameras don't show the ortho size");
+        CHECK(click_ui("inspector:add_module"), "an Add module button");
+        frames(2);
+        CHECK(click_ui("addmodule:light") && ed.scene.get(c3)->modules.has(ModuleKind::Light), "Add module > Light adds a light");
+        frames(3);
+        ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector");
+        if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
+        CHECK(ui("module:light:intensity") && !ui("module:light:spot_angle"), "a point light shows intensity, not the spot angle");
+        CHECK(click_ui("module:light:remove") && !ed.scene.get(c3)->modules.has(ModuleKind::Light), "the trash button removes the module");
+
+        // Clean up so the rest of the tests see the old scene.
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        ed.scene.clear_selection();
+        frames(2);
+    }
+
+    // ---- Play runs the scene as an ECS world
+    {
+        int objects0 = ed.scene.count();
+        ObjectId cam = ed.create_kind("Play Cam", ObjectKind::Camera, Vec3(1, 2, 3));
+        ObjectId cam_b = ed.create_kind("Play Cam B", ObjectKind::Camera, Vec3(2, 2, 3));
+        ed.scene.set_current(cam_b, ModuleKind::Camera);
+        ObjectId root = ed.create_object("Rig", MeshKind::Cube, Vec3(1, 0, 0));
+        ObjectId kid = ed.create_child("Rig Part", MeshKind::Sphere, root);
+        ed.scene.get(root)->rotation = Quat::euler_deg(Vec3(0, 90, 0));
+        ed.scene.add_module(kid, ModuleKind::Light);
+        ed.scene.get(kid)->modules.light.intensity = 3.5f;
+        CHECK(ed.play_world() == nullptr, "no world while editing");
+        ed.play();
+        World* w = ed.play_world();
+        CHECK(w != nullptr, "Play builds a world");
+        if (w) {
+            uint64_t ek = ed.entity_of(kid), er = ed.entity_of(root);
+            CHECK(ek && er && w->parent(ek) == er, "the parent/child tree is in the world");
+            const WorldTransform* wt = w->world_transform(ek);
+            Mat4 sm = ed.scene.world_matrix(*ed.scene.get(kid));
+            bool same = wt != nullptr;
+            for (int i = 0; same && i < 16; i++) same = fabsf(wt->matrix.m[i] - sm.m[i]) < 1e-4f;
+            CHECK(same, "world transforms match the scene's");
+            const Light* l = w->has(ek, ModuleKind::Light) ? (const Light*)w->get(ek, ModuleKind::Light) : nullptr;
+            CHECK(l && l->intensity == 3.5f, "modules are components");
+            CHECK(w->current(ModuleKind::Camera) == ed.entity_of(cam_b), "the current camera is current in the world");
+            CHECK(w->renderable(er) && !w->renderable(ed.entity_of(cam)), "mesh objects are renderable, cameras not");
+            // A system moving an entity moves the object in the editor.
+            Transform* t = w->transform(er);
+            if (t) t->position = Vec3(5, 0, 0);
+            frames(2);
+            CHECK(ed.scene.get(root)->position.x == 5.0f, "transforms come back to the scene each frame");
+        }
+        ed.stop();
+        CHECK(ed.play_world() == nullptr && ed.scene.get(root)->position.x == 1.0f, "Stop drops the world and restores the scene");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- the FarcadeGL renderer in the viewport, and Play through the current camera
+    {
+        int objects0 = ed.scene.count();
+        ed.scene.clear_selection();
+        frames(2);
+        CHECK(click_ui("run:renderer"), "the renderer menu opens");
+        frames(2);
+        CHECK(click_ui("menu:FarcadeGL") && ed.view_renderer == Editor::ViewRenderer::FarcadeGL, "the menu switches to FarcadeGL");
+        ev_key(platform::KEY_ESCAPE, true); frames(1); ev_key(platform::KEY_ESCAPE, false); frames(3);
+        int errors = 0;
+        for (int i = 0; i < ed.log_count; i++) errors += ed.log_lines[i].level == LogLevel::Error && strstr(ed.log_lines[i].text, "FarcadeGL");
+        CHECK(ed.view_renderer == Editor::ViewRenderer::FarcadeGL && errors == 0, "FarcadeGL renders without errors (%d)", errors);
+        CHECK(ed.view_triangles > 0, "FarcadeGL drew triangles (%d)", ed.view_triangles);
+        // Settings > Graphics: the GPU tier is off on the CPU backend unless forced.
+        CHECK(ed.fgl_backend[0] && !ed.fgl_features.gpu && !ed.fgl_features.gpu_tier, "on the CPU backend the GPU tier is off (%s)", ed.fgl_backend);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        frames(2);
+        CHECK(ed.fgl_features.gpu_tier && ed.fgl_features.shadows && ed.fgl_features.pbr, "forcing it turns the GPU effects on");
+        ed.settings.graphics.shadows = false;
+        frames(2);
+        CHECK(!ed.fgl_features.shadows, "a GPU effect's switch turns it off");
+        // Materials: with PBR on, making every mesh metal changes the picture.
+        {
+            auto px = [&](float fx, float fy) {
+                Framebuffer& fb = platform::framebuffer();
+                int x = (int)(ed.view_rect[0] + ed.view_rect[2] * fx), y = (int)(ed.view_rect[1] + ed.view_rect[3] * fy);
+                return fb.pixels[y * fb.pitch + x];
+            };
+            const float spots[3][2] = { { 0.5f, 0.5f }, { 0.4f, 0.6f }, { 0.6f, 0.7f } };
+            ObjectId ball = ed.create_object("Metal Ball", MeshKind::Sphere, ed.camera.target);
+            ed.scene.get(ball)->scale = Vec3(3, 3, 3);
+            ed.scene.get(ball)->color = Vec3(0.9f, 0.6f, 0.2f);
+            ObjectId sun = ed.create_light(LightType::Directional, Vec3(0, 4, 0));
+            ed.scene.get(sun)->rotation = Quat::euler_deg(Vec3(-50, 30, 0));
+            ed.scene.clear_selection();
+            frames(8);
+            uint32_t was[3];
+            for (int i = 0; i < 3; i++) was[i] = px(spots[i][0], spots[i][1]);
+            uint64_t h0 = ed.view_hash(100, 100);
+            for (int i = 0; i < ed.scene.count(); i++) { ed.scene.at(i).metallic = 1.0f; ed.scene.at(i).roughness = 0.15f; }
+            CHECK(ed.view_hash(100, 100) != h0, "the material is part of the viewport hash");
+            frames(8);
+            int changed = 0;
+            for (int i = 0; i < 3; i++) changed += px(spots[i][0], spots[i][1]) != was[i];
+            CHECK(changed > 0, "metal and roughness change the GPU tier picture (%d of 3 spots)", changed);
+            for (int i = 0; i < ed.scene.count(); i++) { ed.scene.at(i).metallic = 0.0f; ed.scene.at(i).roughness = 0.6f; }
+            ed.scene.remove(ball);
+            ed.scene.remove(sun);
+            frames(2);
+        }
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = false;
+        frames(2);
+        // A sky changes the picture: read a viewport pixel before and after.
+        auto pixel = [&](float fx, float fy) {
+            Framebuffer& fb = platform::framebuffer();
+            int x = (int)(ed.view_rect[0] + ed.view_rect[2] * fx), y = (int)(ed.view_rect[1] + ed.view_rect[3] * fy);
+            return fb.pixels[y * fb.pitch + x];
+        };
+        uint32_t before = pixel(0.5f, 0.12f);
+        ObjectId sky = ed.create_kind("Test Sky", ObjectKind::Sky, Vec3(0, 3, 0));
+        ed.scene.set_current(sky, ModuleKind::Sky);
+        ed.scene.get(sky)->modules.sky.mode = SkyMode::Color;
+        ed.scene.get(sky)->modules.sky.zenith = Vec3(1.0f, 0.0f, 0.0f);
+        ed.scene.clear_selection();
+        frames(3);
+        uint32_t after = pixel(0.5f, 0.12f);
+        CHECK(before != after && ((after >> 16) & 0xFF) > ((after >> 8) & 0xFF) + 40, "a red sky turns the background red (%08X -> %08X)", before, after);
+        // Play through the current camera.
+        ObjectId cam = ed.create_kind("Look Cam", ObjectKind::Camera, Vec3(0, 1.5f, 6));
+        ed.scene.set_current(cam, ModuleKind::Camera);
+        ed.scene.clear_selection();
+        ed.play();
+        frames(3);
+        CHECK(ed.looking_through_camera, "Play looks through the current camera");
+        ed.settings.play_through_camera = false;
+        frames(2);
+        CHECK(!ed.looking_through_camera, "unless that is switched off");
+        ed.settings.play_through_camera = true;
+        ed.stop();
+        frames(2);
+        CHECK(!ed.looking_through_camera, "editing uses the editor camera");
+        ed.view_renderer = Editor::ViewRenderer::CpuPreview;
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- physics in Play: a ball falls onto the ground, through a trigger
+    {
+        int objects0 = ed.scene.count();
+        ObjectId floor_ = ed.create_object("Phys Floor", MeshKind::Plane, Vec3(20, 0, 0));
+        ed.scene.get(floor_)->scale = Vec3(4, 1, 4);
+        ed.scene.add_module(floor_, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(floor_)->modules.collider3d.size.y < 0.2f, "a plane's collider starts thin");
+        ObjectId ball = ed.create_object("Phys Ball", MeshKind::Sphere, Vec3(20, 3, 0));
+        ed.scene.add_module(ball, ModuleKind::RigidBody3D);
+        ed.scene.add_module(ball, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(ball)->modules.collider3d.shape == ColliderShape::Sphere, "a sphere's collider starts as a sphere");
+        ObjectId zone = ed.create_kind("Phys Zone", ObjectKind::Empty, Vec3(20, 1.5f, 0));
+        ed.scene.add_module(zone, ModuleKind::Collider3D);
+        ed.scene.get(zone)->modules.collider3d.mode = ColliderMode::Trigger;
+        int events0 = ed.physics_event_count;
+        ed.play();
+        CHECK(ed.play_physics() != nullptr, "Play starts physics");
+        frames(150);                                 // 2.5 s at 60 fps
+        float y = ed.scene.get(ball)->position.y;
+        CHECK(y > 0.4f && y < 0.6f, "the ball fell and rests on the floor (y %.3f)", y);
+        CHECK(ed.physics_event_count >= events0 + 3, "trigger enter, exit and the hit were reported (%d)", ed.physics_event_count - events0);
+        bool logged = false;
+        for (int i = 0; i < ed.log_count; i++) logged |= strstr(ed.log_lines[i].text, "Phys Ball entered trigger Phys Zone") != nullptr;
+        CHECK(logged, "the console says the ball entered the trigger");
+        ed.stop();
+        CHECK(ed.scene.get(ball)->position.y == 3.0f && !ed.play_physics(), "Stop puts the ball back");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- scripts run in Play: inputs, moving, triggers switching the camera, errors
+    {
+        int objects0 = ed.scene.count();
+        const char* mover =
+            "-- @prop speed number = 1\n"
+            "-- @prop label text = \"x\"\n"
+            "function on_start(self) self.started = true; print(self.object.name .. ' starts, ' .. self.label) end\n"
+            "function on_update(self, dt) self.object:move(self.speed * dt, 0, 0) end\n";
+        platform::write_file("build/host/test-project/mover.lua", mover, strlen(mover));
+        const char* switcher =
+            "-- @prop camera object\n"
+            "function on_trigger_enter(self, other)\n"
+            "  print(other.name .. ' entered ' .. self.object.name)\n"
+            "  if self.camera then self.camera.camera.current = true end\n"
+            "end\n";
+        platform::write_file("build/host/test-project/switcher.lua", switcher, strlen(switcher));
+        const char* broken = "function on_update(self, dt) local t = nil; t.x = 1 end\n";
+        platform::write_file("build/host/test-project/broken.lua", broken, strlen(broken));
+
+        ObjectId runner = ed.create_object("Runner", MeshKind::Cube, Vec3(30, 0.5f, 0));
+        ed.add_script(runner, "build/host/test-project/mover.lua");
+        ed.scene.script_prop(runner, "mover", "speed")->number = 2;
+        snprintf(ed.scene.script_prop(runner, "mover", "label")->text, 64, "%s", "go");
+        ed.add_script(runner, "build/host/test-project/broken.lua");
+        ObjectId cam_a = ed.create_kind("Cam Main", ObjectKind::Camera, Vec3(30, 2, 8));
+        ObjectId cam_b = ed.create_kind("Cam Trap", ObjectKind::Camera, Vec3(36, 2, 8));
+        ed.scene.set_current(cam_a, ModuleKind::Camera);
+        ObjectId floor2 = ed.create_object("Trap Floor", MeshKind::Plane, Vec3(36, 0, 0));
+        ed.scene.get(floor2)->scale = Vec3(4, 1, 4);
+        ed.scene.add_module(floor2, ModuleKind::Collider3D);
+        ObjectId rock = ed.create_object("Rock", MeshKind::Sphere, Vec3(36, 3, 0));
+        ed.scene.add_module(rock, ModuleKind::RigidBody3D);
+        ed.scene.add_module(rock, ModuleKind::Collider3D);
+        ObjectId trap = ed.create_kind("Trap", ObjectKind::Empty, Vec3(36, 1.5f, 0));
+        ed.scene.add_module(trap, ModuleKind::Collider3D);
+        ed.scene.get(trap)->modules.collider3d.mode = ColliderMode::Trigger;
+        ed.add_script(trap, "build/host/test-project/switcher.lua");
+        ed.scene.script_prop(trap, "switcher", "camera")->object = cam_b;
+
+        int log0 = ed.log_count;
+        ed.play();
+        ScriptRuntime* rt = ed.play_scripts();
+        CHECK(rt && rt->stats().instances >= 3, "Play starts the scripts (%d)", rt ? rt->stats().instances : -1);
+        frames(60);                                      // 1 s
+        float x = ed.scene.get(runner)->position.x;
+        CHECK(x > 31.6f && x < 32.4f, "the mover moved its object by speed * time (x %.2f)", x);
+        auto logged = [&](const char* what) {
+            for (int i = log0; i < ed.log_count; i++) if (strstr(ed.log_lines[i].text, what)) return true;
+            return false;
+        };
+        CHECK(logged("Runner starts, go"), "print() reaches the console with the inputs");
+        CHECK(logged("Rock entered Trap"), "a trigger calls on_trigger_enter");
+        CHECK(ed.scene.current(ModuleKind::Camera) == cam_b, "the script made the trap camera current");
+        CHECK(ed.looking_through_camera, "and Play now looks through it");
+        CHECK(logged("broken.lua:1:") && rt->stats().failed == 1, "a runtime error is logged with file:line and stops that script only");
+        ed.stop();
+        CHECK(ed.scene.current(ModuleKind::Camera) == cam_a && ed.scene.get(runner)->position.x == 30.0f && !ed.play_scripts(),
+              "Stop restores the camera and positions");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- collider shapes in the viewport: drag handles change size, radius, height
+    {
+        int objects0 = ed.scene.count();
+        ed.camera.target = Vec3(0, 0.5f, 0); ed.camera.yaw = 30; ed.camera.pitch = 20; ed.camera.distance = 7;
+        ed.settings.snap = false;
+        ed.tool = Tool::Select;
+        ObjectId box = ed.create_object("Shape Box", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        ed.scene.add_module(box, ModuleKind::Collider3D);
+        ed.scene.select_only(box);
+        frames(3);
+        CHECK(!ui("chandle:0"), "no handles until Edit shape is on");
+        CHECK(click_ui("module:collider3d:edit") && ed.edit_collider, "the Edit shape switch turns handles on");
+        frames(2);
+        CHECK(ui("chandle:0") && ui("chandle:5") && !ui("chandle:6"), "a box has 6 handles");
+        // Handle 1 is the +X face: drag it outwards along its direction on screen.
+        auto drag_handle = [&](int i, float dx, float dy) {
+            char k[24];
+            snprintf(k, sizeof(k), "chandle:%d", i);
+            const Editor::UiRect* r = ui(k);
+            if (!r) return false;
+            float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
+            drag(x, y, x + dx, y + dy, 0, 10);
+            return true;
+        };
+        float sx, sy, hx, hy;
+        to_screen(Vec3(0, 0.5f, 0), &sx, &sy);
+        to_screen(Vec3(0.5f, 0.5f, 0), &hx, &hy);
+        float ux = hx - sx, uy = hy - sy;               // the +X direction on screen, half a unit long
+        Vec3 pos0 = ed.scene.get(box)->position;
+        CHECK(drag_handle(1, ux, uy), "drag the +X handle");
+        float size_x = ed.scene.get(box)->modules.collider3d.size.x;
+        CHECK(size_x > 1.6f && size_x < 2.4f, "dragging it half a unit out makes the box about 2 wide (%.2f)", size_x);
+        CHECK(ed.scene.get(box)->position.x == pos0.x && ed.scene.selected_count() == 1, "the object did not move and stays selected");
+        // A capsule: the top handle sets the height, a side handle the radius.
+        ed.scene.get(box)->modules.collider3d.shape = ColliderShape::Capsule;
+        ed.scene.get(box)->modules.collider3d.radius = 0.5f;
+        ed.scene.get(box)->modules.collider3d.height = 2.0f;
+        frames(2);
+        CHECK(ui("chandle:5") && !ui("chandle:6"), "a capsule has 6 handles (2 for the height, 4 for the radius)");
+        float tx, ty, tx2, ty2;
+        to_screen(Vec3(0, 1.5f, 0), &tx, &ty);
+        to_screen(Vec3(0, 2.0f, 0), &tx2, &ty2);
+        CHECK(drag_handle(1, tx2 - tx, ty2 - ty), "drag the top handle");
+        float hgt = ed.scene.get(box)->modules.collider3d.height;
+        CHECK(hgt > 2.6f && hgt < 3.4f, "half a unit up makes it about 3 tall (%.2f)", hgt);
+        float rx, ry, rx2, ry2;
+        to_screen(Vec3(0.5f, 0.5f, 0), &rx, &ry);
+        to_screen(Vec3(0.25f, 0.5f, 0), &rx2, &ry2);
+        CHECK(drag_handle(3, rx2 - rx, ry2 - ry), "drag a side handle in");
+        float rad = ed.scene.get(box)->modules.collider3d.radius;
+        CHECK(rad > 0.15f && rad < 0.35f, "the radius shrinks to about 0.25 (%.2f)", rad);
+        // The new cylinder shape is offered and fits cylinders.
+        ObjectId cyl = ed.create_object("Shape Cyl", MeshKind::Cylinder, Vec3(3, 0.5f, 0));
+        ed.scene.add_module(cyl, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(cyl)->modules.collider3d.shape == ColliderShape::Cylinder, "a cylinder gets a cylinder collider");
+        ed.edit_collider = false;
+        ed.tool = Tool::Move;
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        ed.scene.clear_selection();
+        frames(2);
+    }
+
+    // ---- audio in Play: a script plays a sampler, a stream starts on its own
+    {
+        int objects0 = ed.scene.count();
+        // A 0.5 s 440 Hz mono WAV.
+        {
+            const int rate = 22050, n = rate / 2;
+            static uint8_t wav[44 + 22050];
+            uint32_t data_bytes = n * 2;
+            auto put32 = [&](int at, uint32_t v) { for (int i = 0; i < 4; i++) wav[at + i] = (uint8_t)(v >> (8 * i)); };
+            auto put16 = [&](int at, uint32_t v) { wav[at] = (uint8_t)v; wav[at + 1] = (uint8_t)(v >> 8); };
+            memcpy(wav, "RIFF", 4); put32(4, 36 + data_bytes); memcpy(wav + 8, "WAVEfmt ", 8);
+            put32(16, 16); put16(20, 1); put16(22, 1); put32(24, rate); put32(28, rate * 2); put16(32, 2); put16(34, 16);
+            memcpy(wav + 36, "data", 4); put32(40, data_bytes);
+            for (int i = 0; i < n; i++) {
+                float ph = (float)(i % 50) / 50.0f;          // ~441 Hz triangle
+                float v = ph < 0.5f ? ph * 4 - 1 : 3 - ph * 4;
+                put16(44 + i * 2, (uint32_t)(int16_t)(v * 12000));
+            }
+            platform::write_file("build/host/test-project/beep.wav", wav, 44 + data_bytes);
+        }
+        const char* player = "function on_start(self) self.played = self.object.audio_sampler:play() end\n";
+        platform::write_file("build/host/test-project/beeper.lua", player, strlen(player));
+        ObjectId src = ed.create_kind("Beeper", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.add_module(src, ModuleKind::AudioSampler);
+        snprintf(ed.scene.get(src)->modules.audio_sampler.path, kPathMax, "%s", "build/host/test-project/beep.wav");
+        ed.scene.get(src)->modules.audio_sampler.spatial = false;
+        ed.add_script(src, "build/host/test-project/beeper.lua");
+        ObjectId music = ed.create_kind("Music", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.add_module(music, ModuleKind::AudioStream);
+        snprintf(ed.scene.get(music)->modules.audio_stream.path, kPathMax, "%s", "build/host/test-project/beep.wav");
+        ed.play();
+        frames(3);
+        AudioSystem* au = ed.play_audio();
+        CHECK(au != nullptr, "Play starts audio");
+        if (au) {
+            CHECK(au->is_playing(ed.entity_of(music)), "an Audio Stream with play-on-start plays");
+            CHECK(au->stats().voices_active >= 2, "the script's sampler and the stream are playing (%d voices)", au->stats().voices_active);
+            CHECK(au->stats().frames_pushed > 0, "mixed audio reaches the device (%llu frames)", (unsigned long long)au->stats().frames_pushed);
+        }
+        bool err = false;
+        for (int i = 0; i < ed.log_count; i++) err |= strstr(ed.log_lines[i].text, "beeper.lua") && ed.log_lines[i].level == LogLevel::Error;
+        CHECK(!err, "obj.audio_sampler:play() runs without errors");
+        ed.stop();
+        CHECK(!ed.play_audio(), "Stop ends audio");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
+    // ---- scene files: save, load back, every field comes back
+    {
+        ed.new_scene();
+        mkdir("build/host/test-project/scripts", 0755);
+        const char* door =
+            "-- @prop speed  number = 5  range 0 20\n"
+            "-- @prop label  text = \"Front door\"\n"
+            "-- @prop open   toggle = true\n"
+            "-- @prop mode   list(closed, open, locked) = locked\n"
+            "-- @prop target object\n";
+        platform::write_file("build/host/test-project/scripts/gate.lua", door, strlen(door));
+        ObjectId base = ed.create_object("Base \"quoted\"", MeshKind::Cylinder, Vec3(1, 2, 3));
+        Object* ob = ed.scene.get(base);
+        ob->rotation = Quat::euler_deg(Vec3(10, 20, 30));
+        ob->scale = Vec3(0.5f, 2, 0.75f);
+        ob->color = Vec3(0.1f, 0.2f, 0.3f);
+        ob->roughness = 0.33f; ob->metallic = 0.8f; ob->unlit = true; ob->cast_shadows = false;
+        ob->visible = false;
+        snprintf(ob->texture_path, sizeof ob->texture_path, "%s/crate.png", ed.project_dir);
+        ed.scene.add_module(base, ModuleKind::Collider3D);
+        ob->modules.collider3d.shape = ColliderShape::Capsule;
+        ob->modules.collider3d.radius = 0.7f;
+        ob->modules.collider3d.layer = 0x8005;
+        ed.scene.add_module(base, ModuleKind::AudioSampler);
+        snprintf(ob->modules.audio_sampler.path, kPathMax, "%s/sounds/hit.wav", ed.project_dir);
+        ob->modules.audio_sampler.voices = 7;
+        ObjectId kid = ed.create_child("Kid", MeshKind::Sphere, base);
+        ObjectId lamp = ed.create_light(LightType::Spot, Vec3(0, 3, 0), kid);
+        ed.scene.get(lamp)->modules.light.spot_angle = 33.5f;
+        ObjectId cam1 = ed.create_kind("Cam 1", ObjectKind::Camera, Vec3(0, 1, 5));
+        ObjectId cam2 = ed.create_kind("Cam 2", ObjectKind::Camera, Vec3(0, 1, -5));
+        ed.scene.set_current(cam2, ModuleKind::Camera);
+        ed.scene.get(cam2)->modules.camera.fov = 72.0f;
+        char door_full[300];
+        snprintf(door_full, sizeof door_full, "%s/scripts/gate.lua", ed.project_dir);
+        CHECK(ed.add_script(kid, door_full) == 0, "a script with inputs goes on the kid");
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "speed")) p->number = 12.5f;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "label")) snprintf(p->text, sizeof p->text, "%s", "Back \"door\"");
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "open")) p->toggle = false;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "mode")) p->choice = 1;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "target")) p->object = cam1;
+
+        size_t size1 = 0;
+        char* text1 = save_scene_text(ed.scene, ed.project_dir, &size1);
+        CHECK(text1 && strstr(text1, "farcade-scene 1") && strstr(text1, "texture \"crate.png\"") && strstr(text1, "\"scripts/gate.lua\""),
+              "the file starts with its version and stores project paths relative");
+        Scene back;
+        SceneLoadReport rep;
+        CHECK(text1 && load_scene_text(back, text1, size1, &rep) && rep.skipped == 0, "it loads back (%s, %d skipped)", rep.error, rep.skipped);
+        size_t size2 = 0;
+        char* text2 = save_scene_text(back, ed.project_dir, &size2);
+        CHECK(text1 && text2 && size1 == size2 && memcmp(text1, text2, size1) == 0, "saving the loaded scene gives the same file");
+        free(text1);
+        free(text2);
+        Object* bb = back.get(base);
+        CHECK(back.count() == ed.scene.count() && bb && back.get(kid) && back.get(kid)->parent == base && back.get(lamp)->parent == kid,
+              "objects keep their ids and the tree");
+        CHECK(bb && !strcmp(bb->name, "Base \"quoted\"") && bb->mesh == MeshKind::Cylinder && bb->metallic == 0.8f && bb->roughness == 0.33f &&
+              bb->unlit && !bb->cast_shadows && !bb->visible && bb->scale.z == 0.75f && bb->rotation.w == ob->rotation.w,
+              "names, meshes, materials and transforms come back exactly");
+        CHECK(bb && bb->modules.has(ModuleKind::Collider3D) && bb->modules.collider3d.shape == ColliderShape::Capsule &&
+              bb->modules.collider3d.radius == 0.7f && bb->modules.collider3d.layer == 0x8005 && bb->modules.audio_sampler.voices == 7 &&
+              !strcmp(bb->modules.audio_sampler.path, "sounds/hit.wav"), "modules come back with every field");
+        CHECK(back.current(ModuleKind::Camera) == cam2 && back.get(cam2)->modules.camera.fov == 72.0f &&
+              back.get(lamp)->modules.light.type == LightType::Spot && back.get(lamp)->modules.light.spot_angle == 33.5f,
+              "special objects and the current flag come back");
+        CHECK(back.next_id() >= ed.scene.next_id(), "new objects get fresh ids after loading");
+        ScriptProp* sp = back.script_prop(kid, "gate", "label");
+        ScriptProp* sm = back.script_prop(kid, "gate", "mode");
+        ScriptProp* st = back.script_prop(kid, "gate", "target");
+        CHECK(sp && !strcmp(sp->text, "Back \"door\"") && sm && sm->choice == 1 && !strcmp(sm->choices[sm->choice], "open") && st && st->object == cam1 &&
+              back.script_prop(kid, "gate", "speed")->number == 12.5f && !back.script_prop(kid, "gate", "open")->toggle,
+              "script inputs come back with their values and links");
+
+        // Every field of every module, set away from its default, comes back.
+        {
+            Scene all;
+            for (int k = 0; k < kModuleKindCount; k++) {
+                Object* o = all.create_with_id((ObjectId)(k + 1));
+                const ModuleInfo& mi = module_info((ModuleKind)k);
+                o->modules.add((ModuleKind)k);
+                uint8_t* d = (uint8_t*)o->modules.data((ModuleKind)k);
+                for (int f = 0; f < mi.field_count; f++) {
+                    const FieldInfo& fi = mi.fields[f];
+                    uint8_t* p = d + fi.offset;
+                    switch (fi.type) {
+                    case FieldType::Float: { float v; memcpy(&v, p, 4); v = v * 1.5f + 0.3125f; memcpy(p, &v, 4); break; }
+                    case FieldType::Int: { int32_t v; memcpy(&v, p, 4); v += 3; memcpy(p, &v, 4); break; }
+                    case FieldType::Bits: { uint32_t v; memcpy(&v, p, 4); v ^= 0x80000010u; memcpy(p, &v, 4); break; }
+                    case FieldType::Bool: *(bool*)p = !*(bool*)p; break;
+                    case FieldType::Enum: { int n = 0; while (fi.enum_names[n]) n++; *p = (uint8_t)((*p + 1) % n); break; }
+                    case FieldType::Color:
+                    case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
+                    case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
+                    }
+                }
+            }
+            size_t n = 0;
+            char* t = save_scene_text(all, "", &n);
+            Scene got;
+            SceneLoadReport r2;
+            bool ok = t && load_scene_text(got, t, n, &r2) && r2.skipped == 0 && got.count() == kModuleKindCount;
+            int wrong = 0;
+            for (int k = 0; ok && k < kModuleKindCount; k++) {
+                const ModuleInfo& mi = module_info((ModuleKind)k);
+                Object* a1 = all.get((ObjectId)(k + 1));
+                Object* b1 = got.get((ObjectId)(k + 1));
+                if (!b1 || !b1->modules.has((ModuleKind)k)) { wrong++; continue; }
+                const uint8_t* da = (const uint8_t*)a1->modules.data((ModuleKind)k);
+                const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
+                for (int f = 0; f < mi.field_count; f++) {
+                    const FieldInfo& fi = mi.fields[f];
+                    size_t sz = fi.type == FieldType::Path ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
+                              : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
+                    if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
+                }
+            }
+            free(t);
+            CHECK(ok && wrong == 0, "every field of every module comes back (%d wrong, %d skipped)", wrong, r2.skipped);
+        }
+
+        // Unknown lines are skipped, broken files are refused.
+        const char* future = "farcade-scene 1\nnext_id 5\nobject 2\n  name \"X\"\n  sparkle 3\n  module light\n    glow 1\n    intensity 2\n  end\n"
+                             "  module warp_drive\n    speed 9\n  end\nend\n";
+        Scene fs;
+        CHECK(load_scene_text(fs, future, strlen(future), &rep) && rep.skipped == 3 && fs.get(2) && fs.get(2)->modules.light.intensity == 2.0f,
+              "unknown fields and modules are skipped (%d)", rep.skipped);
+        const char* broken[] = { "", "hello\n", "farcade-scene 99\n", "farcade-scene 1\nobject 3\n  name \"A\"\n",
+                                 "farcade-scene 1\nobject 3\nend\nobject 3\nend\n" };
+        int refused = 0;
+        for (const char* t : broken) refused += !load_scene_text(fs, t, strlen(t), &rep) && fs.count() == 0;
+        CHECK(refused == 5, "broken files are refused (%d of 5)", refused);
+        const char* loop = "farcade-scene 1\nobject 1\n  parent 2\nend\nobject 2\n  parent 1\nend\nobject 3\n  parent 9\nend\n";
+        CHECK(load_scene_text(fs, loop, strlen(loop), &rep) && fs.depth(*fs.get(1)) < 3 && fs.depth(*fs.get(2)) < 3 && fs.get(3)->parent == kNoObject,
+              "parent loops and missing parents are cut");
+
+        // Through the editor: Ctrl+S saves to scenes/main.fscene, opening it brings the scene back.
+        frames(1);
+        const uint16_t key_s = (uint16_t)(platform::KEY_A + ('s' - 'a'));
+        ev_key(platform::KEY_LCTRL, true, platform::MOD_CTRL); ev_key(key_s, true, platform::MOD_CTRL); frames(1);
+        ev_key(key_s, false, platform::MOD_CTRL); ev_key(platform::KEY_LCTRL, false); frames(1);
+        CHECK(platform::file_exists("build/host/test-project/scenes/main.fscene") && strstr(ed.scene_path, "scenes/main.fscene"),
+              "Ctrl+S saves the scene (%s)", ed.scene_path);
+        int count = ed.scene.count();
+        ed.play();
+        ed.scene.get(base)->position = Vec3(9, 9, 9);
+        CHECK(ed.save_scene("scenes/during-play.fscene"), "saving while playing works");
+        ed.stop();
+        // Double-click in Files hands over the full path (project folder included).
+        ed.new_scene();
+        char main_full[300];
+        snprintf(main_full, sizeof main_full, "%s/scenes/main.fscene", ed.project_dir);
+        ed.open_file(main_full);
+        CHECK(ed.scene.count() == count && !strcmp(ed.scene_path, main_full), "opening a scene from Files works (%s)", ed.scene_path);
+        ed.new_scene();
+        CHECK(ed.scene.count() == 0 && !ed.scene_path[0], "New scene empties it");
+        CHECK(ed.open_scene("scenes/during-play.fscene") && ed.scene.count() == count && ed.scene.get(base)->position.x == 1.0f,
+              "the file saved during Play holds the scene from before Play");
+        CHECK(ed.scene.script_prop(kid, "gate", "speed") && ed.scene.script_prop(kid, "gate", "speed")->number == 12.5f &&
+              ed.scene.script_prop(kid, "gate", "speed")->max == 20.0f, "opening re-reads the script inputs and keeps the saved values");
+        ObjectId fresh = ed.create_object("Fresh", MeshKind::Cube, Vec3(0, 0, 0));
+        CHECK(fresh > lamp && fresh > cam2, "objects made after opening get new ids");
+        int before = ed.scene.count();
+        platform::write_file("build/host/test-project/scenes/bad.fscene", "nope", 4);
+        CHECK(!ed.open_scene("scenes/bad.fscene") && ed.scene.count() == before, "a broken file leaves the scene alone");
+        // File > Save scene as...
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Save scene as..."), "Save scene as... opens a prompt");
+        frames(2);
+        // Type the name: select all, then the letters.
+        ev_key(platform::KEY_LCTRL, true, platform::MOD_CTRL); ev_key(platform::KEY_A, true, platform::MOD_CTRL); frames(1);
+        ev_key(platform::KEY_A, false, platform::MOD_CTRL); ev_key(platform::KEY_LCTRL, false); frames(1);
+        for (const char* c = "level2"; *c; c++) {
+            platform::Event e;
+            e.type = platform::EventType::Text;
+            e.codepoint = (uint32_t)*c;
+            platform::headless_push(e);
+        }
+        frames(2);
+        CHECK(click_ui("save_as:save"), "the prompt's Save button");
+        frames(2);
+        CHECK(platform::file_exists("build/host/test-project/scenes/level2.fscene") && strstr(ed.scene_path, "level2.fscene"),
+              "Save scene as writes scenes/level2.fscene (%s)", ed.scene_path);
+        ed.new_scene();
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");
@@ -693,6 +1316,8 @@ int main() {
         }
     }
 
+    CHECK(ed.damage_mismatches == 0, "incremental UI redraws differ from full redraws in %d frames", ed.damage_mismatches);
+    printf("editor_tests: frames %d drawn %d skipped %d\n", ed.perf.frames, ed.perf.drawn, ed.perf.skipped);
     printf("editor_tests: %d checks, %d failed\n", g_checks, g_failed);
     ed.shutdown();
     return g_failed ? 1 : 0;

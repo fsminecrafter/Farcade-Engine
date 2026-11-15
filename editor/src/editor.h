@@ -1,8 +1,12 @@
 // The Farcade editor: state shared by the panels, and the frame loop.
 #pragma once
 
+#include "gfx/graphics_settings.h"
+
 #include "scene.h"
 #include "widgets.h"
+#include "gfx/renderer.h"
+#include "swraster.h"
 #include <stdint.h>
 
 struct ImFont;
@@ -10,6 +14,11 @@ struct ImFont;
 namespace fe {
 
 class View3D;
+class World;
+class PhysicsWorld;
+class ScriptRuntime;
+class AudioDevice;
+class AudioSystem;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -36,6 +45,8 @@ struct Settings {
     bool view_supersample = true;       // 2x2 supersampling in the viewport
     bool view_shadows = true;           // shadows on the ground
 #endif
+    bool play_through_camera = true;    // Play shows the scene through the current Camera object
+    gfx::GraphicsSettings graphics;     // FarcadeGL quality (GPU tier: graphics card only)
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
     float snap_scale = 0.1f;
@@ -44,7 +55,7 @@ struct Settings {
     const char* program_for(const char* path) const;
 };
 
-struct Camera {
+struct ViewCamera {     // the editor's orbit camera (not a scene Camera object)
     Vec3 target = Vec3(0, 0.5f, 0);
     float yaw = 35.0f, pitch = 25.0f;   // degrees
     float distance = 9.0f;
@@ -66,13 +77,43 @@ public:
     // ---- used by the panels
     Scene scene;
     Settings settings;
-    Camera camera;
+    ViewCamera camera;
     Tool tool = Tool::Move;
     bool gizmo_local = false;           // gizmo along the object's axes (X toggles); Scale always is
     ViewMode view_mode = ViewMode::Lit;
+    // What draws the viewport: the CPU preview (grid, outline, shadows) or
+    // FarcadeGL (lights, sky, sky light, post processing; engine/gfx).
+    enum class ViewRenderer : uint8_t { CpuPreview, FarcadeGL };
+    ViewRenderer view_renderer = ViewRenderer::CpuPreview;
+    bool looking_through_camera = false;        // last frame: the view was the current camera's
+    // What the FarcadeGL renderer reported last time it ran.
+    char fgl_backend[64] = {};
+    gfx::GraphicsFeatures fgl_features;
+    // Everything the viewport image depends on, hashed: a change redraws it.
+    uint64_t view_hash(int w, int h) const;
+    // Collider 3D: the active object's collider is drawn in the viewport;
+    // with edit_collider on, handles on it change its size/radius/height.
+    bool edit_collider = false;
+    // Draws the collider (and its handles) over the viewport rectangle;
+    // true while a handle is hovered or dragged (the gizmo and picking wait).
+    bool collider_overlay(const Mat4& view, const Mat4& proj, float x, float y, float w, float h);
     Palette pal = {};
     char project_dir[256] = {};
     char files_dir[256] = {};
+
+    // ---- scene files (.fscene, see scene_io.h). Paths are full or
+    // relative to the project.
+    char scene_path[256] = {};                  // the open scene's file; "" = not saved yet
+    char save_as_name[64] = {};                 // File > Save scene as...: the name typed (scenes/<name>.fscene)
+    // Saves the scene (while playing: the scene as it was before Play) to
+    // `path`, or to scene_path / scenes/main.fscene when null.
+    bool save_scene(const char* path = nullptr);
+    // Stops Play, then replaces the scene with the file's. The scene stays
+    // as it was when the file cannot be read.
+    bool open_scene(const char* path);
+    void new_scene();
+    // `path` made full: relative paths are joined to the project.
+    void project_path(const char* path, char* out, size_t cap) const;
 
     void log(LogLevel level, const char* fmt, ...);
     void open_file(const char* path);           // double-click in Files
@@ -80,6 +121,13 @@ public:
     ObjectId create_object(const char* name, MeshKind mesh, const Vec3& at);
     void delete_selection();                    // with their children
     ObjectId create_child(const char* name, MeshKind mesh, ObjectId parent);
+    // Special objects (Camera, Sky, Sky Light, Post Processing, Empty) and
+    // lights (an Empty with a Light module), under `parent` when given.
+    ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
+    ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
+    // The items of every "add object" menu (Create, the Hierarchy's + and
+    // right-click menus): meshes, empty, lights, camera, sky ...
+    void create_menu_items(ObjectId parent, const Vec3& at);
     ObjectId duplicate_tree(ObjectId src, ObjectId parent, bool offset);    // an object and its children
     // Scripts: adds one to an object and reads the inputs it declares
     // (-- @prop lines, see script.h). Returns its index or -1.
@@ -99,6 +147,24 @@ public:
     void play();
     void stop();
     double play_time = 0.0;
+    // While playing, the scene runs as an ECS world (engine/ecs): one entity
+    // per object, with its transform, modules and mesh. Systems (physics,
+    // scripts, audio) plug into it; each frame the transforms come back to
+    // the scene so the viewport shows them.
+    World* play_world() { return world_; }
+    PhysicsWorld* play_physics() { return physics_; }
+    ScriptRuntime* play_scripts() { return scripts_; }
+    AudioSystem* play_audio() { return audio_; }
+    AudioDevice* audio_device() { return audio_device_; }
+    // A script file's text (full path, or relative to the project); malloc'd, or null.
+    char* read_script_text(const char* path, size_t* size);
+    uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
+    ObjectId object_of(uint64_t entity) const;
+    // Physics events while playing ("entered" / "left" a trigger, "hit"):
+    // logged to the console; the script runtime takes them over when set.
+    void (*on_physics_event)(Editor* ed, const char* what, uint64_t a, uint64_t b) = nullptr;
+    int physics_event_count = 0;
+    void physics_event(const char* what, uint64_t a, uint64_t b);
 
     ImFont* font_ui = nullptr;
     ImFont* font_medium = nullptr;      // headings, tabs, section titles
@@ -124,6 +190,29 @@ public:
     // Viewport statistics of the last frame.
     int view_triangles = 0;
     float view_ms = 0.0f;
+    // Frame profile: milliseconds summed over the frames since the caller last
+    // cleared it (main_os --profile prints and clears it every 60 frames).
+    struct Perf {
+        double build = 0;               // ImGui NewFrame .. Render (includes the viewport render)
+        double view = 0;                // the viewport render inside build
+        double raster = 0;              // clearing and rasterizing the UI
+        double present = 0;             // copying to the screen
+        double wait = 0;                // waiting for input (filled by the main loop)
+        int frames = 0, view_renders = 0, drawn = 0, skipped = 0;
+    } perf;
+    bool last_frame_idle = false;       // the last frame changed nothing on screen (not drawn, not presented)
+    bool verify_damage = false;         // debug: check every incremental redraw against a full one (tests)
+    int damage_mismatches = 0;
+    uint32_t view_renders = 0;          // how many times the viewport image was rendered
+    SwStats raster_stats;               // the last UI rasterization
+    gfx::RendererStats fgl_stats;       // the last FarcadeGL render
+    double fgl_init_ms = 0, fgl_init_shader_ms = 0;
+    bool adaptive_view = false;         // render the viewport smaller while it changes (Minimal-OS: slow CPU/GPU emulation)
+    int view_div_shown = 1;             // the shown viewport image was rendered at 1/this size
+    bool view_final = true;             // the shown viewport image is at its final quality
+    int view_div_target = 1;            // ... and will be refined to this when the view stops changing
+    int view_scale_div = 1;             // FarcadeGL renders at 1/view_scale_div of the viewport size (experiments)
+    bool bench_interacting = false;     // benchmarks: behave as during a camera drag
     double (*perf_clock)() = nullptr;           // a real clock for view_ms (default: platform::time_seconds)
     struct TileRect { char path[256]; float x, y, w, h; };
     static constexpr int kMaxTiles = 64;
@@ -138,19 +227,38 @@ public:
     bool log_scroll_to_end = false;
 
 private:
+    int collider_drag_ = -1;                    // the handle being dragged
+    ObjectId collider_drag_object_ = kNoObject;
+    World* world_ = nullptr;
+    PhysicsWorld* physics_ = nullptr;
+    ScriptRuntime* scripts_ = nullptr;
+    AudioDevice* audio_device_ = nullptr;       // opened at the first Play, kept
+    AudioSystem* audio_ = nullptr;
+    ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
+    uint64_t* world_entities_ = nullptr;
+    int world_count_ = 0;
+    int script_count_ = 0;
+    void build_world();
+    void step_world(float dt);
+    void free_world();
     ObjectId duplicate_one(ObjectId src, ObjectId parent, bool offset, ObjectId* from, ObjectId* to, int* pairs);
     void build_ui();
     void script_section(Object* o, int index);
     void add_script_button(Object* o);
+    bool module_section(Object* o, ModuleKind kind);   // false when the module was removed
+    void add_module_button(Object* o);
+    void settings_graphics();
+    void draw_object_shape(View3D& view3d, const Object& o, const Mat4& model);
     void main_menu();
     void run_controls();
     void status_bar(float height);
     void dockspace(float top, float bottom);
     void viewport_overlays(float x, float y, float w, float h);
-    uint64_t view_hash(int w, int h) const;
+    int render_w_ = 0, render_h_ = 0;   // size the next viewport render is made at
     bool view_interacting_ = false;     // a drag in the viewport (last frame)
-    bool view_supersample_now() const { return settings.view_supersample && !view_interacting_; }
-    bool view_shadows_now() const { return settings.view_shadows && !view_interacting_; }
+    bool view_interacting() const { return view_interacting_ || bench_interacting; }
+    bool view_supersample_now() const { return settings.view_supersample && !view_interacting(); }
+    bool view_shadows_now() const { return settings.view_shadows && !view_interacting(); }
     void render_view(View3D& view3d, const void* view);
     void orientation_gizmo(float x, float y, float size);
     void panel_hierarchy();
@@ -161,13 +269,18 @@ private:
     void window_settings();
     void shortcuts();
     Scene* play_backup_ = nullptr;
+    bool want_save_as_ = false;
+    void save_as_popup();
 };
 
 // File type helpers shared by the panels.
 const char* path_extension(const char* path);
 const char* path_filename(const char* path);
+Icon object_icon(const Object& o);
+Icon module_icon(ModuleKind k);
 bool path_is_image(const char* path);
 bool path_is_model(const char* path);
 bool path_is_script(const char* path);
+bool path_is_scene(const char* path);
 
 }  // namespace fe

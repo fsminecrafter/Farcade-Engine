@@ -191,6 +191,85 @@ void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
             dl->AddLine(P(4.5f, 4.5f), P(11.5f, 11.5f), c, t);
             dl->AddLine(P(11.5f, 4.5f), P(4.5f, 11.5f), c, t);
             break;
+        case Icon::Camera:
+            dl->AddRect(P(1.5f, 4.5f), P(10.5f, 12.5f), c, 1.5f * k, 0, t);
+            { ImVec2 lens[] = { P(10.5f, 7), P(14.5f, 5), P(14.5f, 12), P(10.5f, 10) };
+              dl->AddPolyline(lens, 4, c, ImDrawFlags_Closed, t); }
+            break;
+        case Icon::Bulb:
+            dl->AddCircle(P(8, 6.5f), 4.3f * k, c, 16, t);
+            dl->AddLine(P(6, 11), P(10, 11), c, t);
+            dl->AddLine(P(6.5f, 13.5f), P(9.5f, 13.5f), c, t);
+            dl->AddLine(P(6.3f, 9.8f), P(6.3f, 11), c, t);
+            dl->AddLine(P(9.7f, 9.8f), P(9.7f, 11), c, t);
+            break;
+        case Icon::Cloud:
+            dl->AddCircle(P(5.5f, 9.5f), 3.0f * k, c, 14, t);
+            dl->AddCircle(P(9, 7), 3.8f * k, c, 16, t);
+            dl->AddCircle(P(12, 10), 2.6f * k, c, 12, t);
+            break;
+        case Icon::Speaker: {
+            ImVec2 sp[] = { P(2, 6), P(5, 6), P(9, 2.5f), P(9, 13.5f), P(5, 10), P(2, 10) };
+            dl->AddPolyline(sp, 6, c, ImDrawFlags_Closed, t);
+            dl->PathArcTo(P(9, 8), 3.5f * k, radians(-50), radians(50), 8);
+            dl->PathStroke(c, 0, t);
+            dl->PathArcTo(P(9, 8), 6.0f * k, radians(-50), radians(50), 10);
+            dl->PathStroke(c, 0, t);
+            break;
+        }
+        case Icon::Wave:
+            for (int i = 0; i < 7; i++) {
+                static const float hgt[7] = { 2, 5, 9, 6, 11, 4, 2 };
+                float x = 2 + i * 2.0f;
+                dl->AddLine(P(x, 8 - hgt[i] * 0.5f), P(x, 8 + hgt[i] * 0.5f), c, t);
+            }
+            break;
+        case Icon::Body:
+            dl->AddCircleFilled(P(8, 6.5f), 3.5f * k, c, 14);
+            dl->AddLine(P(8, 11), P(8, 14.5f), c, t);
+            dl->AddTriangleFilled(P(8, 15.5f), P(6, 12.5f), P(10, 12.5f), c);
+            break;
+        case Icon::Collider: {
+            ImVec2 a[] = { P(8, 1.5f), P(14, 4.8f), P(14, 11.2f), P(8, 14.5f), P(2, 11.2f), P(2, 4.8f) };
+            for (int i = 0; i < 6; i++) {
+                ImVec2 q = a[i], r = a[(i + 1) % 6];
+                for (int d = 0; d < 4; d++) {
+                    float u0 = d / 4.0f, u1 = u0 + 0.13f;
+                    dl->AddLine(ImVec2(q.x + (r.x - q.x) * u0, q.y + (r.y - q.y) * u0), ImVec2(q.x + (r.x - q.x) * u1, q.y + (r.y - q.y) * u1), c, t);
+                }
+            }
+            break;
+        }
+        case Icon::Ear:
+            dl->PathArcTo(P(8.5f, 6.5f), 4.5f * k, radians(180), radians(400), 16);
+            dl->PathStroke(c, 0, t);
+            dl->AddLine(P(11.9f, 9.4f), P(8, 14), c, t);
+            dl->AddLine(P(8, 14), P(6, 13), c, t);
+            break;
+        case Icon::Wand:
+            dl->AddLine(P(2.5f, 13.5f), P(10, 6), c, 2.0f * k);
+            dl->AddLine(P(12, 1.5f), P(12, 5.5f), c, t);
+            dl->AddLine(P(10, 3.5f), P(14, 3.5f), c, t);
+            dl->AddCircleFilled(P(13.5f, 9.5f), 1.0f * k, c);
+            dl->AddCircleFilled(P(6.5f, 2.5f), 0.9f * k, c);
+            break;
+        case Icon::Empty:
+            dl->AddLine(P(8, 2), P(8, 14), c, t);
+            dl->AddLine(P(2, 8), P(14, 8), c, t);
+            dl->AddCircle(P(8, 8), 3.0f * k, c, 12, t);
+            break;
+        case Icon::Star: {
+            ImVec2 st[10];
+            for (int i = 0; i < 10; i++) {
+                float a = -kPi * 0.5f + kPi * i / 5.0f;
+                float r = (i & 1) ? 2.8f : 6.8f;
+                st[i] = P(8 + fcos(a) * r, 8.6f + fsin(a) * r);
+            }
+            ImVec2 inner[5] = { st[1], st[3], st[5], st[7], st[9] };
+            dl->AddConvexPolyFilled(inner, 5, c);
+            for (int i = 0; i < 5; i++) dl->AddTriangleFilled(st[i * 2], st[(i * 2 + 9) % 10], st[i * 2 + 1], c);
+            break;
+        }
         case Icon::Sun: {
             dl->AddCircleFilled(P(8, 8), 3.0f * k, c, 12);
             for (int i = 0; i < 8; i++) {

@@ -12,7 +12,7 @@
 #
 #   build/host/bin/gfx_tests     tests (part of make test)
 #   build/host/bin/fe-gfx-shot   fe-gfx-shot <out.png> [width height]: renders a demo scene
-#   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <checksum>")
+#   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <base> <hq>": base tier and GPU tier checksums)
 
 GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp engine/gfx/shaders_hq.cpp engine/gfx/passes.cpp
 GFX_HOST_SRC := engine/gfx/host/fgpu_host.c external/fgpu/fgpu_raster.c external/fgpu/fgpu_shader.c \

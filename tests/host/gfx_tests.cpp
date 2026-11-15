@@ -8,6 +8,7 @@
 #include "mof_check.h"
 
 #include <math.h>
+#include <string.h>
 
 using namespace fe;
 using namespace fe::gfx;
@@ -811,6 +812,359 @@ void test_smoke_scene() {
     if (why) fprintf(stderr, "smoke_check: %s (%s)\n", why, r.error());
     printf("gfx_smoke scene on the host: FE GFX PASS %08x\n", sum);
     CHECK(sum != 0);
+    // The same with the GPU tier forced (what tests/os/gfx_smoke prints as the second checksum).
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::High);
+    g.shadow_resolution = 512;
+    g.allow_gpu_effects_on_cpu = true;
+    s.scene.post.bloom = 0.4f;
+    s.scene.post.bloom_threshold = 0.8f;
+    s.scene.sky.fog = 0.2f;
+    Renderer h;
+    h.set_settings(g);
+    CHECK(h.init(kSmokeWidth, kSmokeHeight));
+    if (render_ok(h, s.scene)) {
+        CHECK(h.gpu_tier_stats().passes >= 5);
+        printf("gfx_smoke gpu tier on the host: FE GFX PASS %08x %08x\n", sum, checksum(h.pixels(), kSmokeWidth * kSmokeHeight));
+    }
+}
+
+// ---------------------------------------------------------------- the GPU tier
+
+// Everything off, the tier forced on: tests switch on what they look at.
+GraphicsSettings tier_off() {
+    GraphicsSettings g;
+    g.preset = GraphicsPreset::Custom;
+    g.shadows = g.ambient_occlusion = g.bloom = g.antialiasing = g.pbr = false;
+    g.shadow_resolution = 512;
+    g.allow_gpu_effects_on_cpu = true;
+    return g;
+}
+
+int lum_at(const TestScene& t, const Renderer& r, Vec3 p) { return lum(t.at(r, p)); }
+
+void test_features() {
+    Renderer r;
+    TestScene t;
+    GraphicsSettings g;                         // defaults: everything on, not forced
+    r.set_settings(g);
+    CHECK(r.init(W, H));
+    CHECK(strstr(r.backend(), "cpu") != nullptr);
+    GraphicsFeatures f = r.features();
+    CHECK(!f.gpu);
+    CHECK(!f.gpu_tier);
+    CHECK(!f.shadows && !f.ambient_occlusion && !f.bloom && !f.antialiasing && !f.pbr);
+    CHECK(render_ok(r, t.scene));
+    CHECK_EQ(r.gpu_tier_stats().passes, 0);     // the base tier ran
+
+    g.allow_gpu_effects_on_cpu = true;
+    r.set_settings(g);
+    f = r.features();
+    CHECK(!f.gpu);
+    CHECK(f.gpu_tier && f.shadows && f.ambient_occlusion && f.bloom && f.antialiasing && f.pbr);
+    g.shadows = false; r.set_settings(g);
+    f = r.features(); CHECK(!f.shadows && f.ambient_occlusion && f.bloom && f.antialiasing && f.pbr);
+    g.ambient_occlusion = false; r.set_settings(g);
+    f = r.features(); CHECK(!f.ambient_occlusion && f.bloom);
+    g.bloom = false; r.set_settings(g);
+    f = r.features(); CHECK(!f.bloom && f.antialiasing);
+    g.antialiasing = false; r.set_settings(g);
+    f = r.features(); CHECK(!f.antialiasing && f.pbr);
+    g.pbr = false; r.set_settings(g);
+    f = r.features(); CHECK(f.gpu_tier && !f.pbr);
+    CHECK(r.settings().allow_gpu_effects_on_cpu);
+
+    // Forced on but every effect off: the base tier's picture, bit for bit.
+    uint32_t base_sum = 0, forced_sum = 0;
+    {
+        SmokeScene s;
+        s.build();
+        Renderer a, b;
+        CHECK(a.init(kSmokeWidth, kSmokeHeight));
+        CHECK(b.init(kSmokeWidth, kSmokeHeight));
+        b.set_settings(tier_off());
+        CHECK(a.render(s.scene));
+        CHECK(b.render(s.scene));
+        base_sum = checksum(a.pixels(), kSmokeWidth * kSmokeHeight);
+        forced_sum = checksum(b.pixels(), kSmokeWidth * kSmokeHeight);
+        CHECK_EQ(b.gpu_tier_stats().passes, 0);
+    }
+    CHECK_EQ(base_sum, forced_sum);
+    // Settings set before init survive it.
+    Renderer c;
+    c.set_settings(tier_off());
+    CHECK(c.init(64, 48));
+    CHECK(c.features().gpu_tier);
+}
+
+// A cube on the floor under a sun looking down onto it from above.
+struct ShadowRig {
+    TestScene t;
+    ShadowRig() {
+        t.items[0].model = Mat4::translation(Vec3(0, 0.5f, 0));
+        t.scene.item_count = 2;
+        t.lights[0] = dir_light(Vec3(1, -1, 0));
+        t.scene.light_count = 1;
+        t.scene.sky_light.intensity = 0.3f;
+        t.scene.sky_light.sky_color = Vec3(1, 1, 1);
+        t.scene.sky_light.ground_color = Vec3(1, 1, 1);
+        t.camera(Vec3(1.0f, 7.0f, 4.0f), Vec3(1.0f, 0, 0), 50.0f);
+    }
+};
+
+void test_shadows() {
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    const Vec3 shadowed(1.0f, 0, 0), lit(1.0f, 0, 1.6f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    r.set_settings(g);
+    if (render_ok(r, t.scene)) CHECK(abs(lum_at(t, r, shadowed) - lum_at(t, r, lit)) < 6);
+    g.shadows = true;
+    r.set_settings(g);
+    if (render_ok(r, t.scene)) {
+        int a = lum_at(t, r, shadowed), b = lum_at(t, r, lit);
+        CHECK_MSG(a < b * 0.7f, "ground in the cube's shadow is darker");
+        CHECK(r.gpu_tier_stats().shadow_ms > 0 || r.gpu_tier_stats().shadow_reused);
+        // the top of the cube is lit, no acne on the lit ground
+        CHECK(lum_at(t, r, Vec3(0, 0.5f, 0)) > 100);
+        CHECK(abs(lum_at(t, r, Vec3(-2, 0, 1)) - lum_at(t, r, Vec3(3, 0, 3))) < 12);
+        // a second identical frame reuses the map
+        CHECK(render_ok(r, t.scene));
+        CHECK(r.gpu_tier_stats().shadow_reused);
+    }
+    // hard shadows too
+    g.soft_shadows = false;
+    r.set_settings(g);
+    if (render_ok(r, t.scene)) CHECK(lum_at(t, r, shadowed) < lum_at(t, r, lit) * 0.7f);
+    // the cube does not cast: no shadow
+    g.soft_shadows = true;
+    r.set_settings(g);
+    t.items[0].cast_shadows = false;
+    if (render_ok(r, t.scene)) CHECK(abs(lum_at(t, r, shadowed) - lum_at(t, r, lit)) < 8);
+    t.items[0].cast_shadows = true;
+    // the light does not cast shadows
+    t.lights[0].shadows = false;
+    if (render_ok(r, t.scene)) CHECK(abs(lum_at(t, r, shadowed) - lum_at(t, r, lit)) < 8);
+}
+
+void test_pbr() {
+    Vec3 sph_p[sphere_vertices(24, 12)], sph_n[sphere_vertices(24, 12)];
+    make_sphere(sph_p, sph_n, 1.0f, 24, 12);
+    TestScene t;
+    t.items[0].mesh = RenderMesh{ sph_p, sph_n, (uint32_t)sphere_vertices(24, 12), 31 };
+    t.items[0].color = Vec3(0.9f, 0.2f, 0.1f);
+    t.lights[0] = dir_light(Vec3(0, -0.5f, -1));
+    t.scene.light_count = 1;
+    t.scene.sky_light.intensity = 0.3f;
+    t.camera(Vec3(0, 0.5f, 4), Vec3(0, 0, 0), 40.0f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    g.pbr = true;
+    r.set_settings(g);
+    Px dielectric{}, metal{};
+    t.items[0].roughness = 0.4f;
+    t.items[0].metallic = 0;
+    if (render_ok(r, t.scene)) dielectric = px(r, W / 2, H / 2 + 4);
+    t.items[0].metallic = 1;
+    if (render_ok(r, t.scene)) metal = px(r, W / 2, H / 2 + 4);
+    CHECK_MSG(abs(dielectric.r - metal.r) + abs(dielectric.g - metal.g) + abs(dielectric.b - metal.b) > 20, "metallic changes the look");
+    // the highlight: the area above half of its peak
+    auto area = [&](float rough) {
+        t.items[0].metallic = 0;
+        t.items[0].roughness = rough;
+        t.items[0].color = Vec3(0.05f, 0.05f, 0.05f);
+        if (!render_ok(r, t.scene)) return 0;
+        int peak = 0;
+        for (int i = 0; i < W * H; i++) peak = peak > lum(px(r, i % W, i / W)) ? peak : lum(px(r, i % W, i / W));
+        int n = 0;
+        for (int i = 0; i < W * H; i++) if (lum(px(r, i % W, i / W)) * 2 > peak && lum(px(r, i % W, i / W)) > 30) n++;
+        return n;
+    };
+    int smooth_area = area(0.15f), rough_area = area(0.7f);
+    CHECK_MSG(smooth_area < rough_area, "a rough surface has a larger highlight");
+    CHECK(smooth_area > 0);
+    // plain Blinn-Phong with the tier on still draws
+    g.pbr = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene));
+}
+
+void test_fog() {
+    for (int forced = 0; forced < 2; forced++) {
+        TestScene t;
+        t.items[0].color = Vec3(0.5f, 0.5f, 0.5f);
+        t.scene.item_count = 2;
+        t.items[1].color = Vec3(0.2f, 0.5f, 0.2f);
+        t.lights[0] = dir_light(Vec3(0, -1, -0.2f));
+        t.scene.light_count = 1;
+        t.scene.sky_light.intensity = 0.5f;
+        t.scene.sky.mode = SkyMode::Gradient;
+        t.scene.sky.horizon = Vec3(0.9f, 0.9f, 0.9f);
+        t.scene.sky.zenith = Vec3(0.2f, 0.3f, 0.8f);
+        t.camera(Vec3(0, 1.0f, 8), Vec3(0, 0.9f, 0), 50.0f);
+        Renderer r;
+        GraphicsSettings g = forced ? tier_off() : GraphicsSettings();
+        if (!forced) g.allow_gpu_effects_on_cpu = false;
+        r.set_settings(g);
+        CHECK(r.init(W, H));
+        Vec3 far_ground(0, 0, -17);
+        CHECK(render_ok(r, t.scene));
+        Px clear = t.at(r, far_ground);
+        t.scene.sky.fog = 1.0f;
+        CHECK(render_ok(r, t.scene));
+        Px fogged = t.at(r, far_ground);
+        Px hor = { srgb8(0.9f), srgb8(0.9f), srgb8(0.9f) };
+        auto dist = [&](Px a) { return abs(a.r - hor.r) + abs(a.g - hor.g) + abs(a.b - hor.b); };
+        CHECK_MSG(dist(fogged) < dist(clear) - 40, "far ground blends towards the horizon color");
+        // near ground barely changes
+        t.scene.sky.fog = 0;
+        CHECK(render_ok(r, t.scene));
+        Px near_clear = t.at(r, Vec3(0, 0, 6));
+        t.scene.sky.fog = 1.0f;
+        CHECK(render_ok(r, t.scene));
+        Px near_fog = t.at(r, Vec3(0, 0, 6));
+        CHECK(abs(near_fog.g - near_clear.g) < 40);
+        CHECK_EQ(r.gpu_tier_stats().passes, 1);  // fog alone: the lit pass only
+    }
+}
+
+void test_ssao() {
+    TestScene t;
+    t.items[0].model = Mat4::translation(Vec3(0, 0.5f, 0));
+    t.scene.item_count = 2;
+    t.scene.sky_light.intensity = 1.0f;
+    t.scene.sky_light.sky_color = Vec3(1, 1, 1);
+    t.scene.sky_light.ground_color = Vec3(1, 1, 1);
+    t.camera(Vec3(2.5f, 2.5f, 3.5f), Vec3(0, 0.3f, 0), 50.0f);
+    Renderer r;
+    CHECK(r.init(W * 2, H * 2));
+    GraphicsSettings g = tier_off();
+    r.set_settings(g);
+    const Vec3 corner(0.56f, 0, 0.56f), open(-3.0f, 0, 3.0f);
+    auto at = [&](Vec3 p) { return lum(t.at(r, p)); };
+    int c0 = 0, o0 = 0, c1 = 0, o1 = 0;
+    if (render_ok(r, t.scene)) { c0 = at(corner); o0 = at(open); }
+    g.ambient_occlusion = true;
+    r.set_settings(g);
+    if (render_ok(r, t.scene)) { c1 = at(corner); o1 = at(open); }
+    CHECK_MSG(c1 < c0 - 8, "the crease between cube and floor is darker with AO");
+    CHECK_MSG(abs(o1 - o0) <= 6, "open floor is unchanged");
+    CHECK(r.gpu_tier_stats().ssao_ms > 0);
+}
+
+void test_bloom() {
+    TestScene t;
+    t.items[0].unlit = true;
+    t.items[0].color = Vec3(3, 3, 3);
+    t.scene.sky.mode = SkyMode::Color;
+    t.scene.sky.zenith = Vec3(0.01f, 0.01f, 0.01f);
+    t.scene.post.bloom = 1.0f;
+    t.scene.post.bloom_threshold = 0.5f;
+    t.camera(Vec3(0, 0, 4), Vec3(0, 0, 0), 40.0f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene));
+    int x = W / 2;
+    while (x < W - 1 && lum(px(r, x, H / 2)) > 40) x++;      // the first dark pixel to the right
+    x += 2;
+    int before = lum(px(r, x, H / 2)), far_before = lum(px(r, W - 2, 3));
+    g.bloom = true;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene));
+    int after = lum(px(r, x, H / 2));
+    CHECK_MSG(after > before + 10, "bloom spreads into the dark neighbourhood");
+    CHECK(lum(px(r, W - 2, 3)) <= far_before + 4);
+    CHECK(r.gpu_tier_stats().bloom_ms > 0);
+    // strength 0 turns it off
+    t.scene.post.bloom = 0;
+    CHECK(render_ok(r, t.scene));
+    CHECK(abs(lum(px(r, x, H / 2)) - before) <= 3);
+}
+
+void test_fxaa() {
+    TestScene t;
+    t.items[0].unlit = true;
+    t.items[0].color = Vec3(0.9f, 0.9f, 0.9f);
+    t.items[0].model = Mat4::rotation(Quat::axis_angle(Vec3(0, 0, 1), 0.5f));
+    t.scene.sky.mode = SkyMode::Color;
+    t.scene.sky.zenith = Vec3(0.0f, 0.0f, 0.0f);
+    t.camera(Vec3(0, 0, 4), Vec3(0, 0, 0), 40.0f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    r.set_settings(g);
+    auto mids = [&]() {
+        int n = 0;
+        for (int i = 0; i < W * H; i++) { int l = lum(px(r, i % W, i / W)); if (l > 25 && l < 190) n++; }
+        return n;
+    };
+    CHECK(render_ok(r, t.scene));
+    int hard = mids();
+    g.antialiasing = true;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene));
+    int soft = mids();
+    CHECK_MSG(soft > hard + 20, "anti-aliasing adds intermediate values along edges");
+    CHECK(r.gpu_tier_stats().fxaa_ms > 0);
+    // the inside of a flat area is untouched
+    CHECK(abs(lum(px(r, W / 2, H / 2)) - 242) < 12 || lum(px(r, W / 2, H / 2)) > 200);
+}
+
+void test_gpu_tier_everything() {
+    fe_fgpu_host_stats_t base;
+    fe_fgpu_host_stats(&base);
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Ultra);
+    g.shadow_resolution = 1024;
+    g.allow_gpu_effects_on_cpu = true;
+    r.set_settings(g);
+    CHECK(r.init(W, H));
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    t.scene.post.bloom = 0.5f;
+    t.scene.post.bloom_threshold = 0.8f;
+    t.scene.sky.fog = 0.3f;
+    t.items[0].metallic = 0.5f;
+    fe_fgpu_host_stats_t s0, s1, s2;
+    int surf_steady = -1, prog_steady = -1;
+    for (int i = 0; i < 50; i++) {
+        t.items[0].model = Mat4::translation(Vec3(0, 0.5f, 0)) * Mat4::rotation(Quat::axis_angle(Vec3(0, 1, 0), 0.05f * (float)i));
+        if (!render_ok(r, t.scene)) break;
+        if (i == 2) { fe_fgpu_host_stats(&s1); surf_steady = r.gpu_tier_surfaces(); prog_steady = r.gpu_tier_programs(); }
+    }
+    fe_fgpu_host_stats(&s2);
+    CHECK(r.error()[0] == 0);
+    CHECK_EQ(s1.surfaces, s2.surfaces);
+    CHECK_EQ(s1.programs, s2.programs);
+    CHECK_EQ(s1.buffers, s2.buffers);
+    CHECK_EQ(r.gpu_tier_surfaces(), surf_steady);
+    CHECK_EQ(r.gpu_tier_programs(), prog_steady);
+    CHECK(r.gpu_tier_surfaces() > 6);
+    CHECK_EQ(r.stats().draws, 2);               // the main pass only
+    const GpuTierStats& st = r.gpu_tier_stats();
+    CHECK(st.lit_ms > 0 && st.ssao_ms > 0 && st.bloom_ms > 0 && st.composite_ms > 0 && st.fxaa_ms > 0);
+
+    // resize with everything on, several times, also to odd sizes
+    const int sizes[][2] = { { 97, 61 }, { 33, 17 }, { 200, 150 }, { 1, 1 }, { W, H } };
+    for (auto& sz : sizes) {
+        CHECK(r.resize(sz[0], sz[1]));
+        t.camera(Vec3(1.0f, 7.0f, 4.0f), Vec3(1.0f, 0, 0), 50.0f, (float)sz[0] / (float)sz[1]);
+        CHECK(render_ok(r, t.scene));
+        CHECK_EQ(r.width(), sz[0]);
+    }
+    int surfaces_before = r.gpu_tier_surfaces();
+    CHECK(surfaces_before > 0);
+    r.shutdown();
+    fe_fgpu_host_stats(&s0);
+    CHECK_EQ(s0.surfaces, base.surfaces);      // nothing leaks
+    CHECK_EQ(s0.programs, base.programs);
+    CHECK_EQ(s0.buffers, base.buffers);
 }
 
 }  // namespace
@@ -828,5 +1182,13 @@ int main() {
     test_jit_matches_interpreter();
     test_errors();
     test_smoke_scene();
+    test_features();
+    test_shadows();
+    test_pbr();
+    test_fog();
+    test_ssao();
+    test_bloom();
+    test_fxaa();
+    test_gpu_tier_everything();
     return finish_tests("gfx_tests");
 }

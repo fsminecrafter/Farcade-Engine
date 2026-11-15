@@ -503,7 +503,7 @@ void pp_ssao_fragment(char* out, size_t cap) {
               "    }\n");
     }
     t.add("    float ao = pow(clamp(1.0 - occ * ");
-    t.flt(0.5f / (float)kAoSamples);
+    t.flt(1.0f / (float)kAoSamples);
     t.add(", 0.0, 1.0), u_ao.y);\n"
           "    float v16 = floor(clamp(d0 / u_ao.w, 0.0, 1.0) * 65535.0 + 0.5);\n"
           "    float hi = floor(v16 / 256.0);\n"

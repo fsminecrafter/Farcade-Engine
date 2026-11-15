@@ -47,9 +47,9 @@ struct DemoScene {
 
         RenderLight& sun = lights[0];
         sun.type = LightType::Directional;
-        sun.direction = normalize(Vec3(-0.55f, -0.5f, -0.65f));   // behind the camera, to the right, about 30 degrees up
+        sun.direction = normalize(Vec3(-0.6f, -0.36f, -0.6f));   // behind the camera, to the right, about 30 degrees up
         sun.color = Vec3(1.0f, 0.93f, 0.8f);
-        sun.intensity = 1.6f;
+        sun.intensity = 1.4f;
         RenderLight& pt = lights[1];
         pt.type = LightType::Point;
         pt.position = Vec3(-0.5f, 1.4f, 1.2f);
@@ -75,9 +75,10 @@ struct DemoScene {
         scene.sky.horizon = Vec3(0.55f, 0.68f, 0.85f);
         scene.sky.ground = Vec3(0.22f, 0.22f, 0.22f);
         scene.sky.fog = 0.35f;
-        scene.sky_light.intensity = 0.45f;
+        scene.sky_light.intensity = 0.55f;
         scene.post.tonemap = Tonemap::ACES;
         scene.post.bloom = 0.5f;
+        scene.post.exposure = -0.3f;
     }
 };
 

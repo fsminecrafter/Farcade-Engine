@@ -3,6 +3,7 @@
 #include "swraster.h"
 #include "platform/platform.h"
 #include "ecs/ecs.h"
+#include "physics/physics.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -620,6 +621,32 @@ void Editor::build_world() {
         if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
     }
     world_->update_transforms();
+    // Physics on the bodies and colliders (the built-in step, see physics.h).
+    physics_ = new PhysicsWorld();
+    PhysicsEvents pe;
+    pe.user = this;
+    pe.trigger_enter = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("entered", t, o); };
+    pe.trigger_exit = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("left", t, o); };
+    pe.collision = [](Entity a, Entity b, void* u) { ((Editor*)u)->physics_event("hit", a, b); };
+    physics_->init(world_, pe);
+    for (int i = 0; i < world_count_; i++) physics_->add(world_entities_[i]);
+}
+
+ObjectId Editor::object_of(uint64_t e) const {
+    for (int i = 0; i < world_count_; i++)
+        if (world_entities_[i] == e) return world_objects_[i];
+    return kNoObject;
+}
+
+void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
+    physics_event_count++;
+    if (on_physics_event) { on_physics_event(this, what, a, b); return; }
+    Object* oa = scene.get(object_of(a));
+    Object* ob = scene.get(object_of(b));
+    if (!oa || !ob) return;
+    // "Ball entered Zone" / "Ball hit Crate"
+    if (what[0] == 'h') log(LogLevel::Info, "Physics: %s hit %s", oa->name, ob->name);
+    else log(LogLevel::Info, "Physics: %s %s trigger %s", ob->name, what, oa->name);
 }
 
 uint64_t Editor::entity_of(ObjectId id) const {
@@ -647,6 +674,8 @@ void Editor::step_world(float dt) {
 }
 
 void Editor::free_world() {
+    if (physics_) { physics_->shutdown(); delete physics_; }
+    physics_ = nullptr;
     if (world_) { world_->shutdown(); delete world_; }
     world_ = nullptr;
     free(world_objects_);

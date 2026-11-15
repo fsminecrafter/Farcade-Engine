@@ -84,6 +84,12 @@ bool Scene::add_module(ObjectId id, ModuleKind kind) {
     if (!o || !is_module(kind) || o->modules.has(kind)) return false;
     o->modules.reset(kind);
     o->modules.add(kind);
+    // A collider starts fitted to the object's mesh (built-in meshes fill -0.5..0.5).
+    if (kind == ModuleKind::Collider3D && o->kind == ObjectKind::Mesh) {
+        Collider3D& c = o->modules.collider3d;
+        if (o->mesh == MeshKind::Sphere) c.shape = ColliderShape::Sphere;
+        else if (o->mesh == MeshKind::Plane) { c.size = Vec3(1, 0.1f, 1); c.center = Vec3(0, -0.05f, 0); }
+    }
     // A listener becomes the current one when there is none yet.
     if (module_info(kind).has_current && current(kind) == kNoObject) set_current(id, kind);
     return true;

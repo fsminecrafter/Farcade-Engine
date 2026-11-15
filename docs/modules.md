@@ -76,6 +76,12 @@ end
 ## What runs today
 
 - **Done in the editor:** the data model, the Inspector, creating objects, the Current rule, and the viewport icons and shapes.
-- **Physics:** Rigidbody and Collider settings are saved, but nothing simulates them yet (plan C6: Jolt).
+- **Physics:** in Play, a built-in physics step runs Rigidbody 3D and Collider 3D (`engine/physics`). It is a stand-in for Jolt (plan C6), which needs the standard C++ library this engine doesn't use yet. What it does:
+  - Dynamic bodies fall and are damped; kinematic bodies move only by their velocity; static bodies and colliders without a body don't move.
+  - Box and sphere colliders push bodies apart, with bounciness, friction and collision layers. Capsule and mesh colliders are treated as boxes.
+  - Triggers report objects entering and leaving them, and first contacts are reported as hits. For now these go to the console; scripts get them as `on_trigger_enter`, `on_trigger_exit` and `on_collision` once the Lua runtime is in.
+  - `rigidbody3d.velocity` is the live velocity.
+  - Not done: rotation from collisions (bodies slide rather than roll or tip), joints, and continuous collision.
+  - A new collider starts fitted to the object's mesh: a sphere for spheres, a thin box for planes.
 - **Audio:** Audio settings are saved, but nothing plays them yet (plan C6: the engine's mixer over `SYS_AUDIO_STREAM`).
 - **Rendering:** the editor's CPU preview does not use lights, sky, sky light or post processing. The FarcadeGL renderer (`engine/gfx`, in progress) does.

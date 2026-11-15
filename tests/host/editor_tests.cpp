@@ -868,6 +868,36 @@ int main() {
         frames(2);
     }
 
+    // ---- physics in Play: a ball falls onto the ground, through a trigger
+    {
+        int objects0 = ed.scene.count();
+        ObjectId floor_ = ed.create_object("Phys Floor", MeshKind::Plane, Vec3(20, 0, 0));
+        ed.scene.get(floor_)->scale = Vec3(4, 1, 4);
+        ed.scene.add_module(floor_, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(floor_)->modules.collider3d.size.y < 0.2f, "a plane's collider starts thin");
+        ObjectId ball = ed.create_object("Phys Ball", MeshKind::Sphere, Vec3(20, 3, 0));
+        ed.scene.add_module(ball, ModuleKind::RigidBody3D);
+        ed.scene.add_module(ball, ModuleKind::Collider3D);
+        CHECK(ed.scene.get(ball)->modules.collider3d.shape == ColliderShape::Sphere, "a sphere's collider starts as a sphere");
+        ObjectId zone = ed.create_kind("Phys Zone", ObjectKind::Empty, Vec3(20, 1.5f, 0));
+        ed.scene.add_module(zone, ModuleKind::Collider3D);
+        ed.scene.get(zone)->modules.collider3d.mode = ColliderMode::Trigger;
+        int events0 = ed.physics_event_count;
+        ed.play();
+        CHECK(ed.play_physics() != nullptr, "Play starts physics");
+        frames(150);                                 // 2.5 s at 60 fps
+        float y = ed.scene.get(ball)->position.y;
+        CHECK(y > 0.4f && y < 0.6f, "the ball fell and rests on the floor (y %.3f)", y);
+        CHECK(ed.physics_event_count >= events0 + 3, "trigger enter, exit and the hit were reported (%d)", ed.physics_event_count - events0);
+        bool logged = false;
+        for (int i = 0; i < ed.log_count; i++) logged |= strstr(ed.log_lines[i].text, "Phys Ball entered trigger Phys Zone") != nullptr;
+        CHECK(logged, "the console says the ball entered the trigger");
+        ed.stop();
+        CHECK(ed.scene.get(ball)->position.y == 3.0f && !ed.play_physics(), "Stop puts the ball back");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");

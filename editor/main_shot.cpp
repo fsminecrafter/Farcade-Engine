@@ -79,11 +79,9 @@ static void demo_scene(Editor& ed) {
     ed.create_kind("Post Processing", ObjectKind::PostProcess, Vec3(-2.6f, 2.2f, -3.0f));
     ed.scene.add_module(sphere, ModuleKind::RigidBody3D);
     ed.scene.add_module(sphere, ModuleKind::Collider3D);
-    ed.scene.get(sphere)->modules.collider3d.shape = ColliderShape::Sphere;
     ed.scene.add_module(sphere, ModuleKind::AudioSampler);
     snprintf(ed.scene.get(sphere)->modules.audio_sampler.path, kPathMax, "%s", "sounds/bounce.wav");
     ed.scene.add_module(ground, ModuleKind::Collider3D);
-    ed.scene.get(ground)->modules.collider3d.size = Vec3(2, 0.1f, 2);
     // Crate selected, then shift-click on the ball: two selected, the ball active.
     ed.scene.select_only(cube);
     ed.scene.toggle(sphere);

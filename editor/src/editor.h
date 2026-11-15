@@ -11,6 +11,7 @@ namespace fe {
 
 class View3D;
 class World;
+class PhysicsWorld;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -118,7 +119,14 @@ public:
     // scripts, audio) plug into it; each frame the transforms come back to
     // the scene so the viewport shows them.
     World* play_world() { return world_; }
+    PhysicsWorld* play_physics() { return physics_; }
     uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
+    ObjectId object_of(uint64_t entity) const;
+    // Physics events while playing ("entered" / "left" a trigger, "hit"):
+    // logged to the console; the script runtime takes them over when set.
+    void (*on_physics_event)(Editor* ed, const char* what, uint64_t a, uint64_t b) = nullptr;
+    int physics_event_count = 0;
+    void physics_event(const char* what, uint64_t a, uint64_t b);
 
     ImFont* font_ui = nullptr;
     ImFont* font_medium = nullptr;      // headings, tabs, section titles
@@ -159,6 +167,7 @@ public:
 
 private:
     World* world_ = nullptr;
+    PhysicsWorld* physics_ = nullptr;
     ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
     uint64_t* world_entities_ = nullptr;
     int world_count_ = 0;

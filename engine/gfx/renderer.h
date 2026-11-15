@@ -80,6 +80,15 @@ struct RendererStats {
     double ms = 0;                      // render + readback, wall clock
 };
 
+// Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage
+// did not run), for tools and tests (see engine/gfx/passes.h).
+struct GpuTierStats {
+    double shadow_ms = 0, depth_ms = 0, ssao_ms = 0, blur_ms = 0, lit_ms = 0, bloom_ms = 0, composite_ms = 0, fxaa_ms = 0;
+    int passes = 0;                         // render passes of the frame
+    bool shadow_reused = false;             // the shadow map of the last frame was still valid
+    double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms; }
+};
+
 class Renderer {
 public:
     Renderer();
@@ -117,10 +126,16 @@ public:
     GraphicsFeatures features() const;
     // The FarcadeGL backend, from fglGetDeviceInfo ("cpu ...", "nvidia 3D engine").
     const char* backend() const;
+    // Stage timings of the last frame, and the render targets and shader
+    // programs the GPU tier holds right now (they are freed on resize and shutdown).
+    const GpuTierStats& gpu_tier_stats() const;
+    int gpu_tier_surfaces() const;
+    int gpu_tier_programs() const;
 
     struct Impl;
 private:
     Impl* impl_ = nullptr;
+    GraphicsSettings settings_;             // survives init / shutdown
 };
 
 }  // namespace fe::gfx

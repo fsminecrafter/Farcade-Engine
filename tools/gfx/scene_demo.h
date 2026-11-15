@@ -1,4 +1,5 @@
-// The demo scene of fe-gfx-shot: ground, cubes, spheres, three lights, gradient sky.
+// The demo scene of fe-gfx-shot: ground, cubes, metal / glossy / rough spheres, an emissive
+// item (bloom), a sun, a point and a spot light, gradient sky with fog.
 #pragma once
 #include "gfx/renderer.h"
 #include "gfx/meshgen.h"
@@ -10,7 +11,7 @@ struct DemoScene {
     Vec3 cube_p[kCubeVertices], cube_n[kCubeVertices];
     Vec3 plane_p[kPlaneVertices], plane_n[kPlaneVertices];
     Vec3 sph_p[kSeg * kRings * 6], sph_n[kSeg * kRings * 6];
-    DrawItem items[8];
+    DrawItem items[12];
     RenderLight lights[3];
     RenderScene scene;
 
@@ -22,28 +23,33 @@ struct DemoScene {
         RenderMesh plane{ plane_p, plane_n, kPlaneVertices, 2 };
         RenderMesh sphere{ sph_p, sph_n, (uint32_t)sphere_vertices(kSeg, kRings), 3 };
         int n = 0;
-        auto add = [&](const RenderMesh& m, Vec3 pos, Vec3 scl, float yaw, Vec3 col, float rough, bool unlit = false) {
+        auto add = [&](const RenderMesh& m, Vec3 pos, Vec3 scl, float yaw, Vec3 col, float rough, bool unlit = false,
+                       float metallic = 0.0f) {
             DrawItem& d = items[n++];
             d.mesh = m;
             d.model = Mat4::trs(pos, Quat::axis_angle(Vec3(0, 1, 0), yaw), scl);
             d.color = col;
             d.roughness = rough;
             d.unlit = unlit;
+            d.metallic = metallic;
         };
         add(plane, Vec3(0, 0, 0), Vec3(1, 1, 1), 0, Vec3(0.42f, 0.5f, 0.38f), 0.9f);
         add(cube, Vec3(-1.6f, 0.5f, -0.5f), Vec3(1, 1, 1), 0.4f, Vec3(0.85f, 0.25f, 0.2f), 0.6f);
         add(cube, Vec3(1.4f, 0.75f, -1.8f), Vec3(1.5f, 1.5f, 1.5f), -0.3f, Vec3(0.25f, 0.45f, 0.85f), 0.35f);
-        add(sphere, Vec3(0.1f, 0.5f, 0.6f), Vec3(1, 1, 1), 0, Vec3(0.9f, 0.8f, 0.3f), 0.25f);
-        add(sphere, Vec3(-0.6f, 0.3f, 2.0f), Vec3(0.6f, 0.6f, 0.6f), 0, Vec3(0.3f, 0.8f, 0.45f), 0.8f);
-        add(sphere, Vec3(2.6f, 0.4f, 0.8f), Vec3(0.8f, 0.8f, 0.8f), 0, Vec3(1.0f, 0.4f, 0.8f), 0.5f, true);
+        add(cube, Vec3(-3.2f, 1.2f, -2.6f), Vec3(0.5f, 2.4f, 0.5f), 0.2f, Vec3(0.8f, 0.8f, 0.75f), 0.7f);    // a post
+        add(sphere, Vec3(0.1f, 0.5f, 0.6f), Vec3(1, 1, 1), 0, Vec3(1.0f, 0.78f, 0.34f), 0.22f, false, 1.0f);  // gold
+        add(sphere, Vec3(1.7f, 0.4f, 2.0f), Vec3(0.8f, 0.8f, 0.8f), 0, Vec3(0.92f, 0.93f, 0.95f), 0.08f, false, 1.0f);  // chrome
+        add(sphere, Vec3(-0.6f, 0.3f, 2.0f), Vec3(0.6f, 0.6f, 0.6f), 0, Vec3(0.3f, 0.8f, 0.45f), 0.85f);     // rough
+        add(sphere, Vec3(-2.7f, 0.45f, 1.3f), Vec3(0.9f, 0.9f, 0.9f), 0, Vec3(0.75f, 0.12f, 0.3f), 0.12f);   // glossy plastic
+        add(sphere, Vec3(2.7f, 0.4f, 0.4f), Vec3(0.8f, 0.8f, 0.8f), 0, Vec3(2.6f, 1.5f, 0.6f), 0.5f, true);  // emissive
         scene.items = items;
         scene.item_count = n;
 
         RenderLight& sun = lights[0];
         sun.type = LightType::Directional;
-        sun.direction = normalize(Vec3(-0.3f, -0.21f, 0.93f));   // from behind the scene, low: the sun disc shows
+        sun.direction = normalize(Vec3(-0.6f, -0.36f, -0.6f));   // behind the camera, to the right, about 30 degrees up
         sun.color = Vec3(1.0f, 0.93f, 0.8f);
-        sun.intensity = 1.6f;
+        sun.intensity = 1.4f;
         RenderLight& pt = lights[1];
         pt.type = LightType::Point;
         pt.position = Vec3(-0.5f, 1.4f, 1.2f);
@@ -68,8 +74,11 @@ struct DemoScene {
         scene.sky.zenith = Vec3(0.12f, 0.30f, 0.65f);
         scene.sky.horizon = Vec3(0.55f, 0.68f, 0.85f);
         scene.sky.ground = Vec3(0.22f, 0.22f, 0.22f);
-        scene.sky_light.intensity = 0.45f;
+        scene.sky.fog = 0.35f;
+        scene.sky_light.intensity = 0.55f;
         scene.post.tonemap = Tonemap::ACES;
+        scene.post.bloom = 0.5f;
+        scene.post.exposure = -0.3f;
     }
 };
 

@@ -53,6 +53,9 @@ int height();
 Framebuffer& framebuffer();
 // Shows the framebuffer.
 void present();
+// Shows only a rectangle of it (the rest of the screen already shows the
+// framebuffer's previous content there).
+void present_region(int x, int y, int w, int h);
 
 // Takes the next event; false when there is none.
 bool poll(Event& e);

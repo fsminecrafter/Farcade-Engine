@@ -129,6 +129,7 @@ int main() {
     static Editor ed;
     E = &ed;
     CHECK(ed.init(1280, 800), "init");
+    ed.verify_damage = true;        // every incremental redraw is compared with a full one
     snprintf(ed.project_dir, sizeof(ed.project_dir), "%s", dir);
     snprintf(ed.files_dir, sizeof(ed.files_dir), "%s", dir);
     ed.camera.target = Vec3(0, 0.5f, 0);
@@ -1097,6 +1098,8 @@ int main() {
         }
     }
 
+    CHECK(ed.damage_mismatches == 0, "incremental UI redraws differ from full redraws in %d frames", ed.damage_mismatches);
+    printf("editor_tests: frames %d drawn %d skipped %d\n", ed.perf.frames, ed.perf.drawn, ed.perf.skipped);
     printf("editor_tests: %d checks, %d failed\n", g_checks, g_failed);
     ed.shutdown();
     return g_failed ? 1 : 0;

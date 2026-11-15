@@ -223,6 +223,17 @@ void present() {
     mos_graphics_present(0, 0, g_fb.width, g_fb.height);
 }
 
+void present_region(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > g_fb.width) w = g_fb.width - x;
+    if (y + h > g_fb.height) h = g_fb.height - y;
+    if (w <= 0 || h <= 0) return;
+    mos_graphics_blit_surface(g_fb.pixels, (uint32_t)g_fb.width, (uint32_t)g_fb.height, (uint32_t)g_fb.pitch * 4, x, y, w, h, x, y,
+                              SYS_GRAPHICS_BLIT_OPAQUE);
+    mos_graphics_present(x, y, w, h);
+}
+
 bool poll(Event& e) {
     if (g_head == g_tail) pump(0);
     if (g_head == g_tail) return false;

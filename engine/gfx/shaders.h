@@ -30,13 +30,17 @@ constexpr size_t kSourceBytes = 12 * 1024;
 //                   the sun, w cos of the disc radius, > 1 = no sun), u_suncol
 
 // Lit meshes with `directional`, `point` and `spot` lights.
+// `draft` shaders are for images that are replaced at once (camera drags): no
+// specular highlight, no sun disc or halo, no contrast, saturation or vignette,
+// and a two-term square root instead of pow() for the sRGB curve. They cost
+// about a third of the full ones per pixel.
 void lit_vertex(char* out, size_t cap);
-void lit_fragment(char* out, size_t cap, int directional, int point, int spot);
+void lit_fragment(char* out, size_t cap, int directional, int point, int spot, bool draft = false);
 // Flat albedo (still tonemapped and graded).
 void unlit_vertex(char* out, size_t cap);
-void unlit_fragment(char* out, size_t cap);
+void unlit_fragment(char* out, size_t cap, bool draft = false);
 // The background: one triangle covering the screen at the far plane.
 void sky_vertex(char* out, size_t cap);
-void sky_fragment(char* out, size_t cap);
+void sky_fragment(char* out, size_t cap, bool draft = false);
 
 }  // namespace fe::gfx::shaders

@@ -1167,6 +1167,39 @@ void test_gpu_tier_everything() {
     CHECK_EQ(s0.buffers, base.buffers);
 }
 
+// render_rows draws the same picture as render(): bands, with a vignette that
+// depends on the pixel position, and draft shading.
+void test_bands() {
+    Renderer r;
+    CHECK(r.init(W, H));
+    TestScene t;
+    t.camera(Vec3(0, 0, 4), Vec3(0, 0, 0));
+    t.scene.post.vignette = 0.6f;
+    for (int draft = 0; draft < 2; draft++) {
+        t.scene.draft = draft != 0;
+        if (!render_ok(r, t.scene)) return;
+        uint32_t* full = (uint32_t*)malloc((size_t)W * H * 4);
+        uint32_t* out = (uint32_t*)calloc((size_t)W * H, 4);
+        uint32_t* tmp = (uint32_t*)malloc((size_t)W * 7 * 4);
+        for (int i = 0; i < W * H; i++) {
+            uint32_t p = r.pixels()[i];
+            full[i] = (p & 0xFF00) | ((p & 0xFF) << 16) | ((p >> 16) & 0xFF);
+        }
+        const int rows = 7;
+        for (int y0 = 0; y0 < H; y0 += rows) {
+            int y = y0 + rows > H ? H - rows : y0;
+            if (!r.render_rows(t.scene, y, rows, tmp)) { fprintf(stderr, "render_rows: %s\n", r.error()); CHECK(false); break; }
+            memcpy(out + (size_t)y * W, tmp, (size_t)W * rows * 4);
+        }
+        int bad = 0;
+        for (int i = 0; i < W * H; i++) if ((out[i] & 0xFFFFFF) != (full[i] & 0xFFFFFF)) bad++;
+        CHECK_MSG(bad == 0, "bands differ from the full render in some pixels");
+        free(full); free(out); free(tmp);
+    }
+    t.scene.draft = false;
+    CHECK(render_ok(r, t.scene));       // and a full render still works after bands
+}
+
 }  // namespace
 
 int main() {
@@ -1190,5 +1223,6 @@ int main() {
     test_bloom();
     test_fxaa();
     test_gpu_tier_everything();
+    test_bands();
     return finish_tests("gfx_tests");
 }

@@ -71,6 +71,9 @@ struct RenderScene {
     Sky sky;
     SkyLight sky_light;
     PostProcess post;
+    // Cheaper shading for images that are replaced at once (a camera drag):
+    // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
+    bool draft = false;
 };
 
 struct RendererStats {
@@ -78,6 +81,11 @@ struct RendererStats {
     int triangles = 0;
     int uploads = 0;                    // mesh buffers uploaded this frame
     double ms = 0;                      // render + readback, wall clock
+    // Where the time of the last render() went (ms): compiling shaders,
+    // uploading meshes, the GPU run (fglSubmit), the readback syscall, the
+    // CPU pass that turns XRGB into RGBA. The rest is recording commands.
+    double shader_ms = 0, upload_ms = 0, submit_ms = 0, read_ms = 0, swizzle_ms = 0;
+    int shaders_compiled = 0;
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage
@@ -108,12 +116,23 @@ public:
     // FarcadeGL error (error() says which).
     bool render(const RenderScene& scene);
 
+    // Draws only rows [y0, y0 + rows) of the image (the same picture render()
+    // gives, up to rasterizer rounding at triangle edges) and writes them to
+    // dst as XRGB words (0x00RRGGBB, width() * rows of them), not to pixels().
+    // The cost is that of rows * width pixels: a full-size image can be drawn
+    // in bands, with the caller doing other work between them. The surfaces
+    // are recreated when `rows` changes.
+    bool render_rows(const RenderScene& scene, int y0, int rows, uint32_t* dst);
+
     // RGBA8 (R in the low byte, alpha 255), width() * height(), rows top to
     // bottom; valid until the next render() or resize().
     const uint32_t* pixels() const;
     int width() const;
     int height() const;
     const RendererStats& stats() const;
+    // init(): context + shader creation time, and the shader part of it (ms).
+    double init_ms() const;
+    double init_shader_ms() const;
     const char* error() const;
     // Drops cached GPU meshes (for example when a model file changed).
     void forget_meshes();

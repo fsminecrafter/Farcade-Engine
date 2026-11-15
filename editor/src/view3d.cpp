@@ -123,6 +123,8 @@ void View3D::begin(int w, int h, const Mat4& view, const Mat4& proj, uint32_t to
     tex_.pitch = w_;
     tex_.pixels = (uint8_t*)out_;
     tex_.linear = false;
+    tex_.opaque = true;
+    tex_.version++;
 }
 
 // ---------------------------------------------------------------- meshes

@@ -36,6 +36,13 @@ $(BUILD)/host/bin/fe-editor-shot: $$(EDITOR_HOST_OBJS) $(call host_objs,editor/m
 
 HOST_PROGRAMS += $(BUILD)/host/bin/fe-editor-shot
 
+# fe-editor-bench: the editor's benchmark phases on the host (editor/bench.h).
+$(BUILD)/host/bin/fe-editor-bench: $$(EDITOR_HOST_OBJS) $(call host_objs,editor/main_bench.cpp)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -o $@ $^ -lm
+
+HOST_PROGRAMS += $(BUILD)/host/bin/fe-editor-bench
+
 # Interaction tests on the headless platform.
 $(BUILD)/host/tests/host/%.o: HOST_EXTRA_FLAGS += $(EDITOR_INC)
 $(BUILD)/host/bin/editor_tests: $$(EDITOR_HOST_OBJS) $(call host_objs,tests/host/editor_tests.cpp)

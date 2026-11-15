@@ -72,6 +72,7 @@ struct Shader {
 struct Variant {
     Shader shader;
     int nd = 0, np = 0, ns = 0;
+    bool draft = false;
     uint64_t last_use = 0;
     bool used = false;
 };
@@ -110,14 +111,19 @@ FGLMat4 to_fgl(const Mat4& m) {
 }  // namespace
 
 struct Renderer::Impl {
-    int width = 0, height = 0;
+    int width = 0, height = 0;              // the image
+    int surf_w = 0, surf_h = 0;             // the surfaces: the image, or a band of it (render_rows)
+    int band_y0 = 0;                        // the band being drawn: its first row in the image
+    bool banding = false;
     FGLContext* gl = nullptr;
-    Shader unlit, sky;
+    Shader unlit[2], sky[2];                // [draft]
     Variant variants[kMaxVariants];
     FGLBuffer sky_buffer = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
     RendererStats stats;
+    double init_ms = 0, init_shader_ms = 0; // init(): all, and the shader compiles in it
+    bool in_render = false;
     uint64_t frame = 0;
 
     // GPU tier (graphics_settings.h, passes.h)
@@ -141,11 +147,13 @@ struct Renderer::Impl {
 
     // ---- context
 
-    bool make_context() {
+    bool make_context(int w, int h) {
         FGLContextDesc d;
         memset(&d, 0, sizeof d);
-        d.width = (uint32_t)width;
-        d.height = (uint32_t)height;
+        surf_w = w;
+        surf_h = h;
+        d.width = (uint32_t)w;
+        d.height = (uint32_t)h;
         d.window_id = 0;                    // never presented: offscreen
         d.depth = 1;
         d.page_flip = 0;
@@ -154,6 +162,21 @@ struct Renderer::Impl {
         static const FGLAttribute attrs[2] = { { 0, 3 }, { 12, 3 } };
         fglVertexLayout(gl, kVertexBytes, 2, attrs);
         return true;
+    }
+
+    // Surfaces of w x h (buffers and shaders belong to the device, not to the
+    // context: only the surfaces are recreated).
+    bool ensure_surface(int w, int h) {
+        if (gl && surf_w == w && surf_h == h) return true;
+        if (gl) fglDestroyContext(gl);
+        gl = nullptr;
+        return make_context(w, h);
+    }
+
+    // A band is drawn through a viewport as big as the image, shifted up by
+    // the band's first row: the rasterizer clips to the (smaller) surface.
+    void emit_viewport() {
+        if (banding) fglViewport(gl, 0, -band_y0, width, height);
     }
 
     // ---- shaders
@@ -181,7 +204,11 @@ struct Renderer::Impl {
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
+        double t0 = now_ms();
         FGLShader* sh = fglCreateShader(gl, vs, fs);
+        stats.shader_ms += now_ms() - t0;
+        stats.shaders_compiled++;
+        if (!in_render) init_shader_ms += now_ms() - t0;
         if (!sh) {
             snprintf(error, sizeof error, "%s shader: %s", what, fglShaderLog(gl));
             return false;
@@ -196,22 +223,21 @@ struct Renderer::Impl {
         *s = Shader();
     }
 
-    bool make_shaders() {
+    // The unlit and the sky shader (compiled on first use, cached).
+    bool use_shader(Shader* s, bool sky_shader, bool draft) {
+        if (s->sh) return true;
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return false; }
-        bool ok = true;
-        shaders::unlit_vertex(vs, shaders::kSourceBytes);
-        shaders::unlit_fragment(fs, shaders::kSourceBytes);
-        ok = compile(&unlit, vs, fs, "unlit");
-        if (ok) {
-            shaders::sky_vertex(vs, shaders::kSourceBytes);
-            shaders::sky_fragment(fs, shaders::kSourceBytes);
-            ok = compile(&sky, vs, fs, "sky");
-        }
+        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, draft); }
+        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, draft); }
+        bool ok = compile(s, vs, fs, sky_shader ? "sky" : "unlit");
         free(vs);
         free(fs);
-        if (!ok) return false;
+        return ok;
+    }
+
+    bool make_shaders() {
         // The sky: one triangle that covers the screen.
         static const float tri[18] = { -1, -1, 0, 0, 0, 0,   3, -1, 0, 0, 0, 0,   -1, 3, 0, 0, 0, 0 };
         sky_buffer = fglCreateBuffer(gl, sizeof tri);
@@ -224,9 +250,9 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns) {
+    Shader* lit_variant(int nd, int np, int ns, bool draft) {
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.draft == draft) { v.last_use = frame; return &v.shader; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -240,14 +266,14 @@ struct Renderer::Impl {
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
         shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns);
+        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, draft);
         Shader s;
         bool ok = compile(&s, vs, fs, "lit");
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
-        slot->nd = nd; slot->np = np; slot->ns = ns;
+        slot->nd = nd; slot->np = np; slot->ns = ns; slot->draft = draft;
         slot->used = true;
         slot->last_use = frame;
         return &slot->shader;
@@ -352,7 +378,10 @@ struct Renderer::Impl {
                         o[3] = ns[t].x; o[4] = ns[t].y; o[5] = ns[t].z;
                     }
                 }
-                if (fglBufferData(gl, b, s * kVertexBytes, scratch, k * kVertexBytes) != 0) {
+                double tu = now_ms();
+                int ur = fglBufferData(gl, b, s * kVertexBytes, scratch, k * kVertexBytes);
+                stats.upload_ms += now_ms() - tu;
+                if (ur != 0) {
                     set_error("FarcadeGL: cannot upload a vertex buffer");
                     return false;
                 }
@@ -486,7 +515,7 @@ struct Renderer::Impl {
         const Locs& l = s.loc;
         fglUniform4f(s.sh, l.post, p.exposure, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
         fglUniform4f(s.sh, l.tint, p.tint.x, p.tint.y, p.tint.z, (float)(int)p.tonemap);
-        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, 0);
+        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, banding ? (float)band_y0 : 0.0f);
     }
 
     void set_lit_frame(const Shader& s, const RenderScene& scene, const LightSet& ls) {
@@ -506,7 +535,7 @@ struct Renderer::Impl {
         }
     }
 
-    void set_sky_frame(const RenderScene& scene, const LightSet& ls) {
+    void set_sky_frame(Shader& sky, const RenderScene& scene, const LightSet& ls) {
         const Locs& l = sky.loc;
         const Sky& k = scene.sky;
         set_post(sky, scene.post);
@@ -538,6 +567,13 @@ struct Renderer::Impl {
 
     // ---- frame
 
+    int submit() {
+        double t = now_ms();
+        int r = fglSubmit(gl);
+        stats.submit_ms += now_ms() - t;
+        return r;
+    }
+
     // Binds the mesh of `it` and draws it with the shader and uniforms set by the caller.
     bool draw_mesh(const DrawItem& it, bool count, bool* failed) {
         MeshEntry temp_entry;
@@ -548,10 +584,13 @@ struct Renderer::Impl {
             return false;
         }
         // Keep the command buffer under the kernel's size limit.
-        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget && fglSubmit(gl) != 0) {
-            set_error("FarcadeGL: submit failed", gl->error);
-            *failed = true;
-            return false;
+        if ((gl->cmd_len + 4096u) * 4u > kCommandBudget) {
+            if (submit() != 0) {
+                set_error("FarcadeGL: submit failed", gl->error);
+                *failed = true;
+                return false;
+            }
+            emit_viewport();                // the next buffer binds the target again, which resets it
         }
         // A mirroring model matrix (negative determinant) turns the triangles
         // inside out: draw both faces, the depth test keeps the right ones.
@@ -595,10 +634,17 @@ struct Renderer::Impl {
         return f;
     }
 
-    bool render(const RenderScene& scene) {
+    // rows == 0: the whole image into `pixels` (as RGBA); else rows
+    // [y0, y0 + rows) into dst (XRGB, width * rows words). Bands are not
+    // available while the GPU tier or fog is on (render_rows fails then).
+    bool render(const RenderScene& scene, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
         double t0 = now_ms();
         stats = RendererStats();
+        in_render = true;
         error[0] = 0;
+        banding = rows > 0;
+        band_y0 = y0;
+        if (!ensure_surface(width, banding ? rows : height)) return false;
         gl->error = 0;
         frame++;
 
@@ -607,6 +653,11 @@ struct Renderer::Impl {
 
         // GPU tier / fog: replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
+        if (plan.any() && banding) {
+            set_error("FarcadeGL: bands are not available with the GPU tier or fog");
+            in_render = false;
+            return false;
+        }
         bool failed = false;
         bool tier_done = false;
         if (plan.any()) {
@@ -626,39 +677,53 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
         if (any_lit) {
-            lit = lit_variant(ls.nd, ls.np, ls.ns);
+            lit = lit_variant(ls.nd, ls.np, ls.ns, scene.draft);
             if (!lit) return false;
             set_lit_frame(*lit, scene, ls);
         }
-        set_post(unlit, scene.post);
-        set_sky_frame(scene, ls);
+        Shader& unlit_s = unlit[scene.draft ? 1 : 0];
+        Shader& sky_s = sky[scene.draft ? 1 : 0];
+        bool any_unlit = false;
+        for (int i = 0; i < scene.item_count; i++) if (scene.items[i].unlit) { any_unlit = true; break; }
+        if ((any_unlit && !use_shader(&unlit_s, false, scene.draft)) || !use_shader(&sky_s, true, scene.draft)) return false;
+        if (any_unlit) set_post(unlit_s, scene.post);
+        set_sky_frame(sky_s, scene, ls);
 
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        emit_viewport();
         fglSetProjection(gl, to_fgl(scene.camera.proj));
         fglSetView(gl, to_fgl(scene.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
 
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
-            draw_item(it, it.unlit ? unlit : *lit, &failed);
+            draw_item(it, it.unlit ? unlit_s : *lit, &failed);
         }
         if (!failed) {
             // The sky last, at the far plane: only uncovered pixels are shaded.
             fglDisable(gl, FGL_CULL_FACE);
-            fglUseShader(gl, sky.sh);
+            fglUseShader(gl, sky_s.sh);
             fglSetModel(gl, to_fgl(Mat4::identity()));
             fglDraw(gl, sky_buffer, 0, 3);
-            if (fglSubmit(gl) != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
+            if (submit() != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
         } else {
-            fglSubmit(gl);
+            submit();
         }
         }   // !tier_done
         free_temps();
         if (failed) return false;
-        if (fglReadPixels(gl, pixels, (uint32_t)width * 4) != 0) {
+        double tr = now_ms();
+        int rr = fglReadPixels(gl, banding ? dst : pixels, (uint32_t)width * 4);
+        stats.read_ms = now_ms() - tr;
+        if (rr != 0) {
             set_error("FarcadeGL: readback failed", gl->error);
             return false;
+        }
+        double ts = now_ms();
+        if (banding) {
+            stats.ms = now_ms() - t0;
+            return true;
         }
         // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque.
         uint32_t n = (uint32_t)width * (uint32_t)height;
@@ -666,6 +731,7 @@ struct Renderer::Impl {
             uint32_t p = pixels[i];
             pixels[i] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
         }
+        stats.swizzle_ms = now_ms() - ts;
         stats.ms = now_ms() - t0;
         return true;
     }
@@ -675,8 +741,7 @@ struct Renderer::Impl {
             free_temps();
             forget_all();
             for (Variant& v : variants) { if (v.used) drop(&v.shader); v.used = false; }
-            drop(&unlit);
-            drop(&sky);
+            for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
             tier.release(gl);
@@ -713,9 +778,14 @@ bool Renderer::init(int width, int height) {
     m.scratch = (float*)malloc((size_t)kUploadSlice * kVertexBytes);
     m.pixels = (uint32_t*)calloc((size_t)width * (size_t)height, 4);
     if (!m.scratch || !m.pixels) { m.set_error("out of memory"); return false; }
-    if (!m.make_context() || !m.make_shaders()) return false;
-    return true;
+    double t0 = now_ms();
+    bool ok = m.make_context(width, height) && m.make_shaders();
+    m.init_ms = now_ms() - t0;
+    return ok;
 }
+
+double Renderer::init_ms() const { return impl_ ? impl_->init_ms : 0; }
+double Renderer::init_shader_ms() const { return impl_ ? impl_->init_shader_ms : 0; }
 
 void Renderer::shutdown() {
     if (!impl_) return;
@@ -726,7 +796,7 @@ void Renderer::shutdown() {
     impl_ = nullptr;
 }
 
-bool Renderer::ready() const { return impl_ && impl_->gl && impl_->sky.sh; }
+bool Renderer::ready() const { return impl_ && impl_->gl && impl_->sky_buffer; }
 
 bool Renderer::resize(int width, int height) {
     if (!impl_) return init(width, height);
@@ -746,7 +816,19 @@ bool Renderer::resize(int width, int height) {
     m.pixels = px;
     m.width = width;
     m.height = height;
-    return m.make_context();
+    return m.make_context(width, height);
+}
+
+bool Renderer::render_rows(const RenderScene& scene, int y0, int rows, uint32_t* dst) {
+    if (!ready()) {
+        if (impl_ && !impl_->error[0]) impl_->set_error("the renderer is not initialised");
+        return false;
+    }
+    if (!dst || rows < 1 || y0 < 0 || y0 + rows > impl_->height) {
+        impl_->set_error("render_rows: rows outside the image");
+        return false;
+    }
+    return impl_->render(scene, y0, rows, dst);
 }
 
 bool Renderer::render(const RenderScene& scene) {

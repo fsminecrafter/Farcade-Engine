@@ -25,7 +25,7 @@ $(BUILD)/host/gen/fonts.o: $(FONTS_CPP)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(LANG_CXX) -O0 -c $< -o $@
 
-EDITOR_HOST_OBJS := $(call host_objs,$(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) editor/platform/platform_headless.cpp) \
+EDITOR_HOST_OBJS := $(call host_objs,$(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) $(ECS_SRC) $(FLECS_SRC) editor/platform/platform_headless.cpp) \
                     $(BUILD)/host/gen/fonts.o
 
 # fe-editor-shot: renders the editor with a demo scene to PNG files.

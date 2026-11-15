@@ -5,7 +5,7 @@
 # The lists are expanded when the link rule runs, so files added to
 # mk/editor.mk are picked up whatever the include order.
 
-EDITOR_OS_SRC = $(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) editor/platform/platform_minimalos.cpp editor/main_os.cpp
+EDITOR_OS_SRC = $(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) $(ECS_SRC) $(FLECS_SRC) editor/platform/platform_minimalos.cpp editor/main_os.cpp
 
 OS_OBJS_farcade-editor = $(call os_objs,$(EDITOR_OS_SRC)) $(BUILD)/os/gen/fonts.o
 

@@ -2,6 +2,7 @@
 #include "icons.h"
 #include "swraster.h"
 #include "platform/platform.h"
+#include "ecs/ecs.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -278,7 +279,7 @@ void Editor::shutdown() {
     platform::shutdown();
 }
 
-Editor::~Editor() { delete play_backup_; }
+Editor::~Editor() { free_world(); delete play_backup_; }
 
 // ---------------------------------------------------------------- UI rects
 
@@ -563,12 +564,102 @@ void Editor::play() {
     play_backup_ = new Scene();
     play_backup_->copy_from(scene);
     play_time = 0.0;
-    log(LogLevel::Info, "Play: the scene is saved and comes back on Stop. Scripts do not run yet (they need the Lua runtime).");
+    build_world();
+    log(LogLevel::Info, "Play: the scene runs as %d entities and comes back on Stop. Scripts do not run yet (they need the Lua runtime).", world_count_);
+}
+
+void Editor::build_world() {
+    free_world();
+    world_ = new World();
+    if (!world_->init()) {
+        log(LogLevel::Error, "Play: the ECS world could not start");
+        free_world();
+        return;
+    }
+    int n = scene.count();
+    world_objects_ = (ObjectId*)malloc(sizeof(ObjectId) * (n ? n : 1));
+    world_entities_ = (uint64_t*)malloc(sizeof(uint64_t) * (n ? n : 1));
+    world_count_ = 0;
+    // All at the root first (a child can come before its parent in the
+    // list), then the parents.
+    for (int i = 0; i < n; i++) {
+        Object& o = scene.at(i);
+        Entity e = world_->create(o.name);
+        if (!e) e = world_->create(nullptr);    // a name taken by a sibling, or reserved
+        if (!e) continue;
+        Transform* t = world_->transform(e);
+        t->position = o.position;
+        t->rotation = o.rotation;
+        t->scale = o.scale;
+        world_->load(e, o.modules);
+        if (o.kind == ObjectKind::Mesh) {
+            Renderable* r = world_->add_renderable(e);
+            r->mesh = (uint8_t)o.mesh;
+            memcpy(r->model_path, o.model_path, sizeof(r->model_path));
+            r->color = o.color;
+            r->visible = o.visible;
+        }
+        world_objects_[world_count_] = o.id;
+        world_entities_[world_count_] = e;
+        world_count_++;
+    }
+    for (int i = 0; i < world_count_; i++) {
+        Object* o = scene.get(world_objects_[i]);
+        if (o && o->parent) {
+            Entity pe = entity_of(o->parent);
+            if (pe && !world_->set_parent(world_entities_[i], pe)) {
+                // A sibling has the same name: flecs names are unique per parent.
+                world_->set_name(world_entities_[i], nullptr);
+                world_->set_parent(world_entities_[i], pe);
+            }
+        }
+    }
+    // The current flags as the scene has them.
+    for (int k = 0; k < kModuleKindCount; k++) {
+        ObjectId c = scene.current((ModuleKind)k);
+        if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
+    }
+    world_->update_transforms();
+}
+
+uint64_t Editor::entity_of(ObjectId id) const {
+    if (!id) return 0;
+    for (int i = 0; i < world_count_; i++)
+        if (world_objects_[i] == id) return world_entities_[i];
+    return 0;
+}
+
+void Editor::step_world(float dt) {
+    if (!world_) return;
+    world_->progress(dt);
+    // Transforms and current flags back into the scene, for the viewport
+    // and the Inspector.
+    for (int i = 0; i < world_count_; i++) {
+        Object* o = scene.get(world_objects_[i]);
+        Entity e = world_entities_[i];
+        if (!o || !world_->alive(e)) continue;
+        if (const Transform* t = world_->transform(e)) {
+            o->position = t->position;
+            o->rotation = t->rotation;
+            o->scale = t->scale;
+        }
+    }
+}
+
+void Editor::free_world() {
+    if (world_) { world_->shutdown(); delete world_; }
+    world_ = nullptr;
+    free(world_objects_);
+    free(world_entities_);
+    world_objects_ = nullptr;
+    world_entities_ = nullptr;
+    world_count_ = 0;
 }
 
 void Editor::stop() {
     if (!playing()) return;
     ObjectId next = scene.next_id();
+    free_world();
     scene.copy_from(*play_backup_);
     scene.keep_ids_above(next);         // objects made while playing keep their ids retired
     delete play_backup_;
@@ -673,7 +764,10 @@ bool Editor::frame() {
         }
     }
     io.DisplaySize = ImVec2((float)platform::width(), (float)platform::height());
-    if (playing()) play_time += io.DeltaTime;
+    if (playing()) {
+        play_time += io.DeltaTime;
+        step_world(io.DeltaTime);
+    }
 
     ui_rect_count = 0;
     ImGui::NewFrame();

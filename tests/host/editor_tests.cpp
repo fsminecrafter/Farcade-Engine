@@ -1,6 +1,7 @@
 // Editor interaction tests on the headless platform: mouse and keyboard
 // events go in, the editor's state is checked after a few frames.
 #include "editor.h"
+#include "ecs/ecs.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -777,6 +778,45 @@ int main() {
         // Clean up so the rest of the tests see the old scene.
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         ed.scene.clear_selection();
+        frames(2);
+    }
+
+    // ---- Play runs the scene as an ECS world
+    {
+        int objects0 = ed.scene.count();
+        ObjectId cam = ed.create_kind("Play Cam", ObjectKind::Camera, Vec3(1, 2, 3));
+        ObjectId cam_b = ed.create_kind("Play Cam B", ObjectKind::Camera, Vec3(2, 2, 3));
+        ed.scene.set_current(cam_b, ModuleKind::Camera);
+        ObjectId root = ed.create_object("Rig", MeshKind::Cube, Vec3(1, 0, 0));
+        ObjectId kid = ed.create_child("Rig Part", MeshKind::Sphere, root);
+        ed.scene.get(root)->rotation = Quat::euler_deg(Vec3(0, 90, 0));
+        ed.scene.add_module(kid, ModuleKind::Light);
+        ed.scene.get(kid)->modules.light.intensity = 3.5f;
+        CHECK(ed.play_world() == nullptr, "no world while editing");
+        ed.play();
+        World* w = ed.play_world();
+        CHECK(w != nullptr, "Play builds a world");
+        if (w) {
+            uint64_t ek = ed.entity_of(kid), er = ed.entity_of(root);
+            CHECK(ek && er && w->parent(ek) == er, "the parent/child tree is in the world");
+            const WorldTransform* wt = w->world_transform(ek);
+            Mat4 sm = ed.scene.world_matrix(*ed.scene.get(kid));
+            bool same = wt != nullptr;
+            for (int i = 0; same && i < 16; i++) same = fabsf(wt->matrix.m[i] - sm.m[i]) < 1e-4f;
+            CHECK(same, "world transforms match the scene's");
+            const Light* l = w->has(ek, ModuleKind::Light) ? (const Light*)w->get(ek, ModuleKind::Light) : nullptr;
+            CHECK(l && l->intensity == 3.5f, "modules are components");
+            CHECK(w->current(ModuleKind::Camera) == ed.entity_of(cam_b), "the current camera is current in the world");
+            CHECK(w->renderable(er) && !w->renderable(ed.entity_of(cam)), "mesh objects are renderable, cameras not");
+            // A system moving an entity moves the object in the editor.
+            Transform* t = w->transform(er);
+            if (t) t->position = Vec3(5, 0, 0);
+            frames(2);
+            CHECK(ed.scene.get(root)->position.x == 5.0f, "transforms come back to the scene each frame");
+        }
+        ed.stop();
+        CHECK(ed.play_world() == nullptr && ed.scene.get(root)->position.x == 1.0f, "Stop drops the world and restores the scene");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         frames(2);
     }
 

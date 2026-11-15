@@ -10,6 +10,7 @@ struct ImFont;
 namespace fe {
 
 class View3D;
+class World;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -106,6 +107,12 @@ public:
     void play();
     void stop();
     double play_time = 0.0;
+    // While playing, the scene runs as an ECS world (engine/ecs): one entity
+    // per object, with its transform, modules and mesh. Systems (physics,
+    // scripts, audio) plug into it; each frame the transforms come back to
+    // the scene so the viewport shows them.
+    World* play_world() { return world_; }
+    uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
 
     ImFont* font_ui = nullptr;
     ImFont* font_medium = nullptr;      // headings, tabs, section titles
@@ -145,6 +152,13 @@ public:
     bool log_scroll_to_end = false;
 
 private:
+    World* world_ = nullptr;
+    ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
+    uint64_t* world_entities_ = nullptr;
+    int world_count_ = 0;
+    void build_world();
+    void step_world(float dt);
+    void free_world();
     ObjectId duplicate_one(ObjectId src, ObjectId parent, bool offset, ObjectId* from, ObjectId* to, int* pairs);
     void build_ui();
     void script_section(Object* o, int index);

@@ -7,11 +7,31 @@ on a PC (Linux) and tested there and in QEMU.
 The plan behind it is `docs/farcade-engine-plan.md` in the Minimal-OS
 repository.
 
+![The Farcade editor: scene tree, viewport with gizmo, inspector and files](docs/screenshots/editor-dark.png)
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Light theme](docs/screenshots/editor-light.png) | ![Modules on an object: Rigidbody 3D, Collider 3D, Audio Sampler](docs/screenshots/editor-modules.png) |
+| **Light theme**: the same scene, with a script and its inputs in the Inspector | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
+| ![A camera object and its Current switch](docs/screenshots/editor-camera.png) | ![Play mode](docs/screenshots/editor-play.png) |
+| **Scene objects**: a camera with its Current switch; cameras, lights, sky, sky light and post processing in the tree (current ones starred) | **Play mode**: the scene is saved and comes back on Stop |
+
+![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
+
+*The editor running full screen on Minimal-OS (QEMU, 1024x768), from an
+earlier build.*
+
+The screenshots come from `build/host/bin/fe-editor-shot <dir>`, which
+renders the editor headless on the PC, and from `tools/ci/run_os.sh` with
+`SCREENDUMP` on Minimal-OS.
+
 ## Layout
 
 | Directory | What |
 |---|---|
-| `engine/` | the engine libraries (core, `.mof` models, ...) |
+| `engine/` | the engine libraries (core, `.mof` models, scene modules, ...) |
 | `editor/` | the editor (Dear ImGui, drawn by a software rasterizer) |
 | `runtime/minimalos/` | the small C/C++ runtime the engine needs on Minimal-OS |
 | `tools/` | PC tools (model converter, CI scripts) |

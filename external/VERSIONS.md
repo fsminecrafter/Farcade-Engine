@@ -10,6 +10,7 @@ licence file. To update one, copy the new files over and change this table.
 | stb | https://github.com/nothings/stb | master | 9600522 | MIT or public domain (stb_sprintf.h from deprecated/) |
 | cgltf | https://github.com/jkuhlmann/cgltf | master | 85cd623 | MIT |
 | fast_obj | https://github.com/thisistherk/fast_obj | master | d620667 | MIT |
+| flecs | https://github.com/SanderMertens/flecs | tag v4.1.6 | fb55f3c | MIT (single-file distribution: flecs.c, flecs.h) |
 | Minimal-OS-SDK | https://github.com/fsminecrafter/Minimal-OS-SDK | main | git submodule | GPLv3 |
 
 Fonts in editor/fonts come from MOSdesk (Inter: SIL OFL 1.1, Roboto Mono:

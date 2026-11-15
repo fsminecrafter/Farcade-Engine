@@ -54,7 +54,9 @@ int main(int argc, char** argv) {
         printf("FE EDITOR FAIL: init (screen busy?)\n");
         return 1;
     }
-    ImGui::GetIO().MouseDrawCursor = true;
+    // Full screen draws its own cursor; in a desktop window mosWM draws it.
+    ImGui::GetIO().MouseDrawCursor = !platform::windowed();
+    if (platform::windowed()) printf("FE EDITOR windowed (MOSdesk)\n");
     // The platform layer starts its mouse at the centre of the screen; show
     // the cursor there before the first mouse event arrives.
     ImGui::GetIO().AddMousePosEvent(platform::width() * 0.5f, platform::height() * 0.5f);

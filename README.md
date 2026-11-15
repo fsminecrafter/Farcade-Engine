@@ -14,7 +14,7 @@ repository.
 | | |
 |---|---|
 | ![Light theme](docs/screenshots/editor-light.png) | ![Modules on an object: Rigidbody 3D, Collider 3D, Audio Sampler](docs/screenshots/editor-modules.png) |
-| **Light theme**: the same scene, with a script and its inputs in the Inspector | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
+| **Light theme**: the same scene; the parent/child tree in the Hierarchy | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
 | ![A camera object and its Current switch](docs/screenshots/editor-camera.png) | ![Play mode](docs/screenshots/editor-play.png) |
 | **Scene objects**: a camera with its Current switch; cameras, lights, sky, sky light and post processing in the tree (current ones starred) | **Play mode**: the scene is saved and comes back on Stop |
 

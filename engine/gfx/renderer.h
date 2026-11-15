@@ -1,0 +1,114 @@
+// The FarcadeGL renderer: draws a RenderScene (a camera, meshes, lights, a
+// sky, ambient light, post processing) through FarcadeGL into an offscreen
+// color buffer and hands back the pixels.
+//
+// The editor fills a RenderScene from its Scene and shows the pixels in the
+// viewport (FarcadeGL renders, fglReadPixels reads back, ImGui shows the
+// image); the runtime fills one from the ECS world. On Minimal-OS FarcadeGL
+// runs on the kernel's FGPU; on the host build the same farcadegl.h calls
+// run on a host copy of the FGPU CPU backend (engine/gfx/host), so the
+// renderer is tested on the PC.
+//
+// This header has no FarcadeGL types in it: callers don't include
+// farcadegl.h.
+#pragma once
+
+#include "core/math.h"
+#include "scene/modules.h"
+#include <stdint.h>
+
+namespace fe::gfx {
+
+// A triangle list in object space. `key` identifies the mesh data so the
+// renderer uploads it once and reuses the GPU buffer: the same key (with
+// the same vertex_count) must mean the same vertices. 0 = upload every frame.
+struct RenderMesh {
+    const Vec3* positions = nullptr;
+    const Vec3* normals = nullptr;
+    uint32_t vertex_count = 0;
+    uint64_t key = 0;
+};
+
+struct DrawItem {
+    RenderMesh mesh;
+    Mat4 model;                         // object to world
+    Vec3 color = Vec3(0.8f, 0.8f, 0.8f);  // sRGB albedo
+    float roughness = 0.6f;
+    bool unlit = false;
+};
+
+// A light in world space (filled from a Light module and its object).
+struct RenderLight {
+    LightType type = LightType::Point;
+    Vec3 position;                      // Point, Spot
+    Vec3 direction = Vec3(0, -1, 0);    // Directional, Spot: where the light goes (normalized)
+    Vec3 color = Vec3(1, 1, 1);         // linear
+    float intensity = 1.0f;
+    float range = 10.0f;
+    float spot_angle = 45.0f;           // full cone, degrees
+    float spot_blend = 0.15f;
+    bool shadows = true;
+};
+
+struct RenderCamera {
+    Mat4 view;                          // world to view (engine Mat4 conventions, core/math.h)
+    Mat4 proj;                          // view to clip (Mat4::perspective / ortho)
+    Vec3 position;
+    float near_plane = 0.1f, far_plane = 500.0f;
+};
+
+struct RenderScene {
+    RenderCamera camera;
+    const DrawItem* items = nullptr;
+    int item_count = 0;
+    const RenderLight* lights = nullptr;
+    int light_count = 0;
+    // The current sky, sky light and post processing (defaults when the
+    // scene has none current).
+    Sky sky;
+    SkyLight sky_light;
+    PostProcess post;
+};
+
+struct RendererStats {
+    int draws = 0;
+    int triangles = 0;
+    int uploads = 0;                    // mesh buffers uploaded this frame
+    double ms = 0;                      // render + readback, wall clock
+};
+
+class Renderer {
+public:
+    Renderer();
+    ~Renderer();
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+
+    // Creates the FarcadeGL context and shaders (offscreen, width x height).
+    // False when FarcadeGL is not available; error() says why.
+    bool init(int width, int height);
+    void shutdown();
+    bool ready() const;
+    // Changes the size (recreates the targets; cached meshes stay).
+    bool resize(int width, int height);
+
+    // Draws the scene and reads the result back. Returns false on a
+    // FarcadeGL error (error() says which).
+    bool render(const RenderScene& scene);
+
+    // RGBA8 (R in the low byte, alpha 255), width() * height(), rows top to
+    // bottom; valid until the next render() or resize().
+    const uint32_t* pixels() const;
+    int width() const;
+    int height() const;
+    const RendererStats& stats() const;
+    const char* error() const;
+    // Drops cached GPU meshes (for example when a model file changed).
+    void forget_meshes();
+
+    struct Impl;
+private:
+    Impl* impl_ = nullptr;
+};
+
+}  // namespace fe::gfx

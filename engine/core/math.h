@@ -70,6 +70,8 @@ struct Mat4 {
     static Mat4 rotation(const Quat& q);
     static Mat4 trs(const Vec3& t, const Quat& r, const Vec3& s);
     static Mat4 perspective(float fovy_rad, float aspect, float znear, float zfar);
+    // OpenGL clip conventions (z from -1 at near to +1 at far), like perspective.
+    static Mat4 orthographic(float half_height, float aspect, float znear, float zfar);
     static Mat4 look_at(const Vec3& eye, const Vec3& target, const Vec3& up);
 };
 Mat4 operator*(const Mat4& a, const Mat4& b);

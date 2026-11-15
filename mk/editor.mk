@@ -2,7 +2,7 @@
 
 IMGUI_SRC := external/imgui/imgui.cpp external/imgui/imgui_draw.cpp external/imgui/imgui_tables.cpp \
              external/imgui/imgui_widgets.cpp external/imgui/imgui_demo.cpp external/imguizmo/ImGuizmo.cpp
-CORE_SRC  := engine/core/math.cpp
+CORE_SRC  := engine/core/math.cpp engine/scene/modules.cpp
 EDITOR_SRC := editor/src/editor.cpp editor/src/panels.cpp editor/src/viewport.cpp editor/src/scene.cpp \
               editor/src/icons.cpp editor/src/swraster.cpp editor/src/view3d.cpp editor/src/widgets.cpp editor/src/script.cpp
 

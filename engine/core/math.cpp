@@ -139,6 +139,16 @@ Mat4 Mat4::perspective(float fovy, float aspect, float zn, float zf) {
     return r;
 }
 
+Mat4 Mat4::orthographic(float half_height, float aspect, float zn, float zf) {
+    Mat4 r;
+    float hw = half_height * aspect;
+    r.at(0, 0) = 1.0f / hw;
+    r.at(1, 1) = 1.0f / half_height;
+    r.at(2, 2) = -2.0f / (zf - zn);
+    r.at(2, 3) = -(zf + zn) / (zf - zn);
+    return r;
+}
+
 Mat4 Mat4::look_at(const Vec3& eye, const Vec3& target, const Vec3& up) {
     Vec3 f = normalize(target - eye);
     Vec3 s = normalize(cross(f, up));

@@ -1,13 +1,14 @@
 # Scene files
 
 The editor saves a scene as a `.fescene` file: plain text, one value per
-line, written and read by `editor/src/scene_io.{h,cpp}`.
+line, written and read by `editor/src/scene_io.{h,cpp}`. Two objects from
+the demo scene, as the editor saves them:
 
 ```
 farcade-scene 1
 next_id 14
 
-object 5
+object 4
   name "Pillar"
   kind mesh
   position 2.5999999 1 1.60000002
@@ -21,18 +22,33 @@ object 5
   cast_shadows true
   module collider3d
     shape Cylinder
-    radius 0.5
-    ...
+    mode Collision
+    center 0 0 0
+    size 1 1 1
+    radius 0.600000024
+    height 1
+    friction 0.5
+    bounciness 0
+    layer 1
   end
 end
 
 object 6
   name "Lamp"
   kind mesh
-  parent 5
-  ...
+  parent 4
+  position 0 0.649999976 0
+  rotation 0 0 0 1
+  scale 0.600000024 0.150000006 0.600000024
+  mesh sphere
+  color 0.980000019 0.850000024 0.449999988
+  roughness 0.600000024
+  metallic 0
+  unlit false
+  cast_shadows true
   script "scripts/lamp.lua"
     prop follow object 3
+    prop threshold number 6 0 0
   end
 end
 ```

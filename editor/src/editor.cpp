@@ -791,7 +791,10 @@ void Editor::project_path(const char* path, char* out, size_t cap) const {
     // Full paths: "/..." on the host, "0:/..." (a drive) on Minimal-OS.
     const char* colon = strchr(path, ':');
     bool full = path[0] == '/' || (colon && colon[1] == '/' && !memchr(path, '/', (size_t)(colon - path)));
-    if (full || !project_dir[0]) snprintf(out, cap, "%s", path);
+    // Paths from the Files panel already start with the project folder.
+    size_t pl = strlen(project_dir);
+    bool in_project = pl && strncmp(path, project_dir, pl) == 0 && path[pl] == '/';
+    if (full || in_project || !project_dir[0]) snprintf(out, cap, "%s", path);
     else snprintf(out, cap, "%s/%s", project_dir, path);
 }
 

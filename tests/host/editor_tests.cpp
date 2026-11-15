@@ -1188,6 +1188,53 @@ int main() {
               back.script_prop(kid, "gate", "speed")->number == 12.5f && !back.script_prop(kid, "gate", "open")->toggle,
               "script inputs come back with their values and links");
 
+        // Every field of every module, set away from its default, comes back.
+        {
+            Scene all;
+            for (int k = 0; k < kModuleKindCount; k++) {
+                Object* o = all.create_with_id((ObjectId)(k + 1));
+                const ModuleInfo& mi = module_info((ModuleKind)k);
+                o->modules.add((ModuleKind)k);
+                uint8_t* d = (uint8_t*)o->modules.data((ModuleKind)k);
+                for (int f = 0; f < mi.field_count; f++) {
+                    const FieldInfo& fi = mi.fields[f];
+                    uint8_t* p = d + fi.offset;
+                    switch (fi.type) {
+                    case FieldType::Float: { float v; memcpy(&v, p, 4); v = v * 1.5f + 0.3125f; memcpy(p, &v, 4); break; }
+                    case FieldType::Int: { int32_t v; memcpy(&v, p, 4); v += 3; memcpy(p, &v, 4); break; }
+                    case FieldType::Bits: { uint32_t v; memcpy(&v, p, 4); v ^= 0x80000010u; memcpy(p, &v, 4); break; }
+                    case FieldType::Bool: *(bool*)p = !*(bool*)p; break;
+                    case FieldType::Enum: { int n = 0; while (fi.enum_names[n]) n++; *p = (uint8_t)((*p + 1) % n); break; }
+                    case FieldType::Color:
+                    case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
+                    case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
+                    }
+                }
+            }
+            size_t n = 0;
+            char* t = save_scene_text(all, "", &n);
+            Scene got;
+            SceneLoadReport r2;
+            bool ok = t && load_scene_text(got, t, n, &r2) && r2.skipped == 0 && got.count() == kModuleKindCount;
+            int wrong = 0;
+            for (int k = 0; ok && k < kModuleKindCount; k++) {
+                const ModuleInfo& mi = module_info((ModuleKind)k);
+                Object* a1 = all.get((ObjectId)(k + 1));
+                Object* b1 = got.get((ObjectId)(k + 1));
+                if (!b1 || !b1->modules.has((ModuleKind)k)) { wrong++; continue; }
+                const uint8_t* da = (const uint8_t*)a1->modules.data((ModuleKind)k);
+                const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
+                for (int f = 0; f < mi.field_count; f++) {
+                    const FieldInfo& fi = mi.fields[f];
+                    size_t sz = fi.type == FieldType::Path ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
+                              : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
+                    if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
+                }
+            }
+            free(t);
+            CHECK(ok && wrong == 0, "every field of every module comes back (%d wrong, %d skipped)", wrong, r2.skipped);
+        }
+
         // Unknown lines are skipped, broken files are refused.
         const char* future = "farcade-scene 1\nnext_id 5\nobject 2\n  name \"X\"\n  sparkle 3\n  module light\n    glow 1\n    intensity 2\n  end\n"
                              "  module warp_drive\n    speed 9\n  end\nend\n";
@@ -1215,6 +1262,12 @@ int main() {
         ed.scene.get(base)->position = Vec3(9, 9, 9);
         CHECK(ed.save_scene("scenes/during-play.fescene"), "saving while playing works");
         ed.stop();
+        // Double-click in Files hands over the full path (project folder included).
+        ed.new_scene();
+        char main_full[300];
+        snprintf(main_full, sizeof main_full, "%s/scenes/main.fescene", ed.project_dir);
+        ed.open_file(main_full);
+        CHECK(ed.scene.count() == count && !strcmp(ed.scene_path, main_full), "opening a scene from Files works (%s)", ed.scene_path);
         ed.new_scene();
         CHECK(ed.scene.count() == 0 && !ed.scene_path[0], "New scene empties it");
         CHECK(ed.open_scene("scenes/during-play.fescene") && ed.scene.count() == count && ed.scene.get(base)->position.x == 1.0f,

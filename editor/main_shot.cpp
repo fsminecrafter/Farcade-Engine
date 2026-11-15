@@ -256,12 +256,22 @@ int main(int argc, char** argv) {
         snprintf(path, sizeof(path), "%s/editor-farcadegl.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
+        // The GPU tier (shadows, AO, bloom, AA, PBR), forced on the CPU backend.
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::Ultra);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        for (int i = 0; i < 3; i++) ed.frame();
+        printf("FarcadeGL viewport, GPU tier: %.1f ms\n", ed.view_ms);
+        snprintf(path, sizeof(path), "%s/editor-farcadegl-ultra.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
         ed.play();
         for (int i = 0; i < 3; i++) ed.frame();
         snprintf(path, sizeof(path), "%s/editor-farcadegl-play.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
         ed.stop();
+        ed.settings.graphics.allow_gpu_effects_on_cpu = false;
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
         ed.view_renderer = Editor::ViewRenderer::CpuPreview;
         ed.frame();
     }

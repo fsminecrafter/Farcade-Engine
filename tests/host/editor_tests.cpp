@@ -836,6 +836,17 @@ int main() {
         for (int i = 0; i < ed.log_count; i++) errors += ed.log_lines[i].level == LogLevel::Error && strstr(ed.log_lines[i].text, "FarcadeGL");
         CHECK(ed.view_renderer == Editor::ViewRenderer::FarcadeGL && errors == 0, "FarcadeGL renders without errors (%d)", errors);
         CHECK(ed.view_triangles > 0, "FarcadeGL drew triangles (%d)", ed.view_triangles);
+        // Settings > Graphics: the GPU tier is off on the CPU backend unless forced.
+        CHECK(ed.fgl_backend[0] && !ed.fgl_features.gpu && !ed.fgl_features.gpu_tier, "on the CPU backend the GPU tier is off (%s)", ed.fgl_backend);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        frames(2);
+        CHECK(ed.fgl_features.gpu_tier && ed.fgl_features.shadows && ed.fgl_features.pbr, "forcing it turns the GPU effects on");
+        ed.settings.graphics.shadows = false;
+        frames(2);
+        CHECK(!ed.fgl_features.shadows, "a GPU effect's switch turns it off");
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = false;
+        frames(2);
         // A sky changes the picture: read a viewport pixel before and after.
         auto pixel = [&](float fx, float fy) {
             Framebuffer& fb = platform::framebuffer();

@@ -283,6 +283,10 @@ void Editor::panel_viewport() {
     bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
     {
         uint8_t extra[2] = { (uint8_t)use_fgl, (uint8_t)looking_through_camera };
+        {
+            const uint8_t* gb = (const uint8_t*)&settings.graphics;
+            for (size_t i = 0; i < sizeof(settings.graphics); i++) { hash ^= gb[i]; hash *= 1099511628211ull; }
+        }
         for (uint8_t b : extra) { hash ^= b; hash *= 1099511628211ull; }
         if (looking_through_camera)
             for (int i = 0; i < 16; i++) { uint32_t u; memcpy(&u, &v.view.m[i], 4); hash ^= u; hash *= 1099511628211ull; }
@@ -295,8 +299,12 @@ void Editor::panel_viewport() {
             int w = (int)v.size.x, h = (int)v.size.y;
             bool ok = fgl.ready() ? ((fgl.width() == w && fgl.height() == h) || fgl.resize(w, h)) : fgl.init(w, h);
             if (ok) {
+                fgl.set_settings(settings.graphics);
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
                 ok = fgl.render(bridge.scene);
+                // What runs, for Settings > Graphics.
+                snprintf(fgl_backend, sizeof(fgl_backend), "%s", fgl.backend());
+                fgl_features = fgl.features();
             }
             if (ok) {
                 fgl_tex.format = SwTexture::RGBA8;

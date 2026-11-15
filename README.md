@@ -19,6 +19,10 @@ repository.
 | **Scene objects**: a camera with its Current switch; cameras, lights, sky, sky light and post processing in the tree (current ones starred) | **Play mode**: the scene is saved and comes back on Stop |
 | ![The viewport drawn by FarcadeGL](docs/screenshots/editor-farcadegl.png) | ![Play through the current camera, drawn by FarcadeGL](docs/screenshots/editor-farcadegl-play.png) |
 | **FarcadeGL** draws the viewport: the sun, the sky, the sky light and post processing (renderer menu, top right) | **Play** looks through the current camera (Main Camera) |
+| ![FarcadeGL base tier](docs/screenshots/gfx-low.png) | ![FarcadeGL GPU tier](docs/screenshots/gfx-ultra.png) |
+| **FarcadeGL, base tier** (runs everywhere, also on the CPU) | **GPU tier** (Ultra): sun shadows, ambient occlusion, bloom, PBR metals, FXAA, fog. On by default only on a graphics card |
+| ![Shaping a collider](docs/screenshots/editor-collider.png) | ![GPU tier in the editor](docs/screenshots/editor-farcadegl-ultra.png) |
+| **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
@@ -52,7 +56,8 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 
 ## Rendering and the entity system
 
-- **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows and bloom are not done yet.
+- **Graphics settings** (Settings > Graphics, `engine/gfx/graphics_settings.h`, `docs/graphics.md`): presets Low to Ultra. The GPU tier (shadow maps with soft PCF, SSAO, bloom, FXAA, GGX PBR) runs only when FarcadeGL is on a graphics card, unless forced with "Use on the CPU".
+- **FarcadeGL renderer** (`engine/gfx`, `fe::gfx::Renderer`): draws meshes with directional, point and spot lights (up to 8), hemisphere ambient from the Sky Light, a gradient sky with a sun, and post processing (exposure, ACES/Reinhard, contrast, saturation, tint, vignette) through the SDK's `farcadegl.h`. On Minimal-OS that runs on the kernel's FGPU; on the PC the same calls run on a copy of the FGPU CPU backend (`engine/gfx/host`, `external/fgpu`), so `gfx_tests` and `fe-gfx-shot` check it there. Shadows, AO and bloom are in the GPU tier (above).
 - **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
 - **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
 - **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box and sphere collisions, bounce, friction, triggers), a stand-in for Jolt.

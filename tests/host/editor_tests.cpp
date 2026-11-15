@@ -1302,6 +1302,115 @@ int main() {
         frames(2);
     }
 
+    // ---- undo and redo
+    {
+        ed.new_scene();
+        frames(2);
+        CHECK(!ed.can_undo() && !ed.can_redo() && !ed.scene_modified(), "a new scene has no history and no changes");
+        ObjectId u1 = ed.create_object("Undo A", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        ed.scene.add_module(u1, ModuleKind::Light);
+        ed.scene.get(u1)->modules.light.intensity = 4.0f;
+        ed.history_capture();
+        ObjectId u2 = ed.create_object("Undo B", MeshKind::Sphere, Vec3(2, 0.5f, 0));
+        ed.history_capture();
+        CHECK(ed.can_undo() && ed.scene_modified(), "edits go into the history and mark the scene changed");
+        ed.scene.select_only(u1);
+        ed.undo();
+        CHECK(!ed.scene.get(u2) && ed.scene.get(u1) && ed.can_redo(), "undo removes the last object");
+        CHECK(ed.scene.is_selected(u1) && ed.scene.active() == u1, "undo keeps the selection");
+        ed.redo();
+        CHECK(ed.scene.get(u2) && !ed.can_redo(), "redo brings it back");
+        // Delete through the editor, then undo: modules come back too.
+        ed.scene.select_only(u1);
+        ed.delete_selection();
+        ed.history_capture();
+        CHECK(!ed.scene.get(u1), "deleted");
+        ed.undo();
+        CHECK(ed.scene.get(u1) && ed.scene.get(u1)->modules.has(ModuleKind::Light) && ed.scene.get(u1)->modules.light.intensity == 4.0f,
+              "undo of a delete brings the object back with its modules");
+        // Ids are not handed out twice after an undo.
+        ed.undo();      // back before B
+        ObjectId u3 = ed.create_object("Undo C", MeshKind::Cube, Vec3(0, 0, 0));
+        CHECK(u3 > u2, "a new object after undo gets a fresh id (%u > %u)", (unsigned)u3, (unsigned)u2);
+        ed.history_capture();
+        CHECK(!ed.can_redo(), "a new edit clears redo");
+        ed.scene.clear_selection();
+        frames(2);
+        // A drag is one step: changes while a mouse button is down are not recorded on their own.
+        int steps0 = 0;
+        while (ed.can_undo()) { ed.undo(); steps0++; }
+        while (ed.can_redo()) ed.redo();
+        float qx = ed.view_rect[0] + 30, qy = ed.view_rect[1] + ed.view_rect[3] - 30;
+        ev_move(qx, qy); frames(1);
+        ev_button(qx, qy, 0, true); frames(1);
+        for (int i = 1; i <= 5; i++) { ed.scene.get(u3)->position.x = (float)i; ev_move(qx + i, qy); frames(1); }
+        ev_button(qx + 5, qy, 0, false); frames(2);
+        int steps1 = 0;
+        while (ed.can_undo()) { ed.undo(); steps1++; }
+        CHECK(steps1 == steps0 + 1, "a drag is one undo step (%d -> %d)", steps0, steps1);
+        while (ed.can_redo()) ed.redo();
+        CHECK(ed.scene.get(u3) && ed.scene.get(u3)->position.x == 5.0f, "redo all the way gives the dragged position back");
+        // Keys: Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z.
+        const uint16_t kz = (uint16_t)(platform::KEY_A + ('z' - 'a')), ky = (uint16_t)(platform::KEY_A + ('y' - 'a'));
+        auto chord = [&](uint16_t k, uint8_t mods) {
+            ev_key(platform::KEY_LCTRL, true, mods); ev_key(k, true, mods); frames(1);
+            ev_key(k, false, mods); ev_key(platform::KEY_LCTRL, false); frames(1);
+        };
+        chord(kz, platform::MOD_CTRL);
+        CHECK(ed.scene.get(u3)->position.x == 0.0f, "Ctrl+Z undoes (x %.1f)", ed.scene.get(u3)->position.x);
+        chord(ky, platform::MOD_CTRL);
+        CHECK(ed.scene.get(u3)->position.x == 5.0f, "Ctrl+Y redoes");
+        chord(kz, platform::MOD_CTRL);
+        chord(kz, platform::MOD_CTRL | platform::MOD_SHIFT);
+        CHECK(ed.scene.get(u3)->position.x == 5.0f, "Ctrl+Shift+Z redoes too");
+        // Play does not add history; Stop leaves it as it was.
+        int before_play = 0;
+        while (ed.can_undo()) { ed.undo(); before_play++; }
+        while (ed.can_redo()) ed.redo();
+        ed.play();
+        ed.scene.get(u3)->position.y = 42.0f;
+        frames(3);
+        ed.stop();
+        frames(2);
+        int after_play = 0;
+        while (ed.can_undo()) { ed.undo(); after_play++; }
+        while (ed.can_redo()) ed.redo();
+        CHECK(after_play == before_play, "Play adds no undo steps (%d, %d)", before_play, after_play);
+
+        // ---- unsaved changes: New scene and Open ask first
+        CHECK(ed.scene_modified(), "the scene has unsaved changes");
+        int n0 = ed.scene.count();
+        CHECK(click_ui("menubar:File") && (frames(2), click_ui("menu:New scene")), "File > New scene");
+        frames(2);
+        CHECK(ui("unsaved:cancel") != nullptr && ed.scene.count() == n0, "it asks first and keeps the scene");
+        click_ui("unsaved:cancel");
+        frames(2);
+        CHECK(ed.scene.count() == n0 && !ui("unsaved:cancel"), "Cancel keeps the scene");
+        click_ui("menubar:File"); frames(2); click_ui("menu:New scene"); frames(2);
+        CHECK(click_ui("unsaved:discard") && (frames(2), ed.scene.count() == 0), "Don't save empties it");
+        CHECK(!ed.scene_modified(), "the new scene has no unsaved changes");
+        // Unchanged: opening does not ask.
+        char lvl[300];
+        snprintf(lvl, sizeof lvl, "%s/scenes/level2.fscene", ed.project_dir);
+        ed.open_file(lvl);
+        frames(2);
+        CHECK(!ui("unsaved:save") && strstr(ed.scene_path, "level2.fscene") && ed.scene.count() > 0, "an unchanged scene opens without asking");
+        // Changed, then open with Save: the change is written first.
+        ed.create_object("Saved First", MeshKind::Cube, Vec3(0, 0, 0));
+        int with_new = ed.scene.count();
+        char mainp[300];
+        snprintf(mainp, sizeof mainp, "%s/scenes/main.fscene", ed.project_dir);
+        ed.open_file(mainp);
+        frames(2);
+        CHECK(click_ui("unsaved:save"), "the prompt's Save");
+        frames(2);
+        CHECK(strstr(ed.scene_path, "main.fscene") != nullptr, "then the other scene opens (%s)", ed.scene_path);
+        ed.open_scene("scenes/level2.fscene");
+        CHECK(ed.scene.count() == with_new, "the change was saved to level2 before leaving it");
+        ed.new_scene();
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
     ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");

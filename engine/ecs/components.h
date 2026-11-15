@@ -30,6 +30,12 @@ struct Renderable {
     char model_path[kPathMax] = {};
     Vec3 color = Vec3(1, 1, 1);
     bool visible = true;
+    // Material (scripts: obj.material). Roughness, metallic and
+    // cast_shadows show with FarcadeGL's GPU tier.
+    float roughness = 0.6f;
+    float metallic = 0.0f;
+    bool unlit = false;
+    bool cast_shadows = true;
 };
 
 }  // namespace fe

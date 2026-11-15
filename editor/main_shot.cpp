@@ -143,6 +143,7 @@ int main(int argc, char** argv) {
     snprintf(ed.files_dir, sizeof(ed.files_dir), "%s", project);
     ed.perf_clock = real_seconds;
     demo_scene(ed);
+    ed.history_reset();         // the demo scene is where undo starts
 
     platform::headless_set_time(0.0);
     // A few frames: the first builds the dock layout and font atlas.
@@ -282,6 +283,27 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
         if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) ImGui::SetScrollY(iw2, 0);
+        // An unsaved change, then File > New scene: the prompt. The pillar
+        // turns gold (one undo step), then Escape cancels the prompt and
+        // Ctrl+Z puts the pillar back.
+        for (int i = 0; i < ed.scene.count(); i++)
+            if (!strcmp(ed.scene.at(i).name, "Pillar")) ed.scene.at(i).color = Vec3(0.95f, 0.75f, 0.35f);
+        ed.history_capture();
+        ed.log(LogLevel::Info, "Pillar: color changed (Ctrl+Z undoes it)");
+        ed.request_new_scene();
+        for (int i = 0; i < 3; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-unsaved.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        {
+            platform::Event k;
+            k.type = platform::EventType::Key;
+            k.key = platform::KEY_ESCAPE; k.down = true;
+            platform::headless_push(k); ed.frame();
+            k.down = false;
+            platform::headless_push(k); ed.frame(); ed.frame();
+        }
+        ed.undo();
         ed.scene.select_only(kNoObject);
         ed.play();
         for (int i = 0; i < 3; i++) ed.frame();

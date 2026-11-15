@@ -102,6 +102,32 @@ end
   again, and the saved values are kept.
 - The title bar shows the project and the open scene.
 
+## Unsaved changes, undo and redo
+
+**Unsaved changes.** New scene, opening a scene (from Files) and Quit ask
+first when the scene differs from its last save, open or new. The choices
+are Save, Don't save and Cancel. Save writes the open file first; if
+writing fails, nothing else happens.
+
+**Undo and redo:**
+
+| Action | Keys |
+|---|---|
+| Undo | Ctrl+Z, or Edit > Undo |
+| Redo | Ctrl+Y or Ctrl+Shift+Z, or Edit > Redo |
+
+How it works:
+- **Snapshots.** The history keeps whole-scene snapshots: the scene file
+  text, without `next_id` and the hierarchy's folding.
+- **When a snapshot is taken.** After a click, key or text input, once no
+  mouse button is down and no field is being edited, and only if the
+  scene changed. So a gizmo drag or a slider drag is one step.
+- **Size.** Up to 100 steps.
+- **What is kept on undo.** The selection (where the objects still exist)
+  and the hierarchy's folding. Ids are never reused.
+- **Play.** There is no undo while playing. Play itself adds no steps,
+  since Stop puts the scene back.
+
 On Minimal-OS, `farcade-editor.run --scene-test` saves the demo scene
 twice, opens it again and prints `FE SCENE PASS <objects> <bytes>` when it
 comes back unchanged.

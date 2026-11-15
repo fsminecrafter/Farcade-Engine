@@ -195,17 +195,18 @@ bool read_field(const ModuleInfo& mi, void* data, const Line& l) {
 
 // ---------------------------------------------------------------- save
 
-char* save_scene_text(Scene& scene, const char* project_dir, size_t* size) {
+char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsigned flags) {
+    const bool history = (flags & kSceneTextHistory) != 0;
     Out o;
     o.f("farcade-scene %d\n", kSceneFormatVersion);
-    o.f("next_id %u\n", (unsigned)scene.next_id());
+    if (!history) o.f("next_id %u\n", (unsigned)scene.next_id());
     for (int i = 0; i < scene.count(); i++) {
         const Object& ob = scene.at(i);
         o.f("\nobject %u\n", (unsigned)ob.id);
         o.raw("  name ", 7); o.str(ob.name); o.raw("\n", 1);
         o.f("  kind %s\n", kObjectKinds[(int)ob.kind]);
         if (ob.parent) o.f("  parent %u\n", (unsigned)ob.parent);
-        if (!ob.expanded) o.f("  expanded false\n");
+        if (!ob.expanded && !history) o.f("  expanded false\n");
         o.f("  position"); o.vec(ob.position); o.raw("\n", 1);
         o.f("  rotation"); o.num(ob.rotation.x); o.num(ob.rotation.y); o.num(ob.rotation.z); o.num(ob.rotation.w); o.raw("\n", 1);
         o.f("  scale"); o.vec(ob.scale); o.raw("\n", 1);

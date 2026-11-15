@@ -273,6 +273,7 @@ bool Editor::init(int width, int height) {
 
     snprintf(project_dir, sizeof(project_dir), "%s", platform::default_project_root());
     snprintf(files_dir, sizeof(files_dir), "%s", project_dir);
+    history_reset();
     log(LogLevel::Info, "Farcade Editor started (%dx%d)", platform::width(), platform::height());
     return true;
 }
@@ -280,6 +281,12 @@ bool Editor::init(int width, int height) {
 void Editor::shutdown() {
     delete play_backup_;
     play_backup_ = nullptr;
+    for (int i = 0; i < undo_count_; i++) free(undo_[i]);
+    for (int i = 0; i < redo_count_; i++) free(redo_[i]);
+    undo_count_ = redo_count_ = 0;
+    free(snap_);
+    free(saved_snap_);
+    snap_ = saved_snap_ = nullptr;
     ImGui::DestroyContext();
     platform::shutdown();
 }
@@ -612,6 +619,10 @@ void Editor::build_world() {
             memcpy(r->model_path, o.model_path, sizeof(r->model_path));
             r->color = o.color;
             r->visible = o.visible;
+            r->roughness = o.roughness;
+            r->metallic = o.metallic;
+            r->unlit = o.unlit;
+            r->cast_shadows = o.cast_shadows;
         }
         world_objects_[world_count_] = o.id;
         world_entities_[world_count_] = e;
@@ -754,6 +765,15 @@ void Editor::step_world(float dt) {
             o->rotation = t->rotation;
             o->scale = t->scale;
         }
+        // The look: scripts change it through obj.material.
+        if (const Renderable* r = world_->renderable(e)) {
+            o->color = r->color;
+            o->visible = r->visible;
+            o->roughness = r->roughness;
+            o->metallic = r->metallic;
+            o->unlit = r->unlit;
+            o->cast_shadows = r->cast_shadows;
+        }
         // Modules too: scripts and physics change them (a light's
         // intensity, a body's velocity, which camera is current).
         world_->store(e, &o->modules);
@@ -817,9 +837,149 @@ bool Editor::save_scene(const char* path) {
     free(text);
     if (!ok) { log(LogLevel::Error, "Could not write %s", full); return false; }
     snprintf(scene_path, sizeof scene_path, "%s", full);
+    free(saved_snap_);
+    saved_snap_ = scene_snapshot(src);
     log(LogLevel::Info, "Saved %s (%d object%s)%s", path_filename(full), src.count(), src.count() == 1 ? "" : "s",
         playing() ? ", as it was before Play" : "");
     return true;
+}
+
+// ---------------------------------------------------------------- undo / redo
+
+char* Editor::scene_snapshot(Scene& sc) {
+    return save_scene_text(sc, project_dir, nullptr, kSceneTextHistory);
+}
+
+void Editor::history_capture() {
+    if (playing()) return;
+    char* now = scene_snapshot(scene);
+    if (!now) return;
+    if (snap_ && strcmp(now, snap_) == 0) { free(now); return; }
+    if (snap_) {
+        if (undo_count_ == kMaxUndo) {
+            free(undo_[0]);
+            memmove(undo_, undo_ + 1, sizeof(char*) * (kMaxUndo - 1));
+            undo_count_--;
+        }
+        undo_[undo_count_++] = snap_;
+        for (int i = 0; i < redo_count_; i++) free(redo_[i]);
+        redo_count_ = 0;
+    }
+    snap_ = now;
+}
+
+void Editor::history_reset() {
+    for (int i = 0; i < undo_count_; i++) free(undo_[i]);
+    for (int i = 0; i < redo_count_; i++) free(redo_[i]);
+    undo_count_ = redo_count_ = 0;
+    free(snap_);
+    free(saved_snap_);
+    snap_ = scene_snapshot(scene);
+    saved_snap_ = snap_ ? strdup(snap_) : nullptr;
+}
+
+bool Editor::scene_modified() {
+    Scene& src = playing() ? *play_backup_ : scene;
+    char* now = scene_snapshot(src);
+    bool modified = now && (!saved_snap_ || strcmp(now, saved_snap_) != 0);
+    free(now);
+    return modified;
+}
+
+// Puts a snapshot back, keeping the selection (where the objects still
+// exist), the hierarchy's folding and the id counter.
+void Editor::restore_snapshot(const char* text) {
+    Scene back;
+    if (!load_scene_text(back, text, strlen(text), nullptr)) { log(LogLevel::Error, "Undo: the snapshot could not be read"); return; }
+    for (int i = 0; i < back.count(); i++) {
+        Object& o = back.at(i);
+        if (Object* cur = scene.get(o.id)) {
+            o.expanded = cur->expanded;
+            // Script files are not read again; keep what the editor knows of them.
+            for (int s = 0; s < o.script_count && s < cur->script_count; s++)
+                if (!strcmp(o.scripts[s].path, cur->scripts[s].path)) o.scripts[s].missing = cur->scripts[s].missing;
+        }
+    }
+    ObjectId sel[256];
+    int ns = 0;
+    ObjectId act = scene.active();
+    for (int i = 0; i < scene.selected_count() && ns < 256; i++) if (scene.selected(i) != act) sel[ns++] = scene.selected(i);
+    ObjectId next = scene.next_id();
+    scene.copy_from(back);
+    scene.keep_ids_above(next);
+    scene.clear_selection();
+    for (int i = 0; i < ns; i++) if (scene.get(sel[i])) scene.toggle(sel[i]);
+    if (act && scene.get(act)) scene.toggle(act);       // the active one last, so it stays active
+}
+
+void Editor::undo() {
+    if (playing()) return;
+    history_capture();
+    if (!undo_count_) return;
+    if (redo_count_ == kMaxUndo) { free(redo_[0]); memmove(redo_, redo_ + 1, sizeof(char*) * (kMaxUndo - 1)); redo_count_--; }
+    redo_[redo_count_++] = snap_;
+    snap_ = undo_[--undo_count_];
+    restore_snapshot(snap_);
+    log(LogLevel::Info, "Undo");
+}
+
+void Editor::redo() {
+    if (playing()) return;
+    history_capture();
+    if (!redo_count_) return;
+    if (undo_count_ == kMaxUndo) { free(undo_[0]); memmove(undo_, undo_ + 1, sizeof(char*) * (kMaxUndo - 1)); undo_count_--; }
+    undo_[undo_count_++] = snap_;
+    snap_ = redo_[--redo_count_];
+    restore_snapshot(snap_);
+    log(LogLevel::Info, "Redo");
+}
+
+// ---------------------------------------------------------------- unsaved changes
+
+void Editor::request_new_scene() { ask_or_do(Pending::NewScene, nullptr); }
+void Editor::request_open_scene(const char* path) { ask_or_do(Pending::OpenScene, path); }
+void Editor::request_quit() { ask_or_do(Pending::Quit, nullptr); }
+
+void Editor::ask_or_do(Pending what, const char* path) {
+    pending_ = what;
+    snprintf(pending_path_, sizeof pending_path_, "%s", path ? path : "");
+    if (scene_modified()) want_unsaved_prompt_ = true;
+    else do_pending();
+}
+
+void Editor::do_pending() {
+    Pending p = pending_;
+    pending_ = Pending::None;
+    if (p == Pending::NewScene) new_scene();
+    else if (p == Pending::OpenScene) open_scene(pending_path_);
+    else if (p == Pending::Quit) quit = true;
+}
+
+void Editor::unsaved_popup() {
+    if (want_unsaved_prompt_) { ImGui::OpenPopup("Unsaved changes"); want_unsaved_prompt_ = false; }
+    ImGui::SetNextWindowSize(ImVec2(400 * settings.ui_scale, 0));
+    if (!ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_NoResize)) return;
+    const char* name = scene_path[0] ? path_filename(scene_path) : "the scene";
+    ImGui::TextWrapped("Save the changes to %s first? Without saving they are lost.", name);
+    ImGui::Dummy(ImVec2(0, 4));
+    bool save = ImGui::Button("Save");
+    track("unsaved:save");
+    ImGui::SameLine();
+    bool discard = ImGui::Button("Don't save");
+    track("unsaved:discard");
+    ImGui::SameLine();
+    bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    track("unsaved:cancel");
+    if (save) {
+        if (save_scene()) do_pending();
+        else pending_ = Pending::None;          // the error is in the console; nothing is lost
+    } else if (discard) {
+        do_pending();
+    } else if (cancel) {
+        pending_ = Pending::None;
+    }
+    if (save || discard || cancel) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 bool Editor::open_scene(const char* path) {
@@ -841,6 +1001,7 @@ bool Editor::open_scene(const char* path) {
     edit_collider = false;
     int failed = reload_all_scripts();  // inputs follow the files; saved values stay
     snprintf(scene_path, sizeof scene_path, "%s", full);
+    history_reset();
     log(LogLevel::Info, "Opened %s (%d object%s)", path_filename(full), rep.objects, rep.objects == 1 ? "" : "s");
     if (rep.skipped) log(LogLevel::Warning, "%s: %d line%s skipped (first: line %d)", path_filename(full), rep.skipped, rep.skipped == 1 ? "" : "s", rep.first_bad_line);
     if (failed) log(LogLevel::Warning, "%d script%s could not be read", failed, failed == 1 ? "" : "s");
@@ -852,6 +1013,7 @@ void Editor::new_scene() {
     scene.clear();
     edit_collider = false;
     scene_path[0] = 0;
+    history_reset();
     log(LogLevel::Info, "New scene");
 }
 
@@ -882,7 +1044,7 @@ void Editor::save_as_popup() {
 }
 
 void Editor::open_file(const char* path) {
-    if (path_is_scene(path)) { open_scene(path); return; }
+    if (path_is_scene(path)) { request_open_scene(path); return; }
     const char* program = settings.program_for(path);
     if (!program || !*program) {
         log(LogLevel::Warning, "No editor set for %s files (Settings > File editors)", path_extension(path));
@@ -923,6 +1085,8 @@ bool Editor::frame() {
 
     platform::Event e;
     while (platform::poll(e)) {
+        // Only these can change the scene (a plain mouse move cannot).
+        if (e.type != platform::EventType::MouseMove) had_events_ = true;
         switch (e.type) {
             case platform::EventType::MouseMove: io.AddMousePosEvent(e.x, e.y); break;
             case platform::EventType::MouseButton:
@@ -991,6 +1155,11 @@ bool Editor::frame() {
     ImGuizmo::BeginFrame();
     build_ui();
     ImGui::Render();
+    // Undo: a snapshot once an edit has settled.
+    if (had_events_ && !playing() && !ImGui::IsAnyItemActive() && !ImGui::IsMouseDown(0) && !ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2)) {
+        history_capture();
+        had_events_ = false;
+    }
     double t_raster = platform::time_seconds();
 
     static SwRenderer renderer;
@@ -1031,6 +1200,7 @@ bool Editor::frame() {
 void Editor::build_ui() {
     main_menu();
     save_as_popup();
+    unsaved_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -1083,7 +1253,7 @@ void Editor::main_menu() {
     bool file_menu = ImGui::BeginMenu("File");
     track("menubar:File");
     if (file_menu) {
-        if (menu_item("New scene")) new_scene();
+        if (menu_item("New scene")) request_new_scene();
         menu_item("Open project...", nullptr, false, false);
         if (menu_item("Save scene", "Ctrl+S")) save_scene();
         if (menu_item("Save scene as...")) {
@@ -1094,12 +1264,12 @@ void Editor::main_menu() {
         ImGui::Separator();
         menu_item("Export game...", nullptr, false, false);
         ImGui::Separator();
-        if (menu_item("Quit")) quit = true;
+        if (menu_item("Quit")) request_quit();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        menu_item("Undo", "Ctrl+Z", false, false);
-        menu_item("Redo", "Ctrl+Y", false, false);
+        if (menu_item("Undo", "Ctrl+Z", false, can_undo() && !playing())) undo();
+        if (menu_item("Redo", "Ctrl+Y", false, can_redo() && !playing())) redo();
         ImGui::Separator();
         if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0)) duplicate_selection();
         if (menu_item("Delete", "Del", false, scene.selected_count() > 0)) delete_selection();
@@ -1328,6 +1498,8 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) delete_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selection();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) save_scene();
+    if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, true)) undo();
+    if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y, true) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, true)))) redo();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
 }

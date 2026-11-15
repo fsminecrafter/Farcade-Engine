@@ -134,6 +134,7 @@ using a handle as a table key work.
 | `obj:move(dx, dy, dz)` | adds to `position` (also `obj:move(vec3)`) |
 | `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
 | `obj.alive` | false once destroyed |
+| `obj.material` | the look of a mesh object, or nil for objects without a mesh (see below) |
 | `obj.<module>` | `rigidbody3d`, `collider3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `camera`, `skylight`, `sky`, `post_process` (see modules.md): the module, or nil if the object has none |
 
 A module's fields read and write through the ECS (`World::get_field` /
@@ -144,6 +145,32 @@ module and the field. `camera.current = true` goes through the one-current
 rule; inside a frame the world applies that rule at the end of the Update
 phase, so `fe.current("camera")` may still return the old camera until then
 (from `trigger_enter` & co., called outside a frame, it is immediate).
+
+`obj.material` reads and writes the object's look, the same settings as
+the Inspector's Look section:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `color` | vec3 | |
+| `roughness` | number | clamped to 0..1 |
+| `metallic` | number | clamped to 0..1 |
+| `unlit` | true / false | |
+| `cast_shadows` | true / false | |
+| `visible` | true / false | |
+
+```lua
+local m = self.object.material
+m.metallic = 1
+m.roughness = 0.2
+m.color = fe.vec3(1, 0.8, 0.3)
+```
+
+- Roughness, metal and shadows show only with FarcadeGL's GPU tier. Color,
+  unlit and visible show with every renderer.
+- Changes made in Play are visible in the editor while playing and are put
+  back on Stop, like everything else.
+- A wrong type or an unknown field raises an error naming the field.
+- `obj.material` itself is read only: change its fields instead.
 
 Positions, rotations and colors come back as new vec3 values: assign the
 changed vector (`obj.position = obj.position + v`), changing `.x` of the copy

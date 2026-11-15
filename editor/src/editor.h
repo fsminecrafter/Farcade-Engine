@@ -112,6 +112,26 @@ public:
     // as it was when the file cannot be read.
     bool open_scene(const char* path);
     void new_scene();
+    // New scene / open / quit from the UI: when the scene has unsaved
+    // changes, a prompt asks to save them first (Save, Don't save, Cancel).
+    void request_new_scene();
+    void request_open_scene(const char* path);
+    void request_quit();
+    bool scene_modified();                      // differs from the last save, open or new
+
+    // ---- undo / redo. The history holds whole-scene snapshots (scene file
+    // text without next_id and the hierarchy's folding). One is taken when
+    // an edit settles: after an input event, with no mouse button down and no
+    // field being edited, if the scene changed. A drag is one step. Not
+    // while playing.
+    static constexpr int kMaxUndo = 100;
+    void undo();
+    void redo();
+    bool can_undo() const { return undo_count_ > 0; }
+    bool can_redo() const { return redo_count_ > 0; }
+    void history_capture();                     // records the scene when it changed since the last snapshot
+    void history_reset();                       // forgets undo/redo; the scene now counts as saved
+
     // `path` made full: relative paths are joined to the project.
     void project_path(const char* path, char* out, size_t cap) const;
 
@@ -271,6 +291,23 @@ private:
     Scene* play_backup_ = nullptr;
     bool want_save_as_ = false;
     void save_as_popup();
+    // history
+    char* undo_[kMaxUndo] = {};
+    char* redo_[kMaxUndo] = {};
+    int undo_count_ = 0, redo_count_ = 0;
+    char* snap_ = nullptr;                      // the scene at the last snapshot
+    char* saved_snap_ = nullptr;                // the scene as last saved / opened / made new
+    bool had_events_ = false;
+    char* scene_snapshot(Scene& sc);
+    void restore_snapshot(const char* text);
+    // the unsaved-changes prompt
+    enum class Pending : uint8_t { None, NewScene, OpenScene, Quit };
+    Pending pending_ = Pending::None;
+    char pending_path_[512] = {};
+    bool want_unsaved_prompt_ = false;
+    void ask_or_do(Pending what, const char* path);
+    void do_pending();
+    void unsaved_popup();
 };
 
 // File type helpers shared by the panels.

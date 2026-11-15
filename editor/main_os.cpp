@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
     // the cursor there before the first mouse event arrives.
     ImGui::GetIO().AddMousePosEvent(platform::width() * 0.5f, platform::height() * 0.5f);
     demo_scene(ed);
+    ed.history_reset();         // the demo scene is where undo starts
     if (scene_test) {
         size_t n1 = 0, n2 = 0;
         int count = ed.scene.count();

@@ -291,8 +291,10 @@ bool register_all(WorldImpl* I) {
         if (!make_struct(w, I->c_world, wt, 1, sizeof(WorldTransform))) return reg_fail(__LINE__);
         MemberDef r[] = { MEMBER(Renderable, mesh, ecs_id(ecs_u8_t)),
                           { "model_path", ecs_id(ecs_char_t), kPathMax, (int32_t)offsetof(Renderable, model_path) },
-                          MEMBER(Renderable, color, I->t_vec3), MEMBER(Renderable, visible, ecs_id(ecs_bool_t)) };
-        if (!make_struct(w, I->c_renderable, r, 4, sizeof(Renderable))) return reg_fail(__LINE__);
+                          MEMBER(Renderable, color, I->t_vec3), MEMBER(Renderable, visible, ecs_id(ecs_bool_t)),
+                          MEMBER(Renderable, roughness, ecs_id(ecs_f32_t)), MEMBER(Renderable, metallic, ecs_id(ecs_f32_t)),
+                          MEMBER(Renderable, unlit, ecs_id(ecs_bool_t)), MEMBER(Renderable, cast_shadows, ecs_id(ecs_bool_t)) };
+        if (!make_struct(w, I->c_renderable, r, 8, sizeof(Renderable))) return reg_fail(__LINE__);
     }
 
     // every ModuleKind

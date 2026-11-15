@@ -24,6 +24,7 @@ int main() {
     check_vec3();
     check_transforms();
     check_modules();
+    check_material();
     check_cross_script();
     check_events();
     check_coroutines_and_limits();

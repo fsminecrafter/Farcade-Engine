@@ -229,6 +229,46 @@ inline void check_transforms() {
 }
 
 // ---- modules by Lua name
+// ---- obj.material: the look of mesh objects
+inline void check_material() {
+    SCRIPT_ENV(E);
+    Entity e = E.w.create("crate");
+    Entity empty = E.w.create("empty");
+    Renderable* r = E.w.add_renderable(e);
+    r->color = Vec3(0.5f, 0.25f, 1.0f);
+    int id = E.add(e, "scripts/mat.lua",
+        "function on_start(self)\n"
+        "  local m = self.object.material\n"
+        "  self.r0 = m.roughness\n"
+        "  self.m0 = m.metallic\n"
+        "  self.g0 = m.color.y\n"
+        "  m.metallic = 1\n"
+        "  m.roughness = 7\n"                               // clamped to 0..1
+        "  m.color = fe.vec3(0.1, 0.2, 0.3)\n"
+        "  m.unlit = true\n"
+        "  m.cast_shadows = false\n"
+        "  self.none = (fe.find('empty').material == nil)\n"
+        "  local function try(f) local ok, err = pcall(f); return (not ok) and err or '' end\n"
+        "  self.e1 = try(function() m.metallic = 'shiny' end)\n"
+        "  self.e2 = try(function() return m.sparkle end)\n"
+        "  self.e3 = try(function() m.unlit = 1 end)\n"
+        "  self.e4 = try(function() self.object.material = 1 end)\n"
+        "  self.str = tostring(m)\n"
+        "end\n");
+    SCRIPT_CHECK(id > 0);
+    E.w.progress(0.1f);
+    SCRIPT_CHECK(near_(E.num(id, "r0"), 0.6) && near_(E.num(id, "m0"), 0) && near_(E.num(id, "g0"), 0.25));
+    r = E.w.renderable(e);
+    SCRIPT_CHECK(r && r->metallic == 1.0f && r->roughness == 1.0f && near_(r->color.z, 0.3) && r->unlit && !r->cast_shadows);
+    SCRIPT_CHECK(E.flag(id, "none") && E.w.renderable(empty) == nullptr);
+    char buf[256];
+    SCRIPT_CHECK(E.rt.get_string(id, "e1", buf, sizeof buf) && strstr(buf, "material.metallic expects a number"));
+    SCRIPT_CHECK(E.rt.get_string(id, "e2", buf, sizeof buf) && strstr(buf, "no field 'sparkle'"));
+    SCRIPT_CHECK(E.rt.get_string(id, "e3", buf, sizeof buf) && strstr(buf, "expects true or false"));
+    SCRIPT_CHECK(E.rt.get_string(id, "e4", buf, sizeof buf) && strstr(buf, "read only"));
+    SCRIPT_CHECK(E.str_is(id, "str", "material(roughness 1.00, metallic 1.00)"));
+}
+
 inline void check_modules() {
     SCRIPT_ENV(E);
     Entity e = E.w.create("lamp");

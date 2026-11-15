@@ -392,8 +392,9 @@ static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f
         case ModuleKind::Collider3D: {
             const Collider3D& c = *(const Collider3D*)data;
             if (!strcmp(n, "size")) return c.shape == ColliderShape::Box;
-            if (!strcmp(n, "radius")) return c.shape == ColliderShape::Sphere || c.shape == ColliderShape::Capsule;
-            if (!strcmp(n, "height")) return c.shape == ColliderShape::Capsule;
+            bool round = c.shape == ColliderShape::Capsule || c.shape == ColliderShape::Cylinder;
+            if (!strcmp(n, "radius")) return c.shape == ColliderShape::Sphere || round;
+            if (!strcmp(n, "height")) return round;
             if (!strcmp(n, "friction") || !strcmp(n, "bounciness")) return c.mode == ColliderMode::Collision;
             return true;
         }

@@ -7,7 +7,7 @@ namespace fe {
 namespace {
 
 const char* const kBodyTypes[] = { "Dynamic", "Kinematic", "Static", nullptr };
-const char* const kShapes[] = { "Box", "Sphere", "Capsule", "Mesh", nullptr };
+const char* const kShapes[] = { "Box", "Sphere", "Capsule", "Cylinder", "Mesh", nullptr };
 const char* const kColliderModes[] = { "Collision", "Trigger", nullptr };
 const char* const kLightTypes[] = { "Directional", "Point", "Spot", nullptr };
 const char* const kProjections[] = { "Perspective", "Orthographic", nullptr };
@@ -25,6 +25,7 @@ const FieldInfo kRigidBody[] = {
     FE_F(RigidBody3D, gravity_scale, "Gravity scale", Float, -10, 10, nullptr),
     FE_F(RigidBody3D, freeze_rotation, "Lock rotation", Bool, 0, 0, nullptr),
     FE_F(RigidBody3D, velocity, "Start velocity", Vec3, 0, 0, nullptr),
+    FE_F(RigidBody3D, angular_velocity, "Start spin", Vec3, 0, 0, nullptr),
 };
 
 const FieldInfo kCollider[] = {

@@ -57,10 +57,14 @@ struct RigidBody3D {
     bool use_gravity = true;
     float gravity_scale = 1.0f;
     bool freeze_rotation = false;
-    Vec3 velocity;                      // initial, m/s
+    Vec3 velocity;                      // m/s: the start velocity, and the live one while playing
+    Vec3 angular_velocity;              // rad/s around world x, y, z: likewise
 };
 
-enum class ColliderShape : uint8_t { Box, Sphere, Capsule, Mesh };
+// Capsule and Cylinder stand along the object's local Y axis (height is
+// the full height; a capsule's includes its round ends). Mesh is the convex
+// hull of the object's mesh.
+enum class ColliderShape : uint8_t { Box, Sphere, Capsule, Cylinder, Mesh };
 enum class ColliderMode : uint8_t { Collision, Trigger };
 
 // A shape that collides (bodies bounce off it) or triggers (it reports
@@ -70,8 +74,8 @@ struct Collider3D {
     ColliderMode mode = ColliderMode::Collision;
     Vec3 center;                        // offset from the object, local space
     Vec3 size = Vec3(1, 1, 1);          // Box: full extents
-    float radius = 0.5f;                // Sphere, Capsule
-    float height = 2.0f;                // Capsule: full height along local y
+    float radius = 0.5f;                // Sphere, Capsule, Cylinder
+    float height = 2.0f;                // Capsule, Cylinder: full height along local y
     float friction = 0.5f;
     float bounciness = 0.0f;
     uint32_t layer = 1;                 // collision layer bits

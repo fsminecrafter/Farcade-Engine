@@ -82,6 +82,8 @@ public:
     bool after_frame(Editor& ed) {
         const Phase& ph = kPhases[phase_];
         if (phase_ == kSettle) return settle_frame(ed);
+        // Start from a viewport image that is final (the first one is a quick draft).
+        if (phase_ == 0 && !ed.view_final && prelude_ < 400) { prelude_++; return true; }
         frame_++;
         if (frame_ == 0) { start_ = platform::time_seconds(); ed.perf = Editor::Perf(); }
         if (frame_ >= frames_per_phase) {
@@ -121,7 +123,7 @@ private:
     // After the orbit the camera stops: how long until the image is final.
     bool settle_frame(Editor& ed) {
         settle_frames_++;
-        bool final_q = ed.view_div_shown <= ed.view_div_target && ed.view_div_shown == ed.view_div_target;
+        bool final_q = ed.view_final;
         if (final_q || settle_frames_ >= 150) {
             double ms = (platform::time_seconds() - settle_start_) * 1000.0;
             printf("FE BENCH settle: %.1f ms and %ld frames (%u renders) until the viewport image was final (1/%d size%s)\n", ms, settle_frames_,
@@ -133,6 +135,7 @@ private:
     }
 
     int phase_ = 0;
+    int prelude_ = 0;
     long frame_ = -kWarmup;
     double start_ = 0;
     double settle_start_ = 0;

@@ -5,6 +5,7 @@
 #include "ecs/ecs.h"
 #include "physics/physics.h"
 #include "script/runtime.h"
+#include "audio/audio.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -281,7 +282,11 @@ void Editor::shutdown() {
     platform::shutdown();
 }
 
-Editor::~Editor() { free_world(); delete play_backup_; }
+Editor::~Editor() {
+    free_world();
+    if (audio_device_) { audio_device_->shutdown(); delete audio_device_; }
+    delete play_backup_;
+}
 
 // ---------------------------------------------------------------- UI rects
 
@@ -656,6 +661,34 @@ void Editor::build_world() {
     } else {
         log(LogLevel::Error, "Play: the Lua runtime could not start");
     }
+    // Audio: Audio Streams with "play on start" begin now; samplers play
+    // when scripts call obj.audio_sampler:play(). The device stays open
+    // between plays.
+    if (!audio_device_) {
+        audio_device_ = new AudioDevice();
+        if (!audio_device_->init()) log(LogLevel::Warning, "Audio: no device (sound is mixed but not heard)");
+    }
+    audio_ = new AudioSystem();
+    AudioHost ah;
+    ah.user = this;
+    ah.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
+    ah.log = [](const char* line, void* u) { ((Editor*)u)->log(LogLevel::Warning, "Audio: %s", line); };
+    if (audio_->init(world_, audio_device_, ah)) {
+        audio_->restart();
+        audio_->clear_cache();      // the files may have changed since the last Play
+        if (scripts_) {
+            ScriptRuntime* rt = scripts_;
+            rt->add_module_method(ModuleKind::AudioSampler, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_sampler(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_stream(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "stop", [](Entity e, void* u) { ((AudioSystem*)u)->stop_stream(e); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "pause", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, true); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "resume", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, false); return 1; }, audio_);
+            rt->add_module_method(ModuleKind::AudioStream, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
+            rt->add_module_method(ModuleKind::AudioSampler, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
+        }
+    } else {
+        log(LogLevel::Error, "Play: the audio system could not start");
+    }
     // Physics on the bodies and colliders (the built-in step, see physics.h).
     physics_ = new PhysicsWorld();
     PhysicsEvents pe;
@@ -726,6 +759,8 @@ void Editor::step_world(float dt) {
 }
 
 void Editor::free_world() {
+    if (audio_) { audio_->shutdown(); delete audio_; }
+    audio_ = nullptr;
     if (scripts_) { scripts_->shutdown(); delete scripts_; }
     scripts_ = nullptr;
     if (physics_) { physics_->shutdown(); delete physics_; }

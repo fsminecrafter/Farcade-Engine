@@ -15,6 +15,8 @@ class View3D;
 class World;
 class PhysicsWorld;
 class ScriptRuntime;
+class AudioDevice;
+class AudioSystem;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -134,6 +136,8 @@ public:
     World* play_world() { return world_; }
     PhysicsWorld* play_physics() { return physics_; }
     ScriptRuntime* play_scripts() { return scripts_; }
+    AudioSystem* play_audio() { return audio_; }
+    AudioDevice* audio_device() { return audio_device_; }
     // A script file's text (full path, or relative to the project); malloc'd, or null.
     char* read_script_text(const char* path, size_t* size);
     uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
@@ -187,6 +191,8 @@ private:
     World* world_ = nullptr;
     PhysicsWorld* physics_ = nullptr;
     ScriptRuntime* scripts_ = nullptr;
+    AudioDevice* audio_device_ = nullptr;       // opened at the first Play, kept
+    AudioSystem* audio_ = nullptr;
     ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
     uint64_t* world_entities_ = nullptr;
     int world_count_ = 0;

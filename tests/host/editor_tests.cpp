@@ -4,6 +4,7 @@
 #include "swraster.h"
 #include "ecs/ecs.h"
 #include "script/runtime.h"
+#include "audio/audio.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -1020,6 +1021,54 @@ int main() {
         ed.tool = Tool::Move;
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         ed.scene.clear_selection();
+        frames(2);
+    }
+
+    // ---- audio in Play: a script plays a sampler, a stream starts on its own
+    {
+        int objects0 = ed.scene.count();
+        // A 0.5 s 440 Hz mono WAV.
+        {
+            const int rate = 22050, n = rate / 2;
+            static uint8_t wav[44 + 22050];
+            uint32_t data_bytes = n * 2;
+            auto put32 = [&](int at, uint32_t v) { for (int i = 0; i < 4; i++) wav[at + i] = (uint8_t)(v >> (8 * i)); };
+            auto put16 = [&](int at, uint32_t v) { wav[at] = (uint8_t)v; wav[at + 1] = (uint8_t)(v >> 8); };
+            memcpy(wav, "RIFF", 4); put32(4, 36 + data_bytes); memcpy(wav + 8, "WAVEfmt ", 8);
+            put32(16, 16); put16(20, 1); put16(22, 1); put32(24, rate); put32(28, rate * 2); put16(32, 2); put16(34, 16);
+            memcpy(wav + 36, "data", 4); put32(40, data_bytes);
+            for (int i = 0; i < n; i++) {
+                float ph = (float)(i % 50) / 50.0f;          // ~441 Hz triangle
+                float v = ph < 0.5f ? ph * 4 - 1 : 3 - ph * 4;
+                put16(44 + i * 2, (uint32_t)(int16_t)(v * 12000));
+            }
+            platform::write_file("build/host/test-project/beep.wav", wav, 44 + data_bytes);
+        }
+        const char* player = "function on_start(self) self.played = self.object.audio_sampler:play() end\n";
+        platform::write_file("build/host/test-project/beeper.lua", player, strlen(player));
+        ObjectId src = ed.create_kind("Beeper", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.add_module(src, ModuleKind::AudioSampler);
+        snprintf(ed.scene.get(src)->modules.audio_sampler.path, kPathMax, "%s", "build/host/test-project/beep.wav");
+        ed.scene.get(src)->modules.audio_sampler.spatial = false;
+        ed.add_script(src, "build/host/test-project/beeper.lua");
+        ObjectId music = ed.create_kind("Music", ObjectKind::Empty, Vec3(0, 1, 0));
+        ed.scene.add_module(music, ModuleKind::AudioStream);
+        snprintf(ed.scene.get(music)->modules.audio_stream.path, kPathMax, "%s", "build/host/test-project/beep.wav");
+        ed.play();
+        frames(3);
+        AudioSystem* au = ed.play_audio();
+        CHECK(au != nullptr, "Play starts audio");
+        if (au) {
+            CHECK(au->is_playing(ed.entity_of(music)), "an Audio Stream with play-on-start plays");
+            CHECK(au->stats().voices_active >= 2, "the script's sampler and the stream are playing (%d voices)", au->stats().voices_active);
+            CHECK(au->stats().frames_pushed > 0, "mixed audio reaches the device (%llu frames)", (unsigned long long)au->stats().frames_pushed);
+        }
+        bool err = false;
+        for (int i = 0; i < ed.log_count; i++) err |= strstr(ed.log_lines[i].text, "beeper.lua") && ed.log_lines[i].level == LogLevel::Error;
+        CHECK(!err, "obj.audio_sampler:play() runs without errors");
+        ed.stop();
+        CHECK(!ed.play_audio(), "Stop ends audio");
+        while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         frames(2);
     }
 

@@ -79,6 +79,13 @@ public:
     bool get_bool(int instance, const char* field, bool* out);
     bool get_string(int instance, const char* field, char* out, int cap);
 
+    // A method on a module proxy, provided by an engine system: after
+    // add_module_method(ModuleKind::AudioSampler, "play", fn, user), a script's
+    // obj.audio_sampler:play() calls fn(entity, user) and gets `fn(...) != 0`
+    // back as a boolean. Up to 32 methods; the same name again replaces it.
+    typedef int (*ModuleMethod)(Entity e, void* user);
+    bool add_module_method(ModuleKind kind, const char* name, ModuleMethod fn, void* user);
+
     // Runs a line of Lua in the shared environment (a console / REPL; tests).
     bool run(const char* code);
 

@@ -84,6 +84,11 @@ struct ScriptRuntime::Impl {
     int depth = 0;                      // running callbacks / entry points
     ScriptStats stats;
 
+    // Methods on module proxies (add_module_method).
+    struct Method { int kind; char name[32]; ScriptRuntime::ModuleMethod fn; void* user; };
+    Method methods[32];
+    int method_count = 0;
+
     // ---- entity hash
     int bucket_of(Entity e) const {
         return (int)(((e * 0x9E3779B97F4A7C15ull) >> 40) & (uint64_t)(nbuckets - 1));
@@ -649,11 +654,30 @@ const FieldInfo* mod_field(lua_State* L, ModRef* m, const char* key) {
     return f;
 }
 
+// obj.audio_sampler:play(): calls the registered function with the entity.
+int mod_method_call(lua_State* L) {
+    Impl* I = impl_of(L);
+    ModRef* m = check_mod(L, 1);
+    int idx = (int)lua_tointeger(L, lua_upvalueindex(1));
+    if (idx < 0 || idx >= I->method_count) return 0;
+    const Impl::Method& md = I->methods[idx];
+    if (md.kind != m->kind) return luaL_error(L, "%s is not a method of %s", md.name, module_info((ModuleKind)m->kind).name);
+    if (I->dead(m->e)) return luaL_error(L, "cannot call %s: the object no longer exists", md.name);
+    lua_pushboolean(L, md.fn(m->e, md.user) != 0);
+    return 1;
+}
+
 int mod_index(lua_State* L) {
     Impl* I = impl_of(L);
     ModRef* m = check_mod(L, 1);
     const char* key = luaL_checkstring(L, 2);
     const ModuleInfo& mi = module_info((ModuleKind)m->kind);
+    for (int i = 0; i < I->method_count; i++)
+        if (I->methods[i].kind == m->kind && strcmp(I->methods[i].name, key) == 0) {
+            lua_pushinteger(L, i);
+            lua_pushcclosure(L, mod_method_call, 1);
+            return 1;
+        }
     const FieldInfo* f = mod_field(L, m, key);
     if (I->dead(m->e)) return luaL_error(L, "cannot read %s.%s: the object no longer exists", mi.name, key);
     FieldValue v;
@@ -1164,6 +1188,24 @@ bool ScriptRuntime::get_string(int instance, const char* field, char* out, int c
     }
     lua_pop(I->L, 1);
     return ok;
+}
+
+bool ScriptRuntime::add_module_method(ModuleKind kind, const char* name, ModuleMethod fn, void* user) {
+    if (!impl_ || !name || !fn || strlen(name) >= sizeof(impl_->methods[0].name)) return false;
+    Impl* I = impl_;
+    int slot = I->method_count;
+    for (int i = 0; i < I->method_count; i++)
+        if (I->methods[i].kind == (int)kind && strcmp(I->methods[i].name, name) == 0) slot = i;
+    if (slot == I->method_count) {
+        if (I->method_count >= 32) return false;
+        I->method_count++;
+    }
+    Impl::Method& m = I->methods[slot];
+    m.kind = (int)kind;
+    strcpy(m.name, name);
+    m.fn = fn;
+    m.user = user;
+    return true;
 }
 
 bool ScriptRuntime::run(const char* code) {

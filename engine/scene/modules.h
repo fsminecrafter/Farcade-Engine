@@ -3,7 +3,8 @@
 // reach.
 //
 // - Modules attach to any object, at most one of each kind per object:
-//   RigidBody3D, Collider3D, AudioListener, AudioStream, AudioSampler, Light.
+//   RigidBody3D, Collider3D, CharacterController3D, AudioListener,
+//   AudioStream, AudioSampler, Light.
 // - Special objects are object kinds with their own settings: Camera,
 //   SkyLight, Sky, PostProcess (ObjectKind).
 // - Some kinds have a "current" flag: only one object (or module) of that
@@ -35,7 +36,7 @@ enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProces
 // Modules, and the settings of special objects, share one numbering so one
 // reflection table covers both.
 enum class ModuleKind : uint8_t {
-    RigidBody3D, Collider3D, AudioListener, AudioStream, AudioSampler, Light,   // modules
+    RigidBody3D, Collider3D, CharacterController3D, AudioListener, AudioStream, AudioSampler, Light, // modules
     Camera, SkyLight, Sky, PostProcess,                                          // special objects
     Count
 };
@@ -79,6 +80,19 @@ struct Collider3D {
     float friction = 0.5f;
     float bounciness = 0.0f;
     uint32_t layer = 1;                 // collision layer bits
+};
+
+// An upright capsule body controlled by setting velocity in m/s. Physics
+// applies gravity, resolves collisions and reports whether it is grounded.
+struct CharacterController3D {
+    float radius = 0.5f;
+    float height = 2.0f;
+    Vec3 center = Vec3(0, 1, 0);        // feet at the object's origin by default
+    float slope_limit = 45.0f;          // degrees; steeper contacts are not grounded
+    bool use_gravity = true;
+    float gravity_scale = 1.0f;
+    Vec3 velocity;                      // live velocity in m/s; set from scripts to move
+    bool grounded = false;              // updated by the physics step
 };
 
 // Where the game hears from (usually on the camera). Current: one at a time.
@@ -235,6 +249,7 @@ struct ModuleSet {
     uint32_t present = 0;
     RigidBody3D rigidbody3d;
     Collider3D collider3d;
+    CharacterController3D character_controller3d;
     AudioListener audio_listener;
     AudioStream audio_stream;
     AudioSampler audio_sampler;

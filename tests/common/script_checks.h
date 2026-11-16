@@ -291,8 +291,10 @@ inline void check_modules() {
     SCRIPT_ENV(E);
     Entity e = E.w.create("lamp");
     Entity plain = E.w.create("plain");
+    Entity walker = E.w.create("walker");
     Entity camA = E.w.create("camA"), camB = E.w.create("camB");
     E.w.add(e, ModuleKind::Light);
+    E.w.add(walker, ModuleKind::CharacterController3D);
     E.w.add(camA, ModuleKind::Camera);
     E.w.add(camB, ModuleKind::Camera);
     E.w.set_current(camA, ModuleKind::Camera);
@@ -318,6 +320,9 @@ inline void check_modules() {
         "  self.nocam = (o.camera == nil)\n"
         "  self.noplain = (fe.find('plain').light == nil)\n"
         "  self.rb_nil = (o.rigidbody3d == nil)\n"
+        "  local controller = fe.find('walker').character_controller3d\n"
+        "  controller.velocity = fe.vec3(2, 0, 0)\n"
+        "  self.controller_speed = controller.velocity.x\n"
         "  local function try(f) local ok, err = pcall(f); return (not ok) and err or '' end\n"
         "  self.e1 = try(function() l.nope = 1 end)\n"
         "  self.e2 = try(function() l.intensity = 'x' end)\n"
@@ -336,6 +341,8 @@ inline void check_modules() {
     SCRIPT_CHECK(E.str_is(id, "type0", "Point") && near_(E.num(id, "intensity0"), 1) && near_(E.num(id, "intensity1"), 100));
     SCRIPT_CHECK(E.str_is(id, "type1", "Spot") && near_(E.num(id, "cg"), 0.5) && near_(E.num(id, "cb"), 0.75));
     SCRIPT_CHECK(E.flag(id, "nocam") && E.flag(id, "noplain") && E.flag(id, "rb_nil"));
+    SCRIPT_CHECK(near_(E.num(id, "controller_speed"), 2) &&
+                 near_(((const CharacterController3D*)E.w.get(walker, ModuleKind::CharacterController3D))->velocity.x, 2));
     bool sh = true;
     SCRIPT_CHECK(E.rt.get_bool(id, "shadows", &sh) && !sh);
     FieldValue v;

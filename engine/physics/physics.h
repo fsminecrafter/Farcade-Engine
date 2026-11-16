@@ -1,8 +1,11 @@
-// A small built-in physics step for Rigidbody 3D and Collider 3D: a
-// stand-in until Jolt (plan C6), which needs the C++ standard library the
-// engine does not use yet.
+// A small built-in physics step for Rigidbody 3D, Collider 3D and Character
+// Controller 3D: a stand-in until Jolt (plan C6), which needs the C++ standard
+// library the engine does not use yet.
 //
 // What it does, on an ECS world (engine/ecs), at a fixed 60 Hz:
+// - character controllers use an upright capsule, gravity and their live
+//   velocity; collisions update their grounded state. Scripts move them by
+//   setting character_controller3d.velocity (m/s);
 // - dynamic bodies fall (gravity * gravity_scale), are damped (linear and
 //   angular), and move and turn by their velocity and angular velocity
 //   (RigidBody3D::velocity / angular_velocity are live: scripts read and
@@ -44,7 +47,7 @@ struct PhysicsEvents {
 };
 
 struct PhysicsStats {
-    int bodies = 0;                     // with a rigidbody
+    int bodies = 0;                     // with a rigidbody or character controller
     int colliders = 0;
     int contacts = 0;                   // last step
     int steps = 0;                      // fixed steps so far

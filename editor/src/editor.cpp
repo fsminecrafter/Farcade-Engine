@@ -1101,7 +1101,10 @@ bool Editor::frame() {
                 io.AddMousePosEvent(e.x, e.y);
                 io.AddMouseButtonEvent(e.button, e.down);
                 break;
-            case platform::EventType::MouseWheel: io.AddMouseWheelEvent(e.wheel_x, e.wheel_y); break;
+            case platform::EventType::MouseWheel:
+                io.AddMouseWheelEvent(settings.invert_scrolling ? -e.wheel_x : e.wheel_x,
+                                      settings.invert_scrolling ? -e.wheel_y : e.wheel_y);
+                break;
             case platform::EventType::Text: io.AddInputCharacter(e.codepoint); break;
             case platform::EventType::Key: {
                 io.AddKeyEvent(ImGuiMod_Ctrl, (e.mods & platform::MOD_CTRL) != 0);
@@ -1139,6 +1142,10 @@ bool Editor::frame() {
                     case platform::KEY_F6: k = ImGuiKey_F6; break;
                     case platform::KEY_F7: k = ImGuiKey_F7; break;
                     case platform::KEY_F8: k = ImGuiKey_F8; break;
+                    case platform::KEY_F9: k = ImGuiKey_F9; break;
+                    case platform::KEY_F10: k = ImGuiKey_F10; break;
+                    case platform::KEY_F11: k = ImGuiKey_F11; break;
+                    case platform::KEY_F12: k = ImGuiKey_F12; break;
                     default: break;
                 }
                 if (k != ImGuiKey_None) io.AddKeyEvent(k, e.down);
@@ -1495,6 +1502,8 @@ void Editor::dockspace(float top, float bottom) {
 
 void Editor::shortcuts() {
     ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && !platform::toggle_fullscreen())
+        log(LogLevel::Warning, "Could not toggle fullscreen");
     if (io.WantTextInput) return;
     if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) tool = Tool::Select;
     if (ImGui::IsKeyPressed(ImGuiKey_W, false)) tool = Tool::Move;

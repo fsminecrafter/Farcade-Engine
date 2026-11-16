@@ -73,6 +73,44 @@ int main() {
         CHECK(w.transform(w.lookup("Ground"))->position.y == -0.1f, "a collider without a body stays put");
     }
 
+    // ---- a character controller is a gravity-driven, collision-aware capsule
+    {
+        World w;
+        w.init();
+        PhysicsWorld p;
+        Events ev;
+        PhysicsEvents pe;
+        pe.trigger_enter = on_enter;
+        pe.user = &ev;
+        p.init(&w, pe);
+        ground(w, p);
+        Entity zone = make(w, "Zone", Vec3(0, 1, 0), Vec3(2, 2, 2));
+        w.add(zone, ModuleKind::Collider3D);
+        w.set_field(zone, ModuleKind::Collider3D, "mode", FieldValue::from_string("Trigger"));
+        p.add(zone);
+        Entity wall = make(w, "Wall", Vec3(2, 1, 0), Vec3(1, 2, 4));
+        w.add(wall, ModuleKind::Collider3D);
+        p.add(wall);
+        Entity player = make(w, "Player", Vec3(0, 0, 0));
+        w.add(player, ModuleKind::CharacterController3D);
+        p.add(player);
+        CharacterController3D* cc = (CharacterController3D*)w.get_mut(player, ModuleKind::CharacterController3D);
+        run(w, 0.5f);
+        CHECK(cc->grounded && w.transform(player)->position.y > -0.02f && w.transform(player)->position.y < 0.02f,
+              "the capsule rests on the ground with its feet at the object's origin (y %.3f)", w.transform(player)->position.y);
+        CHECK(ev.enters == 1 && ev.last_trigger == zone && ev.last_other == player,
+              "a character controller activates trigger colliders");
+        FieldValue grounded;
+        CHECK(w.get_field(player, ModuleKind::CharacterController3D, "grounded", &grounded) && grounded.b,
+              "grounded is exposed through module reflection");
+        CHECK(w.set_field(player, ModuleKind::CharacterController3D, "velocity", FieldValue::from_vec3(Vec3(4, 0, 0))),
+              "scripts and the Inspector can set character velocity");
+        run(w, 0.8f);
+        CHECK(w.transform(player)->position.x > 0.2f && w.transform(player)->position.x < 1.7f,
+              "velocity moves the character but the capsule stops at the wall (x %.3f)", w.transform(player)->position.x);
+        CHECK(cc->grounded, "a flat collision counts as grounded");
+    }
+
     // ---- boxes stack; gravity off floats; static and kinematic bodies
     {
         World w;

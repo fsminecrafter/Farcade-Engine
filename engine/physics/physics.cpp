@@ -61,6 +61,7 @@ void pair_add(uint64_t** pairs, int* count, int* cap, Entity a, Entity b) {
 struct Item {
     Entity e = 0;
     RigidBody3D* rb = nullptr;
+    CharacterController3D* controller = nullptr;
     Convex cv;
     bool shape = false;
     bool trigger = false;
@@ -173,7 +174,8 @@ void PhysicsWorld::shutdown() {
 }
 
 void PhysicsWorld::add(Entity e) {
-    if (!world_ || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D))) return;
+    if (!world_ || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D) ||
+                     world_->has(e, ModuleKind::CharacterController3D))) return;
     for (int i = 0; i < count_; i++)
         if (bodies_[i].e == e) return;
     if (count_ == cap_) {
@@ -232,7 +234,8 @@ void PhysicsWorld::step(float dt) {
     // Drop dead entities and those that lost both modules.
     for (int i = 0; i < count_;) {
         Entity e = bodies_[i].e;
-        if (!world_->alive(e) || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D))) bodies_[i] = bodies_[--count_];
+        if (!world_->alive(e) || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D) ||
+                                   world_->has(e, ModuleKind::CharacterController3D))) bodies_[i] = bodies_[--count_];
         else i++;
     }
     for (int i = 0; i < mesh_count_;) {
@@ -260,8 +263,11 @@ void PhysicsWorld::step(float dt) {
         Item* ip = new (&items[ns]) Item();
         Item& it = *ip;
         it.e = e;
-        it.rb = world_->has(e, ModuleKind::RigidBody3D) ? (RigidBody3D*)world_->get_mut(e, ModuleKind::RigidBody3D) : nullptr;
-        if (it.rb) stats_.bodies++;
+        it.controller = world_->has(e, ModuleKind::CharacterController3D)
+            ? (CharacterController3D*)world_->get_mut(e, ModuleKind::CharacterController3D) : nullptr;
+        it.rb = !it.controller && world_->has(e, ModuleKind::RigidBody3D)
+            ? (RigidBody3D*)world_->get_mut(e, ModuleKind::RigidBody3D) : nullptr;
+        if (it.rb || it.controller) stats_.bodies++;
         Vec3 sx = column(m, 0), sy = column(m, 1), sz = column(m, 2);
         float lx = length(sx), ly = length(sy), lz = length(sz);
         it.ax[0] = lx > 0 ? sx * (1.0f / lx) : Vec3(1, 0, 0);
@@ -274,34 +280,53 @@ void PhysicsWorld::step(float dt) {
         // Shape and (diagonal, local) inertia for a unit mass.
         Vec3 inertia(0.1f, 0.1f, 0.1f);     // a body without a collider: a ball of radius 0.5
         const Collider3D* col = world_->has(e, ModuleKind::Collider3D) ? (const Collider3D*)world_->get(e, ModuleKind::Collider3D) : nullptr;
-        if (col) {
+        if (col || it.controller) {
             stats_.colliders++;
             Convex& cv = it.cv;
             for (int k = 0; k < 3; k++) cv.ax[k] = it.ax[k];
-            it.trigger = col->mode == ColliderMode::Trigger;
-            it.friction = col->friction;
-            it.bounce = col->bounciness;
-            it.layer = col->layer;
+            it.trigger = !it.controller && col && col->mode == ColliderMode::Trigger;
+            it.friction = col ? col->friction : 0.5f;
+            it.bounce = col ? col->bounciness : 0.0f;
+            it.layer = col ? col->layer : 1;
             float rxz = maxf(lx, lz);
             ShapeKind kind = ShapeKind::Box;
             const Hull* hull = nullptr;
-            if (col->shape == ColliderShape::Mesh) {
+            if (!it.controller && col && col->shape == ColliderShape::Mesh) {
                 for (int k = 0; k < mesh_count_; k++) if (meshes_[k].e == e) hull = meshes_[k].hull;
                 if (hull) kind = ShapeKind::Hull;
             }
-            Vec3 center = col->center;
-            switch (col->shape == ColliderShape::Mesh && !hull ? ColliderShape::Box : col->shape) {
-            case ColliderShape::Sphere: kind = ShapeKind::Sphere; break;
-            case ColliderShape::Capsule: kind = ShapeKind::Capsule; break;
-            case ColliderShape::Cylinder: kind = ShapeKind::Cylinder; break;
-            case ColliderShape::Mesh: kind = ShapeKind::Hull; break;
-            default: kind = ShapeKind::Box; break;
+            Vec3 center;
+            if (it.controller) {
+                // Keep the capsule upright while the object turns to face its movement.
+                cv.ax[0] = Vec3(1, 0, 0);
+                cv.ax[1] = Vec3(0, 1, 0);
+                cv.ax[2] = Vec3(0, 0, 1);
+                kind = ShapeKind::Capsule;
+                center = it.controller->center;
+            } else {
+                center = col->center;
+                switch (col->shape == ColliderShape::Mesh && !hull ? ColliderShape::Box : col->shape) {
+                case ColliderShape::Sphere: kind = ShapeKind::Sphere; break;
+                case ColliderShape::Capsule: kind = ShapeKind::Capsule; break;
+                case ColliderShape::Cylinder: kind = ShapeKind::Cylinder; break;
+                case ColliderShape::Mesh: kind = ShapeKind::Hull; break;
+                default: kind = ShapeKind::Box; break;
+                }
+                if (kind == ShapeKind::Hull) center = hull->center;
             }
-            if (kind == ShapeKind::Hull) center = hull->center;
             it.com = transform_point(m, center);
             cv.c = it.com;
             cv.kind = kind;
-            if (kind == ShapeKind::Sphere) {
+            if (it.controller) {
+                float r = it.controller->radius * rxz, half = it.controller->height * 0.5f * ly;
+                if (half <= r) {
+                    cv.kind = ShapeKind::Sphere;
+                    cv.r = r;
+                } else {
+                    cv.r = r;
+                    cv.he = Vec3(0, half - r, 0);
+                }
+            } else if (kind == ShapeKind::Sphere) {
                 cv.r = col->radius * maxf(lx, maxf(ly, lz));
                 float i = 0.4f * cv.r * cv.r;
                 inertia = Vec3(i, i, i);
@@ -344,7 +369,15 @@ void PhysicsWorld::step(float dt) {
         it.off = origin - it.com;
 
         // Mass properties and velocities.
-        if (it.rb) {
+        if (it.controller) {
+            it.controller->grounded = false;
+            it.dynamic = true;
+            it.movable = true;
+            it.v = it.controller->velocity;
+            it.im = 1.0f;
+            if (it.controller->use_gravity)
+                it.v += gravity * (it.controller->gravity_scale * dt);
+        } else if (it.rb) {
             RigidBody3D& rb = *it.rb;
             bool dyn = rb.type == BodyType::Dynamic && rb.mass > 0;
             bool kin = rb.type == BodyType::Kinematic;
@@ -421,7 +454,7 @@ void PhysicsWorld::step(float dt) {
                 // Nothing here can be pushed (static / kinematic / no body).
                 continue;
             }
-            if (trig && !a.rb && !b.rb) continue;
+            if (trig && !(a.rb || a.controller) && !(b.rb || b.controller)) continue;
             if (a.cv.lo.y > b.cv.hi.y + kMargin || b.cv.lo.y > a.cv.hi.y + kMargin) continue;
             if (a.cv.lo.z > b.cv.hi.z + kMargin || b.cv.lo.z > a.cv.hi.z + kMargin) continue;
             if (trig) {
@@ -473,6 +506,10 @@ void PhysicsWorld::step(float dt) {
             if (mf->touching) {
                 stats_.contacts++;
                 if (!was) pair_add(&hits, &hit_count, &hit_cap, mf->ea, mf->eb);
+                if (pa->controller && -mf->n.y >= fcos(radians(pa->controller->slope_limit)))
+                    pa->controller->grounded = true;
+                if (pb->controller && mf->n.y >= fcos(radians(pb->controller->slope_limit)))
+                    pb->controller->grounded = true;
             }
         }
     }
@@ -563,8 +600,10 @@ void PhysicsWorld::step(float dt) {
     // ---- integrate and write back
     for (int i = 0; i < ns; i++) {
         Item& s = items[i];
-        if (!s.movable || !s.rb) continue;
-        if (s.dynamic) {
+        if (!s.movable || (!s.rb && !s.controller)) continue;
+        if (s.controller) {
+            s.controller->velocity = s.v;
+        } else if (s.dynamic) {
             s.rb->velocity = s.v;
             if (s.rotates) s.rb->angular_velocity = s.w;
         }

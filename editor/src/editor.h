@@ -33,6 +33,7 @@ struct FileEditor {
 
 struct Settings {
     bool dark_theme = true;
+    bool invert_scrolling = false;
     float ui_scale = 1.0f;
     float grid_size = 1.0f;             // also the move snap
     int grid_lines = 20;                // to each side of the origin

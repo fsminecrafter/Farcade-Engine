@@ -40,6 +40,17 @@ const FieldInfo kCollider[] = {
     FE_F(Collider3D, layer, "Layers", Bits, 0, 0, nullptr),
 };
 
+const FieldInfo kCharacterController[] = {
+    FE_F(CharacterController3D, radius, "Radius", Float, 0.001f, 1000.0f, nullptr),
+    FE_F(CharacterController3D, height, "Height", Float, 0.001f, 1000.0f, nullptr),
+    FE_F(CharacterController3D, center, "Center", Vec3, 0, 0, nullptr),
+    FE_F(CharacterController3D, slope_limit, "Slope limit", Float, 0, 89, nullptr),
+    FE_F(CharacterController3D, use_gravity, "Use gravity", Bool, 0, 0, nullptr),
+    FE_F(CharacterController3D, gravity_scale, "Gravity scale", Float, -10, 10, nullptr),
+    FE_F(CharacterController3D, velocity, "Velocity", Vec3, 0, 0, nullptr),
+    FE_F(CharacterController3D, grounded, "Grounded", Bool, 0, 0, nullptr),
+};
+
 const FieldInfo kListener[] = {
     FE_F(AudioListener, volume, "Volume", Float, 0, 2, nullptr),
     FE_F(AudioListener, current, "Current", Bool, 0, 0, nullptr),
@@ -124,6 +135,7 @@ const FieldInfo kPost[] = {
 const ModuleInfo kInfos[kModuleKindCount] = {
     FE_M(RigidBody3D, RigidBody3D, "rigidbody3d", "Rigidbody 3D", kRigidBody, false, 0),
     FE_M(Collider3D, Collider3D, "collider3d", "Collider 3D", kCollider, false, 0),
+    FE_M(CharacterController3D, CharacterController3D, "character_controller3d", "Character Controller 3D", kCharacterController, false, 0),
     FE_M(AudioListener, AudioListener, "listener", "Audio Listener", kListener, true, offsetof(AudioListener, current)),
     FE_M(AudioStream, AudioStream, "audio_stream", "Audio Stream", kStream, false, 0),
     FE_M(AudioSampler, AudioSampler, "audio_sampler", "Audio Sampler", kSampler, false, 0),
@@ -193,6 +205,7 @@ void* ModuleSet::data(ModuleKind k) {
     switch (k) {
         case ModuleKind::RigidBody3D: return &rigidbody3d;
         case ModuleKind::Collider3D: return &collider3d;
+        case ModuleKind::CharacterController3D: return &character_controller3d;
         case ModuleKind::AudioListener: return &audio_listener;
         case ModuleKind::AudioStream: return &audio_stream;
         case ModuleKind::AudioSampler: return &audio_sampler;
@@ -211,6 +224,7 @@ void ModuleSet::reset(ModuleKind k) {
     switch (k) {
         case ModuleKind::RigidBody3D: rigidbody3d = RigidBody3D(); break;
         case ModuleKind::Collider3D: collider3d = Collider3D(); break;
+        case ModuleKind::CharacterController3D: character_controller3d = CharacterController3D(); break;
         case ModuleKind::AudioListener: audio_listener = AudioListener(); break;
         case ModuleKind::AudioStream: audio_stream = AudioStream(); break;
         case ModuleKind::AudioSampler: audio_sampler = AudioSampler(); break;

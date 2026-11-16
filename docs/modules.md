@@ -15,10 +15,20 @@ you add one with **Add module** and remove it with its trash button.
 | --- | --- | --- |
 | Rigidbody 3D | `rigidbody3d` | Physics: dynamic, kinematic or static, mass, damping, gravity, start velocity |
 | Collider 3D | `collider3d` | A box, sphere, capsule or mesh shape. *Collision* makes bodies bounce off it; *Trigger* reports objects entering and leaving (`on_trigger_enter` / `on_trigger_exit`) |
+| Character Controller 3D | `character_controller3d` | An upright capsule with gravity and collision response; scripts steer it with its live velocity and can read whether it is grounded |
 | Audio Listener | `listener` | Where the game hears from. Has **Current** |
 | Audio Stream | `audio_stream` | A long sound streamed from a file (music, ambience), optionally positioned in 3D |
 | Audio Sampler | `audio_sampler` | Short sounds held in memory and played by scripts, several at once |
 | Light | `light` | Directional, point or spot light |
+
+Scripts steer a character controller by setting its world-space velocity in
+meters per second. Its capsule collides with the existing physics bodies;
+`grounded` reports contacts below the configured slope limit. For example:
+
+```lua
+local controller = self.object.character_controller3d
+controller.velocity = fe.vec3(3, controller.grounded and 0 or controller.velocity.y, 0)
+```
 
 ## Scene objects
 
@@ -76,7 +86,8 @@ end
 ## What runs today
 
 - **Done in the editor:** the data model, the Inspector, creating objects, the Current rule, and the viewport icons and shapes.
-- **Physics:** in Play, a built-in physics step runs Rigidbody 3D and Collider 3D (`engine/physics`). It is a stand-in for Jolt (plan C6), which needs the standard C++ library this engine doesn't use yet. What it does:
+- **Physics:** in Play, a built-in physics step runs Rigidbody 3D, Collider 3D and Character Controller 3D (`engine/physics`). It is a stand-in for Jolt (plan C6), which needs the standard C++ library this engine doesn't use yet. What it does:
+  - Character Controller 3D uses an upright capsule (its default center puts the feet at the object's origin), gravity and the same collision solver. Set `character_controller3d.velocity` in m/s from a script to move it; `grounded` is updated by physics, using **Slope limit** to decide whether a contact counts as ground. A controller is not a Rigidbody: its rotation is fixed. A Collider 3D can provide friction, bounciness and layers; its shape and trigger mode are ignored.
   - Dynamic bodies fall and are damped (linear and angular) and turn as well as move: inertia comes from the collider shape, `freeze_rotation` locks the rotation, kinematic bodies move and turn by their velocities, and static bodies and colliders without a body don't move.
   - Box, sphere, capsule, cylinder and mesh colliders all collide with each other (GJK and EPA on convex shapes, contact manifolds of up to 4 points), so boxes rest flat and stack, spheres and cylinders roll down slopes, and boxes tip over edges. Friction, bounciness (no bounce below 1 m/s) and collision layers apply; the solver is sequential impulses with warm starting.
   - Mesh colliders use the convex hull of the points given to `PhysicsWorld::set_mesh` (the editor calls it with the object's mesh vertices when play starts); without points a mesh collider is its `size` box. Concave triangle meshes are not done.

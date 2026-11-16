@@ -67,6 +67,9 @@ double time_seconds();
 // True when the editor is a window on a desktop (it draws no mouse cursor
 // of its own then); false when it has the whole screen.
 bool windowed();
+// Toggles a desktop window between its normal bounds and borderless fullscreen.
+// Returns false if the window manager rejected the request.
+bool toggle_fullscreen();
 
 // ---- files
 

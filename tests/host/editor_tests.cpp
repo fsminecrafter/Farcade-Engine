@@ -143,6 +143,33 @@ int main() {
     ed.tool = Tool::Select;
     frames(4);
     CHECK(ed.view_rect[2] > 100 && ed.view_rect[3] > 100, "viewport has a size (%f x %f)", ed.view_rect[2], ed.view_rect[3]);
+    ed.show_settings = true;
+    frames(2);
+    CHECK(ui("settings:invert_scrolling"), "General settings exposes the invert scrolling toggle");
+    CHECK(click_ui("settings:invert_scrolling") && ed.settings.invert_scrolling, "the General toggle enables inverted scrolling");
+    CHECK(click_ui("settings:invert_scrolling") && !ed.settings.invert_scrolling, "the General toggle disables inverted scrolling");
+    ed.show_settings = false;
+    frames(1);
+    {
+        float x = ed.view_rect[0] + ed.view_rect[2] * 0.5f;
+        float y = ed.view_rect[1] + ed.view_rect[3] * 0.5f;
+        ev_move(x, y);
+        frames(2);
+        platform::Event wheel;
+        wheel.type = platform::EventType::MouseWheel;
+        wheel.wheel_y = 1;
+        ed.settings.invert_scrolling = false;
+        ed.camera.distance = 8;
+        platform::headless_push(wheel);
+        frames(1);
+        CHECK(ed.camera.distance < 8, "normal scrolling zooms the viewport in");
+        ed.settings.invert_scrolling = true;
+        ed.camera.distance = 8;
+        platform::headless_push(wheel);
+        frames(1);
+        CHECK(ed.camera.distance > 8, "inverted scrolling zooms the viewport out");
+        ed.settings.invert_scrolling = false;
+    }
 
     // ---- selection in the viewport
     float ax, ay, bx, by;
@@ -784,6 +811,16 @@ int main() {
         if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
         CHECK(ui("module:light:intensity") && !ui("module:light:spot_angle"), "a point light shows intensity, not the spot angle");
         CHECK(click_ui("module:light:remove") && !ed.scene.get(c3)->modules.has(ModuleKind::Light), "the trash button removes the module");
+        CHECK(click_ui("inspector:add_module"), "Add module opens for a character controller");
+        frames(2);
+        CHECK(click_ui("addmodule:character_controller3d") &&
+              ed.scene.get(c3)->modules.has(ModuleKind::CharacterController3D), "Add module adds Character Controller 3D");
+        frames(2);
+        if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
+        CHECK(ui("module:character_controller3d:radius") && ui("module:character_controller3d:grounded"),
+              "the Inspector exposes the controller settings and grounded state");
+        CHECK(click_ui("module:character_controller3d:remove") &&
+              !ed.scene.get(c3)->modules.has(ModuleKind::CharacterController3D), "the controller can be removed");
 
         // Clean up so the rest of the tests see the old scene.
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);

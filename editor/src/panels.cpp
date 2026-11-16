@@ -36,6 +36,7 @@ Icon module_icon(ModuleKind k) {
     switch (k) {
         case ModuleKind::RigidBody3D: return Icon::Body;
         case ModuleKind::Collider3D: return Icon::Collider;
+        case ModuleKind::CharacterController3D: return Icon::Body;
         case ModuleKind::AudioListener: return Icon::Ear;
         case ModuleKind::AudioStream: return Icon::Wave;
         case ModuleKind::AudioSampler: return Icon::Speaker;
@@ -445,8 +446,8 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
     if (is_module(kind)) {
         // Remove, at the right of a short description line.
         static const char* about[] = {
-            "Physics: gravity, velocity, collisions.", "A shape that collides or triggers.", "Where the game hears from.",
-            "A long sound streamed from a file.", "Short sounds played on demand.", "Lights the scene.",
+            "Physics: gravity, velocity, collisions.", "A shape that collides or triggers.", "An upright capsule driven by velocity.",
+            "Where the game hears from.", "A long sound streamed from a file.", "Short sounds played on demand.", "Lights the scene.",
         };
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         ImGui::AlignTextToFramePadding();
@@ -473,6 +474,16 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
                 ImGui::TextUnformatted("drag the dots");
                 ImGui::PopStyleColor();
             }
+        }
+        if (kind == ModuleKind::CharacterController3D && o->modules.has(ModuleKind::RigidBody3D)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.warning));
+            ImGui::TextWrapped("This controller drives the body; Rigidbody settings are ignored while it is attached.");
+            ImGui::PopStyleColor();
+        }
+        if (kind == ModuleKind::CharacterController3D && o->modules.has(ModuleKind::Collider3D)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+            ImGui::TextWrapped("The controller supplies a solid capsule; Collider shape and mode are ignored, but friction, bounciness and layers apply.");
+            ImGui::PopStyleColor();
         }
     }
     for (int i = 0; i < mi.field_count; i++) {
@@ -584,7 +595,7 @@ void Editor::add_module_button(Object* o) {
     track("inspector:add_module");
     if (clicked) ImGui::OpenPopup("##add_module_menu");
     if (ImGui::BeginPopup("##add_module_menu")) {
-        static const char* groups[] = { "Physics", nullptr, "Audio", nullptr, nullptr, "Rendering" };
+        static const char* groups[] = { "Physics", nullptr, nullptr, "Audio", nullptr, nullptr, "Rendering" };
         for (int k = 0; k < kFirstObjectSettings; k++) {
             ModuleKind mk = (ModuleKind)k;
             if (groups[k]) { if (k) ImGui::Separator(); ImGui::TextDisabled("%s", groups[k]); }
@@ -1370,6 +1381,16 @@ void Editor::window_settings() {
     bool tabs = ImGui::BeginTabBar("##settings");
     ImGui::PopStyleColor(2);
     if (tabs) {
+        if (ImGui::BeginTabItem("General")) {
+            ImGui::Dummy(ImVec2(0, 4));
+            prop_label("Invert scrolling");
+            toggle_switch("##invert_scrolling", &settings.invert_scrolling);
+            track("settings:invert_scrolling");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+            ImGui::TextWrapped("Reverse the mouse wheel direction for scrolling and viewport zoom.");
+            ImGui::PopStyleColor();
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("Appearance")) {
             ImGui::Dummy(ImVec2(0, 4));
             prop_label("Dark theme");

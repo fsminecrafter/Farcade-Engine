@@ -25,6 +25,7 @@ Framebuffer g_fb;
 uint32_t* g_pixels;
 bool g_have_screen;
 uint32_t g_window;                      // 0 = full screen
+bool g_fullscreen;
 float g_mouse_x, g_mouse_y;
 uint8_t g_buttons;
 uint8_t g_mods;
@@ -55,6 +56,13 @@ uint16_t map_key(uint8_t hid) {
         case 0x3C: return KEY_F3;
         case 0x3D: return KEY_F4;
         case 0x3E: return KEY_F5;
+        case 0x3F: return KEY_F6;
+        case 0x40: return KEY_F7;
+        case 0x41: return KEY_F8;
+        case 0x42: return KEY_F9;
+        case 0x43: return KEY_F10;
+        case 0x44: return KEY_F11;
+        case 0x45: return KEY_F12;
         case 0x49: return KEY_INSERT;
         case 0x4A: return KEY_HOME;
         case 0x4B: return KEY_PAGEUP;
@@ -315,9 +323,18 @@ bool init(int width, int height) {
 
 bool windowed() { return g_window != 0; }
 
+bool toggle_fullscreen() {
+    if (!g_window) return true;
+    bool enabled = !g_fullscreen;
+    if (mos_window_set_fullscreen(g_window, enabled) != SYS_SUCCESS) return false;
+    g_fullscreen = enabled;
+    return true;
+}
+
 void shutdown() {
     if (g_window) mos_window_close(g_window);
     g_window = 0;
+    g_fullscreen = false;
     if (g_have_screen) mos_graphics_release();
     g_have_screen = false;
     free(g_pixels);

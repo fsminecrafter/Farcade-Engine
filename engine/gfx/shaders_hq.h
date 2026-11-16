@@ -40,9 +40,8 @@ struct HqLitKey {
 
 // Scene geometry (position, normal attributes as in shaders.h).
 //   lit:    u_mat (rgb sRGB albedo, w roughness), u_pbr (x metallic), u_cam, u_sky, u_gnd,
-//           u_fog (rgb fog color, w density), lights as in shaders.h; shadow: sampler u_shadow,
-//           u_shm (world -> light clip), u_sdir (xyz toward the light), u_shp, u_shq, u_lr, u_lu;
-//           ao: sampler u_ao; post as in shaders.h (u_post, u_tint, u_res)
+//           u_fog (rgb fog color, w density), binding 0 storage buffer for lights and shadow data;
+//           shadow map: sampler u_shadow; ao: sampler u_ao; post as in shaders.h.
 void hq_lit_vertex(char* out, size_t cap, bool shadow);
 void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k);
 void hq_unlit_vertex(char* out, size_t cap);

@@ -129,7 +129,11 @@ color in `SkyMode::Color`), applied to lit and unlit items before post.
 
 - 32 vec4 temporaries per stage and none are shared between variables of a
   scope: shaders use blocks and vec4 packing (see comments in shaders_hq.cpp).
-- 64 uniform registers: a lit shader with 8 lights and shadows uses 62.
+- 64 uniform vec4 registers: the GPU-tier lit shader now keeps camera and
+  per-object values in uniforms and packs light records plus shadow matrices
+  and metadata into a read-only storage buffer. This frees uniform space but
+  does not raise the current 8-light shader-variant limit; lighting loops are
+  still unrolled and bounded by instruction and temporary-register limits.
 - The host JIT takes 16 texture samples per shader at most (else it falls back
   to the interpreter, 10x slower), turns `if` into predication (no work is
   skipped) and takes at most 512 distinct constants. Hence the 12 AO samples,

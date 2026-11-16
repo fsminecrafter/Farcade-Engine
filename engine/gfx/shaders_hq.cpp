@@ -99,10 +99,10 @@ const char* const kPointHead =
     "    vec3 L = vec3(0.0);\n"
     "    float att = 0.0;\n"
     "    {\n"
-    "        vec3 d = u_l0[i].xyz - v_pos;\n"
+    "        vec3 d = light0(i).xyz - v_pos;\n"
     "        float dist = length(d);\n"
     "        L = d / max(dist, 0.0001);\n"
-    "        float x = min(dist / max(u_l0[i].w, 0.0001), 1.0);\n"
+    "        float x = min(dist / max(light0(i).w, 0.0001), 1.0);\n"
     "        att = 1.0 - x * x;\n"
     "        att = att * att;\n"
     "    }\n";
@@ -112,8 +112,8 @@ const char* const kBlinnTail =
     "    float ndl = max(dot(N, L), 0.0);\n"
     "    vec3 H = normalize(L + V);\n"
     "    float sp = pow(max(dot(N, H), 0.0), shin) * ndl * att * S;\n"
-    "    diff += u_l2[i].rgb * (ndl * att * S);\n"
-    "    spec += u_l2[i].rgb * (sp * specn);\n"
+    "    diff += light2(i).rgb * (ndl * att * S);\n"
+    "    spec += light2(i).rgb * (sp * specn);\n"
     "}\n";
 
 // GGX / Smith-Schlick / Schlick Fresnel; diffuse is Lambert scaled by (1 - F).
@@ -133,7 +133,7 @@ const char* const kPbrTail =
     "    float fr = 1.0 - vdh;\n"
     "    fr = fr * fr * fr * fr * fr;\n"
     "    vec3 F = F0 + (1.0 - F0) * fr;\n"
-    "    vec3 rad = u_l2[i].rgb * (att * S);\n"
+    "    vec3 rad = light2(i).rgb * (att * S);\n"
     "    diff += rad * ndl * (1.0 - F);\n"
     "    spec += rad * F * (dv * ndl * 3.14159265);\n"
     "}\n";
@@ -145,12 +145,12 @@ const char* const kComp[4] = { "x", "y", "z", "w" };
 // a = (right, up, forward) coordinates of d in the light camera, p = (first
 // tile, tan of half the fov, relative bias, 1 / range). Out: LS.<comp>.
 void emit_atlas_lookup(Text& t, const char* comp, bool soft) {
-    t.add("        vec2 uv = clamp(vec2(0.5, 0.5) + vec2(a.x, -a.y) * (0.5 / (max(a.z, 0.0001) * p.y)), u_la.z, 1.0 - u_la.z);\n"
-          "        p.y = floor((p.x + 0.5) * u_la.y);\n"            // the tile's row
-          "        uv = (vec2(p.x - p.y * u_la.x, p.y) + uv) * u_la.y;\n"
+    t.add("        vec2 uv = clamp(vec2(0.5, 0.5) + vec2(a.x, -a.y) * (0.5 / (max(a.z, 0.0001) * p.y)), u_frame[9].z, 1.0 - u_frame[9].z);\n"
+          "        p.y = floor((p.x + 0.5) * u_frame[9].y);\n"      // the tile's row
+          "        uv = (vec2(p.x - p.y * u_frame[9].x, p.y) + uv) * u_frame[9].y;\n"
           "        p.w = length(d) * p.w * (1.0 - p.z);\n");         // the reference depth
     if (soft) {
-        t.add("        p.y = u_la.z * u_la.y * 0.6667;\n"
+        t.add("        p.y = u_frame[9].z * u_frame[9].y * 0.6667;\n"
               "        p.z = atlas_tap(uv - vec2(p.y, p.y), p.w);\n"
               "        p.z = p.z + atlas_tap(uv + vec2(p.y, -p.y), p.w);\n"
               "        p.z = p.z + atlas_tap(uv + vec2(-p.y, p.y), p.w);\n"
@@ -177,7 +177,7 @@ void hq_lit_vertex(char* out, size_t cap, bool shadow) {
           "varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
-    if (shadow) t.add("uniform mat4 u_shm;\nuniform vec4 u_sdir;\nuniform vec4 u_shq;\nvarying vec3 v_sh;\n");
+    if (shadow) t.add("layout(binding = 0) buffer vec4 u_frame[];\nvarying vec3 v_sh;\n");
     t.add(kSrgb2Lin);
     t.add("void main() {\n"
           "    v_pos = (fgl_Model * vec4(position, 1.0)).xyz;\n"
@@ -187,8 +187,9 @@ void hq_lit_vertex(char* out, size_t cap, bool shadow) {
         // The receiver is moved along its normal by up to a few shadow texels where the
         // surface turns away from the light (normal offset bias).
         t.add("    vec3 wn = normalize(v_nrm);\n"
-              "    float sdl = clamp(dot(wn, u_sdir.xyz), 0.0, 1.0);\n"
-              "    v_sh = (u_shm * vec4(v_pos + wn * (u_shq.y * (1.0 - sdl)), 1.0)).xyz;\n");
+              "    float sdl = clamp(dot(wn, u_frame[4].xyz), 0.0, 1.0);\n"
+              "    mat4 shm = mat4(u_frame[0], u_frame[1], u_frame[2], u_frame[3]);\n"
+              "    v_sh = (shm * vec4(v_pos + wn * (u_frame[6].y * (1.0 - sdl)), 1.0)).xyz;\n");
     }
     t.add("    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
           "}\n");
@@ -203,31 +204,30 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
           "uniform vec4 u_sky;\n"
           "uniform vec4 u_gnd;\n"
           "uniform vec4 u_fog;\n");
+    const bool local = k.nps + k.nss > 0;
+    if (total > 0 || k.shadow || local) {
+        t.add("layout(binding = 0) buffer vec4 u_frame[];\n");
+    }
     if (total > 0) {
-        // the spot cone is in u_l1.w (cos outer) and u_l2.w (cos inner): no u_l3
-        const char* names[3] = { "u_l0", "u_l1", "u_l2" };
-        for (int i = 0; i < 3; i++) {
-            t.add("uniform vec4 "); t.add(names[i]); t.add("["); t.num(total); t.add("];\n");
-        }
+        t.add("vec4 light0(float i) { return u_frame[10.0 + i * 3.0]; }\n"
+              "vec4 light1(float i) { return u_frame[11.0 + i * 3.0]; }\n"
+              "vec4 light2(float i) { return u_frame[12.0 + i * 3.0]; }\n");
+    }
+    if (local) {
+        t.add("vec4 local_shadow(float i) { return u_frame[");
+        t.num(10 + total * 3);
+        t.add(".0 + i]; }\n");
     }
     t.add("varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
     if (k.shadow) {
         t.add("uniform sampler2D u_shadow;\n"
-              "uniform vec4 u_shp;\n"            // 1 / size, meters per uv, 1 / depth range, constant bias
-              "uniform vec4 u_shq;\n"            // filter radius (uv), normal offset (m)
-              "uniform vec4 u_lr;\n"             // light view right axis (world)
-              "uniform vec4 u_lu;\n"             // light view up axis (world)
               "varying vec3 v_sh;\n");
     }
     if (k.ao) t.add("uniform sampler2D u_ao;\n");
-    const bool local = k.nps + k.nss > 0;
     if (local) {
-        t.add("uniform sampler2D u_atlas;\n"
-              "uniform vec4 u_la;\n");          // x tiles per row, y 1 / that, z tile inset (uv)
-        // per shadowed light (points, then spots): x first tile, y tan(half fov), z bias, w normal offset per meter
-        t.add("uniform vec4 u_lsh["); t.num(k.nps + k.nss); t.add("];\n");
+        t.add("uniform sampler2D u_atlas;\n");
     }
     t.add(kTone);
     t.add(kPack);
@@ -242,13 +242,13 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
     }
     if (k.shadow) {
         t.add("float shadow_tap(vec2 uv, float dref) {\n"
-              "    return step(dref - u_shp.w, unpack24(texture(u_shadow, uv).rgb));\n"
+              "    return step(dref - u_frame[5].w, unpack24(texture(u_shadow, uv).rgb));\n"
               "}\n"
               "float shadow_factor(vec3 N, vec3 sdir) {\n"
               "    vec2 uv = vec2(v_sh.x * 0.5 + 0.5, 0.5 - v_sh.y * 0.5);\n"
               "    float d0 = v_sh.z * 0.5 + 0.5;\n"
               "    float nz = max(dot(N, sdir), 0.2);\n"
-              "    vec2 g = vec2(dot(N, u_lr.xyz), dot(N, u_lu.xyz)) * (u_shp.y * u_shp.z / nz);\n"
+              "    vec2 g = vec2(dot(N, u_frame[7].xyz), dot(N, u_frame[8].xyz)) * (u_frame[5].y * u_frame[5].z / nz);\n"
               "    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * step(d0, 1.0);\n");
         if (k.shadow >= 2) {
             t.add("    float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
@@ -261,7 +261,7 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
                 float ox = fcos(an) * r, oy = fsin(an) * r;
                 t.add("    {\n        vec2 o = vec2(cs.x * ");
                 t.flt(ox); t.add(" - cs.y * "); t.flt(oy); t.add(", cs.y * "); t.flt(ox); t.add(" + cs.x * "); t.flt(oy);
-                t.add(") * u_shq.x;\n"
+                t.add(") * u_frame[6].x;\n"
                       "        sum += shadow_tap(uv + o, d0 + g.x * o.x - g.y * o.y);\n    }\n");
             }
             t.add("    float lit = sum * ");
@@ -280,9 +280,9 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
     // the shadow first: it needs many registers, main has few live values yet
     if (k.shadow && k.nd > 0) {
         // In a block: an inlined function's temporaries live until the block ends.
-        t.add("    float SH = 1.0;\n    {\n        SH = shadow_factor(N, -u_l1[");
+        t.add("    float SH = 1.0;\n    {\n        SH = shadow_factor(N, -light1(");
         t.num(k.shadow_light);
-        t.add("].xyz);\n    }\n");
+        t.add(").xyz);\n    }\n");
     }
     // point / spot shadows too, all four in one register
     if (local) {
@@ -290,16 +290,16 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         for (int j = 0; j < k.nps; j++) {
             int i = k.nd + j;
             t.add("    {\n"
-                  "        vec3 d = v_pos - u_l0["); t.num(i); t.add("].xyz;\n"
-                  "        d = d + N * (u_lsh["); t.num(j); t.add("].w * length(d));\n"
+                  "        vec3 d = v_pos - light0("); t.num(i); t.add(").xyz;\n"
+                  "        d = d + N * (local_shadow("); t.num(j); t.add(").w * length(d));\n"
                   "        vec3 a = abs(d);\n"
                   "        vec3 m = vec3(step(a.y, a.x) * step(a.z, a.x), 0.0, 0.0);\n"
                   "        m.y = (1.0 - m.x) * step(a.z, a.y);\n"
                   "        m.z = 1.0 - m.x - m.y;\n"
                   "        a = step(d, vec3(0.0));\n"            // 1 where d points the negative way
                   "        vec3 f = m * (1.0 - 2.0 * a);\n"
-                  "        vec4 p = vec4(u_lsh["); t.num(j); t.add("].x + dot(m, a + vec3(0.0, 2.0, 4.0)), u_lsh["); t.num(j);
-            t.add("].y, u_lsh["); t.num(j); t.add("].z, 1.0 / u_l0["); t.num(i); t.add("].w);\n"
+                  "        vec4 p = vec4(local_shadow("); t.num(j); t.add(").x + dot(m, a + vec3(0.0, 2.0, 4.0)), local_shadow("); t.num(j);
+            t.add(").y, local_shadow("); t.num(j); t.add(").z, 1.0 / light0("); t.num(i); t.add(").w);\n"
                   "        m = cross(f, vec3(0.0, 1.0 - m.y, m.y));\n"   // right
                   "        a = vec3(dot(d, m), dot(d, cross(m, f)), dot(d, f));\n");
             emit_atlas_lookup(t, kComp[j], k.local_soft);
@@ -309,12 +309,12 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
             int i = k.nd + k.np + j, sj = k.nps + j;
             // the spot's camera from its direction, as atlas_pass builds it
             t.add("    {\n"
-                  "        vec3 d = v_pos - u_l0["); t.num(i); t.add("].xyz;\n"
-                  "        d = d + N * (u_lsh["); t.num(sj); t.add("].w * length(d));\n"
-                  "        vec3 f = u_l1["); t.num(i); t.add("].xyz;\n"
+                  "        vec3 d = v_pos - light0("); t.num(i); t.add(").xyz;\n"
+                  "        d = d + N * (local_shadow("); t.num(sj); t.add(").w * length(d));\n"
+                  "        vec3 f = light1("); t.num(i); t.add(").xyz;\n"
                   "        vec3 m = normalize(cross(f, vec3(0.0, 1.0 - step(0.99, abs(f.y)), step(0.99, abs(f.y)))));\n"
                   "        vec3 a = vec3(dot(d, m), dot(d, cross(m, f)), dot(d, f));\n"
-                  "        vec4 p = vec4(u_lsh["); t.num(sj); t.add("].xyz, 1.0 / u_l0["); t.num(i); t.add("].w);\n");
+                  "        vec4 p = vec4(local_shadow("); t.num(sj); t.add(").xyz, 1.0 / light0("); t.num(i); t.add(").w);\n");
             emit_atlas_lookup(t, kComp[sj], k.local_soft);
             t.add("    }\n");
         }
@@ -341,7 +341,7 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
     const char* tail = k.pbr ? kPbrTail : kBlinnTail;
     if (k.nd > 0) {
         t.add("    for (int i = 0; i < "); t.num(k.nd); t.add("; i++) {\n"
-              "    vec3 L = -u_l1[i].xyz;\n"
+              "    vec3 L = -light1(i).xyz;\n"
               "    float att = 1.0;\n");
         if (k.shadow) {
             t.add("    float S = 1.0;\n    if (i == "); t.num(k.shadow_light); t.add(") S = SH;\n");
@@ -370,14 +370,14 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         int i = k.nd + k.np + j;
         t.add("    for (int i = "); t.num(i); t.add("; i < "); t.num(i + 1); t.add("; i++) {\n");
         t.add(kPointHead);
-        t.add("    att = att * smoothstep(u_l1[i].w, u_l2[i].w, dot(-L, u_l1[i].xyz));\n"
+        t.add("    att = att * smoothstep(light1(i).w, light2(i).w, dot(-L, light1(i).xyz));\n"
               "    float S = LS."); t.add(kComp[k.nps + j]); t.add(";\n");
         t.add(tail);
     }
     if (k.ns > k.nss) {
         t.add("    for (int i = "); t.num(k.nd + k.np + k.nss); t.add("; i < "); t.num(total); t.add("; i++) {\n");
         t.add(kPointHead);
-        t.add("    att = att * smoothstep(u_l1[i].w, u_l2[i].w, dot(-L, u_l1[i].xyz));\n"
+        t.add("    att = att * smoothstep(light1(i).w, light2(i).w, dot(-L, light1(i).xyz));\n"
               "    float S = 1.0;\n");
         t.add(tail);
     }

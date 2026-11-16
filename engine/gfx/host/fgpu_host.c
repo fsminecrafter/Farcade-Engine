@@ -283,6 +283,18 @@ static uint64_t execute(exec_state_t* st, const uint32_t* cmd, uint32_t words) {
                 tex->flags = arg[2] & (FGPU_TEXTURE_LINEAR | FGPU_TEXTURE_CLAMP);
                 break;
             }
+            case FGPU_OP_BIND_STORAGE_BUFFER: {
+                if (n < 2 || arg[0] >= FGPU_MAX_STORAGE_BUFFERS) return SYS_ERR_INVAL;
+                fgpu_storage_buffer_t* buffer = &st->pipe.storage_buffers[arg[0]];
+                memset(buffer, 0, sizeof(*buffer));
+                if (!arg[1]) break;
+                buffer_t* b = find_buffer(arg[1]);
+                if (!b) return SYS_ERR_NOTFOUND;
+                if ((b->size & 15u) || b->size / 16u > UINT32_MAX) return SYS_ERR_INVAL;
+                buffer->data = (const float (*)[4])b->mem;
+                buffer->vec4_count = (uint32_t)(b->size / 16u);
+                break;
+            }
             case FGPU_OP_DRAW: {
                 if (n * 4 < sizeof(fgpu_draw_t)) return SYS_ERR_INVAL;
                 fgpu_draw_t d;

@@ -228,6 +228,37 @@ void test_device() {
         CHECK_EQ(buf[12 * 32 + 16] & 0xFFFFFF, 0x00FF00);
         fglDestroyShader(gl, sh);
     }
+
+    const char* buffer_fs =
+        "layout(binding = 0) buffer vec4 colors[];\n"
+        "uniform float u_index;\n"
+        "void main() { gl_FragColor = colors[u_index]; }\n";
+    FGLShader* buffer_sh = fglCreateShader(gl, vs, buffer_fs);
+    CHECK(buffer_sh != nullptr);
+    if (buffer_sh) {
+        const float color_data[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+        FGLBuffer color_buffer = fglCreateBuffer(gl, sizeof color_data);
+        CHECK(color_buffer != 0);
+        CHECK(fglBufferData(gl, color_buffer, 0, color_data, sizeof color_data) == 0);
+        fglBindStorageBuffer(gl, 0, color_buffer);
+        fglUniform1f(buffer_sh, fglUniformLocation(buffer_sh, "u_index"), 0.0f);
+        fglUseShader(gl, buffer_sh);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglDraw(gl, vb, 0, 3);
+        CHECK(fglSubmit(gl) == 0);
+        CHECK(fglReadPixels(gl, buf, 32 * 4) == 0);
+        CHECK_EQ(buf[12 * 32 + 16] & 0xFFFFFF, 0x0000FF);
+
+        fglUniform1f(buffer_sh, fglUniformLocation(buffer_sh, "u_index"), 1.0f);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglDraw(gl, vb, 0, 3);
+        CHECK(fglSubmit(gl) == 0);
+        CHECK(fglReadPixels(gl, buf, 32 * 4) == 0);
+        CHECK_EQ(buf[12 * 32 + 16] & 0xFFFFFF, 0x000000);
+        fglDestroyShader(gl, buffer_sh);
+        fglDestroyBuffer(gl, color_buffer);
+    }
+
     // A shader that does not compile says why.
     CHECK(fglCreateShader(gl, vs, "void main() { gl_FragColor = nope; }\n") == nullptr);
     CHECK(fglShaderLog(gl)[0] != 0);

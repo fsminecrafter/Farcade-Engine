@@ -28,6 +28,7 @@ namespace {
 constexpr int kBloomLevels = 4;
 constexpr int kMaxLitVariants = 8;
 constexpr int kBoundsCache = 128;
+constexpr uint32_t kFrameVec4Count = 10u + 3u * shaders::kMaxLights + kMaxLocalShadows;
 
 double now_ms() {
     timespec ts;
@@ -111,6 +112,7 @@ struct GpuTier::Impl {
     int surfaces = 0, programs = 0;
 
     FGLBuffer tri = 0;
+    FGLBuffer frame_data = 0;
     // programs
     FGLShader* shadow_p = nullptr;
     FGLShader* local_p = nullptr;           // point / spot casters into the atlas
@@ -190,6 +192,48 @@ struct GpuTier::Impl {
         };
         tri = fglCreateBuffer(gl, sizeof v);
         if (!tri || fglBufferData(gl, tri, 0, v, sizeof v) != 0) return fail("FarcadeGL: cannot create the pass buffer");
+        return true;
+    }
+
+    bool upload_frame_data(const PackedLights& ls, const ShadowFit& fit, bool use_shadow) {
+        float data[kFrameVec4Count][4] = {};
+        int total = ls.nd + ls.np + ls.ns;
+        if (use_shadow) {
+            memcpy(data[0], fit.viewproj.m, sizeof fit.viewproj.m);
+            data[4][0] = fit.to_light.x; data[4][1] = fit.to_light.y; data[4][2] = fit.to_light.z;
+            data[5][0] = 1.0f / (float)shadow.w;
+            data[5][1] = fit.meters_per_uv; data[5][2] = fit.inv_range; data[5][3] = fit.bias;
+            data[6][0] = fit.radius_uv; data[6][1] = fit.normal_offset;
+            data[7][0] = fit.right.x; data[7][1] = fit.right.y; data[7][2] = fit.right.z;
+            data[8][0] = fit.up.x; data[8][1] = fit.up.y; data[8][2] = fit.up.z;
+        }
+        if (ls.nps + ls.nss > 0) {
+            int tiles = kAtlasTiles;
+            int tile_size = atlas.w / kAtlasTiles;
+            data[9][0] = (float)tiles;
+            data[9][1] = 1.0f / (float)tiles;
+            data[9][2] = 1.5f / (float)tile_size;
+        }
+        for (int i = 0; i < total; i++) {
+            memcpy(data[10 + i * 3], ls.l0 + i * 4, 4 * sizeof(float));
+            memcpy(data[11 + i * 3], ls.l1 + i * 4, 4 * sizeof(float));
+            memcpy(data[12 + i * 3], ls.l2 + i * 4, 4 * sizeof(float));
+        }
+        int shadow_base = 10 + total * 3;
+        for (int i = 0; i < ls.nps + ls.nss; i++) {
+            const LocalShadow& o = locals[i];
+            data[shadow_base + i][0] = (float)o.tile;
+            data[shadow_base + i][1] = o.tn;
+            data[shadow_base + i][2] = o.bias;
+            data[shadow_base + i][3] = 3.0f * o.tn / (float)(atlas.w / kAtlasTiles);
+        }
+        if (!frame_data) {
+            frame_data = fglCreateBuffer(gl, sizeof data);
+            if (!frame_data) return fail("FarcadeGL: cannot create the frame data buffer");
+        }
+        if (fglBufferData(gl, frame_data, 0, data, sizeof data) != 0)
+            return fail("FarcadeGL: cannot upload frame data");
+        fglBindStorageBuffer(gl, 0, frame_data);
         return true;
     }
 
@@ -764,31 +808,7 @@ struct GpuTier::Impl {
             u4(sh, "u_sky", sl.sky_color.x * sl.intensity, sl.sky_color.y * sl.intensity, sl.sky_color.z * sl.intensity, 0);
             u4(sh, "u_gnd", sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
             u4(sh, "u_fog", fogc.x, fogc.y, fogc.z, density);
-            uint32_t total = (uint32_t)(ls.nd + ls.np + ls.ns);
-            if (total) {
-                fglUniformArray(sh, fglUniformLocation(sh, "u_l0"), 0, ls.l0, total);
-                fglUniformArray(sh, fglUniformLocation(sh, "u_l1"), 0, ls.l1, total);
-                fglUniformArray(sh, fglUniformLocation(sh, "u_l2"), 0, ls.l2, total);
-            }
-            if (use_shadow) {
-                fglUniformMatrix4(sh, fglUniformLocation(sh, "u_shm"), to_fgl(fit.viewproj));
-                u4(sh, "u_sdir", fit.to_light.x, fit.to_light.y, fit.to_light.z, 0);
-                u4(sh, "u_shp", 1.0f / (float)shadow.w, fit.meters_per_uv, fit.inv_range, fit.bias);
-                u4(sh, "u_shq", fit.radius_uv, fit.normal_offset, 0, 0);
-                u4(sh, "u_lr", fit.right.x, fit.right.y, fit.right.z, 0);
-                u4(sh, "u_lu", fit.up.x, fit.up.y, fit.up.z, 0);
-            }
-            if (ls.nps + ls.nss > 0) {
-                float T = (float)(atlas.w / kAtlasTiles);
-                u4(sh, "u_la", (float)kAtlasTiles, 1.0f / (float)kAtlasTiles, 1.5f / T, 0);
-                float v[kMaxLocalShadows * 4];
-                for (int j = 0; j < ls.nps + ls.nss; j++) {
-                    const LocalShadow& o = locals[j];
-                    float e[4] = { (float)o.tile, o.tn, o.bias, 3.0f * o.tn / T };
-                    memcpy(v + j * 4, e, sizeof e);
-                }
-                fglUniformArray(sh, fglUniformLocation(sh, "u_lsh"), 0, v, (uint32_t)(ls.nps + ls.nss));
-            }
+            if (!upload_frame_data(ls, fit, use_shadow)) return false;
         }
 
         set_target(dst.color, main_depth);
@@ -1026,7 +1046,9 @@ struct GpuTier::Impl {
         for (Target& t : bl_down) free_target(t);
         for (Target& t : bl_up) free_target(t);
         if (tri) fglDestroyBuffer(gl, tri);
+        if (frame_data) fglDestroyBuffer(gl, frame_data);
         tri = 0;
+        frame_data = 0;
         shadow_hash = 0;
         atlas_hash = 0;
         gl = nullptr;

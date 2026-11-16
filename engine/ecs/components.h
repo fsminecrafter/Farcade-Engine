@@ -28,6 +28,8 @@ struct WorldTransform {
 struct Renderable {
     uint8_t mesh = 0;
     char model_path[kPathMax] = {};
+    char texture_path[kPathMax] = {};
+    char shader_path[kPathMax] = {};
     Vec3 color = Vec3(1, 1, 1);
     bool visible = true;
     // Material (scripts: obj.material). Roughness, metallic and

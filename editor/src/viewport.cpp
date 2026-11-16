@@ -23,6 +23,10 @@ namespace fe {
 
 namespace {
 
+void* read_render_asset(const char* path, size_t* size, void* user) {
+    return ((Editor*)user)->read_script_text(path, size);
+}
+
 // 0xRRGGBB for a base color under a light factor; selected objects get a
 // touch of the accent color.
 uint32_t shade(const Vec3& base, float light, bool selected) {
@@ -104,6 +108,8 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(mat, sizeof(mat));
         mix(matf, sizeof(matf));
         mix(&o.mesh, sizeof(o.mesh));
+        mix(o.texture_path, sizeof(o.texture_path));
+        mix(o.shader_path, sizeof(o.shader_path));
         mix(&o.kind, sizeof(o.kind));
         mix(&o.modules.present, sizeof(o.modules.present));
         mix(&o.modules.light, sizeof(o.modules.light));
@@ -369,6 +375,8 @@ void Editor::panel_viewport() {
         int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
         if (ok) {
             bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+            bridge.scene.read_asset = read_render_asset;
+            bridge.scene.asset_user = this;
             bridge.scene.draft = false;
             ok = fgl.render_rows(bridge.scene, y, band_rows, disp + (size_t)y * full_w);
         }
@@ -403,6 +411,8 @@ void Editor::panel_viewport() {
             if (ok) {
                 fgl.set_settings(settings.graphics);
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+                bridge.scene.read_asset = read_render_asset;
+                bridge.scene.asset_user = this;
                 bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
                 ok = fgl.render(bridge.scene);
                 // What runs, for Settings > Graphics.

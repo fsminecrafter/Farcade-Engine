@@ -37,6 +37,8 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
             d.mesh.vertex_count = md.vertex_count;
             d.mesh.key = (uint64_t)(uintptr_t)md.positions;     // built-in meshes never change
             d.model = m;
+            d.texture_path = o.texture_path;
+            d.shader_path = o.shader_path;
             d.color = o.color;
             d.roughness = o.roughness;
             d.metallic = o.metallic;

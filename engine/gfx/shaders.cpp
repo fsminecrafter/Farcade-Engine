@@ -104,14 +104,17 @@ void lit_vertex(char* out, size_t cap) {
           "uniform vec4 u_mat;\n"
           "attribute vec3 position;\n"
           "attribute vec3 normal;\n"
+          "attribute vec2 texcoord;\n"
           "varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
-          "varying vec3 v_alb;\n");
+          "varying vec3 v_alb;\n"
+          "varying vec2 v_uv;\n");
     t.add(kSrgb2Lin);
     t.add("void main() {\n"
           "    v_pos = (fgl_Model * vec4(position, 1.0)).xyz;\n"
           "    v_nrm = (fgl_NormalMatrix * vec4(normal, 0.0)).xyz;\n"
           "    v_alb = srgb2lin(u_mat.rgb);\n"
+          "    v_uv = texcoord;\n"
           "    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
           "}\n");
 }
@@ -122,7 +125,8 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
     t.add("uniform vec4 u_mat;\n"
           "uniform vec4 u_cam;\n"
           "uniform vec4 u_sky;\n"
-          "uniform vec4 u_gnd;\n");
+          "uniform vec4 u_gnd;\n"
+          "uniform sampler2D u_texture;\n");
     if (total > 0) {
         const char* names[4] = { "u_l0", "u_l1", "u_l2", "u_l3" };
         for (int k = 0; k < 4; k++) {
@@ -131,7 +135,9 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
     }
     t.add("varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
-          "varying vec3 v_alb;\n");
+          "varying vec3 v_alb;\n"
+          "varying vec2 v_uv;\n");
+    t.add(kSrgb2Lin);
     t.add(draft ? kPostDraft : kPost);
     const char* tail = draft ? kLightTailDraft : kLightTail;
     t.add("void main() {\n"
@@ -162,7 +168,8 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
         t.add(tail);
     }
     t.add("    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-          "    vec3 lit = v_alb * (amb + diff);\n");
+          "    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
+          "    vec3 lit = albedo * (amb + diff);\n");
     t.add(draft ? "    gl_FragColor = vec4(post(lit), 1.0);\n}\n" : "    gl_FragColor = vec4(post(lit + spec), 1.0);\n}\n");
 }
 
@@ -171,20 +178,27 @@ void unlit_vertex(char* out, size_t cap) {
     t.add("uniform mat4 fgl_ModelViewProjection;\n"
           "uniform vec4 u_mat;\n"
           "attribute vec3 position;\n"
-          "varying vec3 v_alb;\n");
+          "attribute vec2 texcoord;\n"
+          "varying vec3 v_alb;\n"
+          "varying vec2 v_uv;\n");
     t.add(kSrgb2Lin);
     t.add("void main() {\n"
           "    v_alb = srgb2lin(u_mat.rgb);\n"
+          "    v_uv = texcoord;\n"
           "    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
           "}\n");
 }
 
 void unlit_fragment(char* out, size_t cap, bool draft) {
     Text t(out, cap);
-    t.add("varying vec3 v_alb;\n");
+    t.add("uniform sampler2D u_texture;\n"
+          "varying vec3 v_alb;\n"
+          "varying vec2 v_uv;\n");
+    t.add(kSrgb2Lin);
     t.add(draft ? kPostDraft : kPost);
     t.add("void main() {\n"
-          "    gl_FragColor = vec4(post(v_alb), 1.0);\n"
+          "    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
+          "    gl_FragColor = vec4(post(albedo), 1.0);\n"
           "}\n");
 }
 

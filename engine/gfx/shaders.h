@@ -25,6 +25,7 @@ constexpr size_t kSourceBytes = 12 * 1024;
 //                   travels), u_l2 (rgb color * intensity), u_l3 (x cos outer,
 //                   y cos inner), each an array of directional + point + spot
 //                   lights in this order
+//   lit/unlit:      u_texture (sampler2D, unit selected by FarcadeGL)
 //   sky:            u_fwd, u_rx, u_ry (camera basis: ray = fwd + ndc.x*rx + ndc.y*ry),
 //                   u_zen (rgb, w 1 = flat color), u_hor, u_grd, u_sun (xyz toward
 //                   the sun, w cos of the disc radius, > 1 = no sun), u_suncol

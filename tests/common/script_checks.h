@@ -79,32 +79,35 @@ inline void check_inputs() {
     SCRIPT_ENV(E);
     Entity e = E.w.create("hero");
     Entity other = E.w.create("friend");
-    ScriptProp p[5];
+    ScriptProp p[6];
     strcpy(p[0].name, "speed"); p[0].type = PropType::Number; p[0].number = 5;
     strcpy(p[1].name, "label"); p[1].type = PropType::Text; strcpy(p[1].text, "Front door");
     strcpy(p[2].name, "active"); p[2].type = PropType::Toggle; p[2].toggle = true;
     strcpy(p[3].name, "mode"); p[3].type = PropType::List; p[3].choice_count = 3;
     strcpy(p[3].choices[0], "idle"); strcpy(p[3].choices[1], "patrol"); strcpy(p[3].choices[2], "chase"); p[3].choice = 1;
     strcpy(p[4].name, "target"); p[4].type = PropType::Object; p[4].object = 7;
-    Entity objs[5] = { 0, 0, 0, 0, other };
+    strcpy(p[5].name, "skin"); p[5].type = PropType::File; strcpy(p[5].file, "assets/hero.png");
+    Entity objs[6] = { 0, 0, 0, 0, other, 0 };
     int id = E.add(e, "scripts/hero.lua",
         "function on_start(self)\n"
         "  self.t_speed = self.speed + 0.5\n"
         "  self.t_target = self.target.name\n"
         "  self.t_object = self.object.name\n"
         "  self.t_name = self.name\n"
+        "  self.t_skin = self.skin\n"
         "  self.t_types = type(self.speed) .. type(self.label) .. type(self.active) .. type(self.mode) .. type(self.target)\n"
         "  self.t_same = (self.target == fe.find('friend'))\n"
-        "end\n", p, 5, objs);
+        "end\n", p, 6, objs);
     SCRIPT_CHECK(id > 0);
     E.w.progress(0.016f);
     SCRIPT_CHECK(near_(E.num(id, "speed"), 5) && near_(E.num(id, "t_speed"), 5.5));
     SCRIPT_CHECK(E.str_is(id, "label", "Front door") && E.flag(id, "active") && E.str_is(id, "mode", "patrol"));
     SCRIPT_CHECK(E.str_is(id, "t_target", "friend") && E.str_is(id, "t_object", "hero") && E.str_is(id, "t_name", "hero"));
+    SCRIPT_CHECK(E.str_is(id, "skin", "assets/hero.png") && E.str_is(id, "t_skin", "assets/hero.png"));
     SCRIPT_CHECK(E.str_is(id, "t_types", "numberstringbooleanstringuserdata") && E.flag(id, "t_same"));
     // an unlinked object input is nil
-    Entity nobj[5] = { 0, 0, 0, 0, 0 };
-    int id2 = E.add(e, "scripts/hero2.lua", "function on_start(self) self.nil_target = (self.target == nil) end\n", p, 5, nobj);
+    Entity nobj[6] = { 0, 0, 0, 0, 0, 0 };
+    int id2 = E.add(e, "scripts/hero2.lua", "function on_start(self) self.nil_target = (self.target == nil) end\n", p, 6, nobj);
     E.w.progress(0.016f);
     SCRIPT_CHECK(E.flag(id2, "nil_target"));
 }
@@ -234,8 +237,10 @@ inline void check_material() {
     SCRIPT_ENV(E);
     Entity e = E.w.create("crate");
     Entity empty = E.w.create("empty");
+    E.w.create("bare");
     Renderable* r = E.w.add_renderable(e);
     r->color = Vec3(0.5f, 0.25f, 1.0f);
+    E.w.add_renderable(empty);
     int id = E.add(e, "scripts/mat.lua",
         "function on_start(self)\n"
         "  local m = self.object.material\n"
@@ -247,25 +252,38 @@ inline void check_material() {
         "  m.color = fe.vec3(0.1, 0.2, 0.3)\n"
         "  m.unlit = true\n"
         "  m.cast_shadows = false\n"
-        "  self.none = (fe.find('empty').material == nil)\n"
+        "  m.texture = 'assets/door.png'\n"
+        "  m.shader = 'shaders/door.fshader'\n"
+        "  local other = fe.find('empty')\n"
+        "  other.material.texture = m.texture\n"
+        "  other.material.shader = m.shader\n"
+        "  self.texture = other.material.texture\n"
+        "  self.shader = other.material.shader\n"
+        "  self.none = (fe.find('bare').material == nil)\n"
         "  local function try(f) local ok, err = pcall(f); return (not ok) and err or '' end\n"
         "  self.e1 = try(function() m.metallic = 'shiny' end)\n"
         "  self.e2 = try(function() return m.sparkle end)\n"
         "  self.e3 = try(function() m.unlit = 1 end)\n"
         "  self.e4 = try(function() self.object.material = 1 end)\n"
+        "  self.e5 = try(function() m.texture = 42 end)\n"
         "  self.str = tostring(m)\n"
         "end\n");
     SCRIPT_CHECK(id > 0);
     E.w.progress(0.1f);
     SCRIPT_CHECK(near_(E.num(id, "r0"), 0.6) && near_(E.num(id, "m0"), 0) && near_(E.num(id, "g0"), 0.25));
     r = E.w.renderable(e);
-    SCRIPT_CHECK(r && r->metallic == 1.0f && r->roughness == 1.0f && near_(r->color.z, 0.3) && r->unlit && !r->cast_shadows);
-    SCRIPT_CHECK(E.flag(id, "none") && E.w.renderable(empty) == nullptr);
+    SCRIPT_CHECK(r && r->metallic == 1.0f && r->roughness == 1.0f && near_(r->color.z, 0.3) && r->unlit && !r->cast_shadows &&
+                 !strcmp(r->texture_path, "assets/door.png") && !strcmp(r->shader_path, "shaders/door.fshader"));
+    SCRIPT_CHECK(E.flag(id, "none") && E.w.renderable(empty) &&
+                 !strcmp(E.w.renderable(empty)->texture_path, "assets/door.png") &&
+                 !strcmp(E.w.renderable(empty)->shader_path, "shaders/door.fshader"));
     char buf[256];
     SCRIPT_CHECK(E.rt.get_string(id, "e1", buf, sizeof buf) && strstr(buf, "material.metallic expects a number"));
     SCRIPT_CHECK(E.rt.get_string(id, "e2", buf, sizeof buf) && strstr(buf, "no field 'sparkle'"));
     SCRIPT_CHECK(E.rt.get_string(id, "e3", buf, sizeof buf) && strstr(buf, "expects true or false"));
     SCRIPT_CHECK(E.rt.get_string(id, "e4", buf, sizeof buf) && strstr(buf, "read only"));
+    SCRIPT_CHECK(E.rt.get_string(id, "e5", buf, sizeof buf) && strstr(buf, "string"));
+    SCRIPT_CHECK(E.str_is(id, "texture", "assets/door.png") && E.str_is(id, "shader", "shaders/door.fshader"));
     SCRIPT_CHECK(E.str_is(id, "str", "material(roughness 1.00, metallic 1.00)"));
 }
 

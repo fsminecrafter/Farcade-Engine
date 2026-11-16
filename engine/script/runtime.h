@@ -61,7 +61,8 @@ public:
     // (size bytes), `path` names it in errors and is what obj:script(name)
     // matches ("door" finds ".../door.lua"). `props` are the inputs; for
     // PropType::Object inputs, `object_entities[i]` is the entity props[i]
-    // links to (0 = nil), already resolved by the caller. Returns an
+    // links to (0 = nil), already resolved by the caller. PropType::File inputs
+    // reach Lua as project-relative path strings. Returns an
     // instance id (> 0), or 0 when the chunk failed to load or run (logged).
     int add_instance(Entity e, const char* path, const char* source, uint32_t size, const ScriptProp* props, int prop_count,
                      const Entity* object_entities);

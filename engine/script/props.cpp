@@ -126,6 +126,7 @@ bool parse_decl(Cursor& c, ScriptProp* out) {
     else if (!strcmp(type, "toggle") || !strcmp(type, "bool")) out->type = PropType::Toggle;
     else if (!strcmp(type, "list")) out->type = PropType::List;
     else if (!strcmp(type, "object")) out->type = PropType::Object;
+    else if (!strcmp(type, "file") || !strcmp(type, "asset")) out->type = PropType::File;
     else return false;
 
     if (out->type == PropType::List) {
@@ -164,6 +165,9 @@ bool parse_decl(Cursor& c, ScriptProp* out) {
             }
             case PropType::Object:
                 return false;   // an object link has no default
+            case PropType::File:
+                read_text(c, out->file, sizeof(out->file));
+                break;
         }
     }
     if (out->type == PropType::Number && c.eat_word("range")) {
@@ -189,6 +193,7 @@ const char* prop_type_name(PropType t) {
         case PropType::Toggle: return "toggle";
         case PropType::List: return "list";
         case PropType::Object: return "object";
+        case PropType::File: return "file";
     }
     return "?";
 }
@@ -274,6 +279,7 @@ void merge_script_props(ScriptSlot* slot, const ScriptProp* declared, int count)
                 break;
             }
             case PropType::Object: m.object = old->object; break;
+            case PropType::File: memcpy(m.file, old->file, sizeof(m.file)); break;
         }
     }
     for (int i = 0; i < count; i++) slot->props[i] = merged[i];

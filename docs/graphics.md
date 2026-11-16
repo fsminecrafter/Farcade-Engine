@@ -1,5 +1,43 @@
 # Graphics: the GPU tier of the FarcadeGL renderer
 
+## Texture and custom shader assets
+
+A mesh material can reference an image texture or a combined FGSL shader file.
+Use the Inspector's Texture and Shader slots, or assign paths from a script
+through `object.material.texture` and `object.material.shader`. Script inputs
+declared as `file` (or `asset`) are path strings and can be dropped on from the
+Files panel.
+
+The `.fshader` format uses the existing FGSL syntax and two comment markers:
+
+```glsl
+// @vertex
+uniform mat4 fgl_ModelViewProjection;
+attribute vec3 position;
+attribute vec2 texcoord;
+varying vec2 uv;
+void main() {
+    uv = texcoord;
+    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);
+}
+
+// @fragment
+uniform sampler2D u_texture;
+varying vec2 uv;
+void main() {
+    gl_FragColor = texture2D(u_texture, uv);
+}
+```
+
+`u_texture` is bound to the material image; without one it is a white texture.
+Built-in meshes currently get generated planar UVs, and texture alpha is not
+blended by the XRGB material path.
+The renderer also supplies the usual FarcadeGL matrix uniforms and `u_mat`
+(material color and roughness). A custom shader replaces the built-in material
+shading. When a visible mesh has a texture or custom shader, the renderer uses
+its base FarcadeGL path for that frame, so advanced GPU-tier effects (such as
+shadows, SSAO and fog) are not applied.
+
 `fe::gfx::Renderer` (engine/gfx) has two tiers, set by `GraphicsSettings`
 (engine/gfx/graphics_settings.h).
 

@@ -674,7 +674,9 @@ int mat_index(lua_State* L) {
     else if (strcmp(k, "unlit") == 0) lua_pushboolean(L, r->unlit);
     else if (strcmp(k, "cast_shadows") == 0) lua_pushboolean(L, r->cast_shadows);
     else if (strcmp(k, "visible") == 0) lua_pushboolean(L, r->visible);
-    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible)", k);
+    else if (strcmp(k, "texture") == 0) lua_pushstring(L, r->texture_path);
+    else if (strcmp(k, "shader") == 0) lua_pushstring(L, r->shader_path);
+    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible, texture, shader)", k);
     return 1;
 }
 
@@ -692,13 +694,25 @@ int mat_newindex(lua_State* L) {
         *out = lua_toboolean(L, 3) != 0;
         return 0;
     };
+    auto file = [&](char* out, size_t cap) {
+        if (lua_type(L, 3) != LUA_TSTRING)
+            return luaL_error(L, "material.%s expects a string path, got %s", k, luaL_typename(L, 3));
+        size_t n = 0;
+        const char* value = luaL_checklstring(L, 3, &n);
+        if (n >= cap) return luaL_error(L, "material.%s path is too long (maximum %d bytes)", k, (int)cap - 1);
+        memcpy(out, value, n);
+        out[n] = 0;
+        return 0;
+    };
     if (strcmp(k, "color") == 0) r->color = check_vec3(L, 3);
     else if (strcmp(k, "roughness") == 0) number01(&r->roughness);
     else if (strcmp(k, "metallic") == 0) number01(&r->metallic);
     else if (strcmp(k, "unlit") == 0) boolean(&r->unlit);
     else if (strcmp(k, "cast_shadows") == 0) boolean(&r->cast_shadows);
     else if (strcmp(k, "visible") == 0) boolean(&r->visible);
-    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible)", k);
+    else if (strcmp(k, "texture") == 0) file(r->texture_path, sizeof(r->texture_path));
+    else if (strcmp(k, "shader") == 0) file(r->shader_path, sizeof(r->shader_path));
+    else return luaL_error(L, "material has no field '%s' (color, roughness, metallic, unlit, cast_shadows, visible, texture, shader)", k);
     return 0;
 }
 
@@ -1113,6 +1127,7 @@ int ScriptRuntime::add_instance(Entity e, const char* path, const char* source, 
             if (t && I->world->alive(t)) push_object(L, t); else lua_pushnil(L);
             break;
         }
+        case PropType::File: lua_pushstring(L, p.file); break;
         }
         lua_setfield(L, -2, p.name);
     }

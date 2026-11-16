@@ -544,6 +544,7 @@ int main() {
             "-- @prop open   toggle = true\n"
             "-- @prop mode   list(closed, open, locked) = locked\n"
             "-- @prop target object\n"
+            "-- @prop skin file = \"assets/door.png\"\n"
             "-- @prop big    number = 50 range 0 10\n"
             "-- @prop bad    vector = 1\n"
             "-- @prop worse  list() \n"
@@ -552,9 +553,9 @@ int main() {
         ScriptProp props[kMaxProps];
         int bad = 0;
         int n = parse_script_props(src, (uint32_t)strlen(src), props, kMaxProps, &bad);
-        CHECK(n == 7, "7 inputs declared (got %d)", n);
+        CHECK(n == 8, "8 inputs declared (got %d)", n);
         CHECK(bad == 3, "3 bad lines: unknown type, empty list, a repeated name (got %d)", bad);
-        if (n == 7) {
+        if (n == 8) {
             CHECK(!strcmp(props[0].name, "speed") && props[0].type == PropType::Number && props[0].number == 5 && props[0].min == 0 && props[0].max == 20,
                   "number with a range (%s %g [%g %g])", props[0].name, props[0].number, props[0].min, props[0].max);
             CHECK(props[1].type == PropType::Text && !strcmp(props[1].text, "Front door"), "quoted text (\"%s\")", props[1].text);
@@ -563,7 +564,8 @@ int main() {
             CHECK(props[4].type == PropType::List && props[4].choice_count == 3 && props[4].choice == 2 && !strcmp(props[4].choices[2], "locked"),
                   "list with a default choice (%d choices, choice %d)", props[4].choice_count, props[4].choice);
             CHECK(props[5].type == PropType::Object && props[5].object == 0, "object link, empty");
-            CHECK(props[6].number == 10, "a default outside the range is clamped (%g)", props[6].number);
+            CHECK(!strcmp(props[6].file, "assets/door.png"), "file input default (%s)", props[6].file);
+            CHECK(props[7].number == 10, "a default outside the range is clamped (%g)", props[7].number);
         }
 
         // Merging after the file changed: kept values, new defaults, dropped inputs.
@@ -572,19 +574,22 @@ int main() {
         slot.prop("speed")->number = 12;
         slot.prop("mode")->choice = 1;                 // "open"
         snprintf(slot.prop("label")->text, sizeof(slot.prop("label")->text), "%s", "Back door");
+        snprintf(slot.prop("skin")->file, sizeof(slot.prop("skin")->file), "%s", "assets/blue.png");
         const char* src2 =
             "-- @prop mode  list(locked, open) = locked\n"
             "-- @prop speed number = 1 range 0 10\n"
             "-- @prop label toggle = false\n"
-            "-- @prop extra number = 3\n";
+            "-- @prop extra number = 3\n"
+            "-- @prop skin file\n";
         ScriptProp p2[kMaxProps];
         int n2 = parse_script_props(src2, (uint32_t)strlen(src2), p2, kMaxProps);
         merge_script_props(&slot, p2, n2);
-        CHECK(slot.prop_count == 4 && !slot.prop("note") && !slot.prop("target"), "inputs no longer declared are dropped (%d)", slot.prop_count);
+        CHECK(slot.prop_count == 5 && !slot.prop("note") && !slot.prop("target"), "inputs no longer declared are dropped (%d)", slot.prop_count);
         CHECK(slot.prop("speed")->number == 10, "a kept number is clamped to the new range (%g)", slot.prop("speed")->number);
         CHECK(slot.prop("mode")->choice == 1, "a list choice is found again by its text (%d)", slot.prop("mode")->choice);
         CHECK(slot.prop("label")->type == PropType::Toggle && !slot.prop("label")->toggle, "an input whose type changed starts from its default");
         CHECK(slot.prop("extra")->number == 3, "a new input gets its default");
+        CHECK(!strcmp(slot.prop("skin")->file, "assets/blue.png"), "a file input keeps its path on reload");
         CHECK(!strcmp(slot.props[0].name, "mode"), "inputs follow the file's order");
     }
 
@@ -793,6 +798,8 @@ int main() {
         ObjectId cam_b = ed.create_kind("Play Cam B", ObjectKind::Camera, Vec3(2, 2, 3));
         ed.scene.set_current(cam_b, ModuleKind::Camera);
         ObjectId root = ed.create_object("Rig", MeshKind::Cube, Vec3(1, 0, 0));
+        snprintf(ed.scene.get(root)->texture_path, sizeof(ed.scene.get(root)->texture_path), "%s", "assets/start.png");
+        snprintf(ed.scene.get(root)->shader_path, sizeof(ed.scene.get(root)->shader_path), "%s", "shaders/start.fshader");
         ObjectId kid = ed.create_child("Rig Part", MeshKind::Sphere, root);
         ed.scene.get(root)->rotation = Quat::euler_deg(Vec3(0, 90, 0));
         ed.scene.add_module(kid, ModuleKind::Light);
@@ -813,14 +820,21 @@ int main() {
             CHECK(l && l->intensity == 3.5f, "modules are components");
             CHECK(w->current(ModuleKind::Camera) == ed.entity_of(cam_b), "the current camera is current in the world");
             CHECK(w->renderable(er) && !w->renderable(ed.entity_of(cam)), "mesh objects are renderable, cameras not");
+            Renderable* renderable = w->renderable(er);
+            CHECK(renderable && !strcmp(renderable->texture_path, "assets/start.png") &&
+                  !strcmp(renderable->shader_path, "shaders/start.fshader"), "asset paths reach the play world");
+            if (renderable) snprintf(renderable->texture_path, sizeof(renderable->texture_path), "%s", "assets/runtime.png");
             // A system moving an entity moves the object in the editor.
             Transform* t = w->transform(er);
             if (t) t->position = Vec3(5, 0, 0);
             frames(2);
-            CHECK(ed.scene.get(root)->position.x == 5.0f, "transforms come back to the scene each frame");
+            CHECK(ed.scene.get(root)->position.x == 5.0f &&
+                  !strcmp(ed.scene.get(root)->texture_path, "assets/runtime.png"), "transforms and material paths come back to the scene each frame");
         }
         ed.stop();
-        CHECK(ed.play_world() == nullptr && ed.scene.get(root)->position.x == 1.0f, "Stop drops the world and restores the scene");
+        CHECK(ed.play_world() == nullptr && ed.scene.get(root)->position.x == 1.0f &&
+              !strcmp(ed.scene.get(root)->texture_path, "assets/start.png") &&
+              !strcmp(ed.scene.get(root)->shader_path, "shaders/start.fshader"), "Stop drops the world and restores the scene");
         while (ed.scene.count() > objects0) ed.scene.remove(ed.scene.at(ed.scene.count() - 1).id);
         frames(2);
     }
@@ -828,6 +842,10 @@ int main() {
     // ---- the FarcadeGL renderer in the viewport, and Play through the current camera
     {
         int objects0 = ed.scene.count();
+        for (int i = 0; i < ed.scene.count(); i++) {
+            ed.scene.at(i).texture_path[0] = 0;
+            ed.scene.at(i).shader_path[0] = 0;
+        }
         ed.scene.clear_selection();
         frames(2);
         CHECK(click_ui("run:renderer"), "the renderer menu opens");
@@ -1123,7 +1141,8 @@ int main() {
             "-- @prop label  text = \"Front door\"\n"
             "-- @prop open   toggle = true\n"
             "-- @prop mode   list(closed, open, locked) = locked\n"
-            "-- @prop target object\n";
+            "-- @prop target object\n"
+            "-- @prop skin file\n";
         platform::write_file("build/host/test-project/scripts/gate.lua", door, strlen(door));
         ObjectId base = ed.create_object("Base \"quoted\"", MeshKind::Cylinder, Vec3(1, 2, 3));
         Object* ob = ed.scene.get(base);
@@ -1133,6 +1152,7 @@ int main() {
         ob->roughness = 0.33f; ob->metallic = 0.8f; ob->unlit = true; ob->cast_shadows = false;
         ob->visible = false;
         snprintf(ob->texture_path, sizeof ob->texture_path, "%s/crate.png", ed.project_dir);
+        snprintf(ob->shader_path, sizeof ob->shader_path, "%s/material.fshader", ed.project_dir);
         ed.scene.add_module(base, ModuleKind::Collider3D);
         ob->modules.collider3d.shape = ColliderShape::Capsule;
         ob->modules.collider3d.radius = 0.7f;
@@ -1155,10 +1175,13 @@ int main() {
         if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "open")) p->toggle = false;
         if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "mode")) p->choice = 1;
         if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "target")) p->object = cam1;
+        if (ScriptProp* p = ed.scene.script_prop(kid, "gate", "skin")) snprintf(p->file, sizeof p->file, "%s/crate.png", ed.project_dir);
 
         size_t size1 = 0;
         char* text1 = save_scene_text(ed.scene, ed.project_dir, &size1);
-        CHECK(text1 && strstr(text1, "farcade-scene 1") && strstr(text1, "texture \"crate.png\"") && strstr(text1, "\"scripts/gate.lua\""),
+        CHECK(text1 && strstr(text1, "farcade-scene 1") && strstr(text1, "texture \"crate.png\"") &&
+              strstr(text1, "shader \"material.fshader\"") && strstr(text1, "file \"crate.png\"") &&
+              strstr(text1, "\"scripts/gate.lua\""),
               "the file starts with its version and stores project paths relative");
         Scene back;
         SceneLoadReport rep;
@@ -1174,6 +1197,9 @@ int main() {
         CHECK(bb && !strcmp(bb->name, "Base \"quoted\"") && bb->mesh == MeshKind::Cylinder && bb->metallic == 0.8f && bb->roughness == 0.33f &&
               bb->unlit && !bb->cast_shadows && !bb->visible && bb->scale.z == 0.75f && bb->rotation.w == ob->rotation.w,
               "names, meshes, materials and transforms come back exactly");
+        CHECK(bb && !strcmp(bb->shader_path, "material.fshader") &&
+              !strcmp(back.get(kid)->scripts[0].prop("skin")->file, "crate.png"),
+              "shader and script asset paths are saved project-relative");
         CHECK(bb && bb->modules.has(ModuleKind::Collider3D) && bb->modules.collider3d.shape == ColliderShape::Capsule &&
               bb->modules.collider3d.radius == 0.7f && bb->modules.collider3d.layer == 0x8005 && bb->modules.audio_sampler.voices == 7 &&
               !strcmp(bb->modules.audio_sampler.path, "sounds/hit.wav"), "modules come back with every field");

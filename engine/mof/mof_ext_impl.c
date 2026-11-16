@@ -3,11 +3,6 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf/cgltf.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_STDIO
-#define STBI_MAX_DIMENSIONS 16384
-#include "stb/stb_image.h"
-
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO
 #include "stb/stb_image_write.h"

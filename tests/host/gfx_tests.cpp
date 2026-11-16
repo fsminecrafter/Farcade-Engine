@@ -3,6 +3,7 @@
 // processing, mesh caching, resizing and limits.
 #include "gfx/renderer.h"
 #include "gfx/meshgen.h"
+#include "gfx/shader_file.h"
 #include "gfx/host/farcadegl_host.h"
 #include "../os/gfx_smoke/scene.h"
 #include "mof_check.h"
@@ -109,6 +110,61 @@ bool render_ok(Renderer& r, const RenderScene& s) {
     bool ok = r.render(s);
     if (!ok) fprintf(stderr, "render failed: %s\n", r.error());
     return ok;
+}
+
+void* read_test_asset(const char* path, size_t* size, void*) {
+    static const uint8_t bmp[58] = {
+        'B','M',58,0,0,0,0,0,0,0,54,0,0,0,
+        40,0,0,0,1,0,0,0,1,0,0,0,1,0,24,0,
+        0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,255,0
+    };
+    static const char shader[] =
+        "// @vertex\n"
+        "uniform mat4 fgl_ModelViewProjection;\n"
+        "attribute vec3 position;\n"
+        "void main() { gl_Position = fgl_ModelViewProjection * vec4(position, 1.0); }\n"
+        "// @fragment\n"
+        "void main() { gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+    const void* src = nullptr;
+    if (strcmp(path, "red.bmp") == 0) { src = bmp; *size = sizeof bmp; }
+    else if (strcmp(path, "blue.fshader") == 0) { src = shader; *size = sizeof(shader) - 1; }
+    else return nullptr;
+    void* out = malloc(*size);
+    if (out) memcpy(out, src, *size);
+    return out;
+}
+
+void test_shader_file() {
+    const char* text = "// @vertex\nattribute vec3 position;\nvoid main() {}\n"
+                       "// @fragment\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+    char vertex[128], fragment[128], error[96];
+    CHECK(parse_shader_file(text, strlen(text), vertex, sizeof(vertex), fragment, sizeof(fragment), error, sizeof(error)));
+    CHECK(strstr(vertex, "attribute vec3 position") && !strstr(vertex, "gl_FragColor"));
+    CHECK(strstr(fragment, "gl_FragColor") && !strstr(fragment, "attribute vec3"));
+    const char* duplicate = "// @vertex\nvoid main() {}\n// @vertex\nvoid main() {}\n// @fragment\nvoid main() {}\n";
+    CHECK(!parse_shader_file(duplicate, strlen(duplicate), vertex, sizeof(vertex), fragment, sizeof(fragment), error, sizeof(error)) &&
+          strstr(error, "duplicate vertex"));
+}
+
+void test_asset_materials() {
+    TestScene t;
+    t.items[0].unlit = true;
+    t.items[0].color = Vec3(1, 1, 1);
+    t.items[0].texture_path = "red.bmp";
+    t.scene.read_asset = read_test_asset;
+    Renderer r;
+    CHECK(r.init(W, H));
+    if (!r.ready()) return;
+    GraphicsSettings settings;
+    settings.allow_gpu_effects_on_cpu = true;
+    r.set_settings(settings);
+    CHECK(render_ok(r, t.scene));
+    CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 255, 0, 0, 4));
+    t.items[0].texture_path = nullptr;
+    t.items[0].shader_path = "blue.fshader";
+    CHECK(render_ok(r, t.scene));
+    CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 0, 0, 255, 4));
 }
 
 // ---------------------------------------------------------------- the device
@@ -1375,6 +1431,8 @@ void test_bands() {
 }  // namespace
 
 int main() {
+    test_shader_file();
+    test_asset_materials();
     test_device();
     test_projection();
     test_lighting();

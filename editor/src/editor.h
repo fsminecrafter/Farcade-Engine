@@ -316,6 +316,7 @@ const char* path_filename(const char* path);
 Icon object_icon(const Object& o);
 Icon module_icon(ModuleKind k);
 bool path_is_image(const char* path);
+bool path_is_shader(const char* path);
 bool path_is_model(const char* path);
 bool path_is_script(const char* path);
 bool path_is_scene(const char* path);

@@ -9,7 +9,7 @@
 MOF_CORE_SRCS := engine/mof/mof_read.cpp engine/mof/mof_write.cpp
 # Importers: host libc; cgltf / stb / fast_obj implementations are plain C files.
 MOF_IMPORT_SRCS := engine/mof/import_common.cpp engine/mof/import_gltf.cpp engine/mof/import_obj.cpp
-MOF_IMPORT_CSRCS := engine/mof/mof_ext_impl.c external/fast_obj/fast_obj.c
+MOF_IMPORT_CSRCS := engine/mof/mof_ext_impl.c engine/gfx/stb_image_impl.c external/fast_obj/fast_obj.c
 MOF_TOOL_SRCS := tools/mofconv/mof_info.cpp tools/mofconv/samples.cpp
 
 MOF_CORE_OBJS   := $(call host_objs,$(MOF_CORE_SRCS))

@@ -21,6 +21,8 @@
 #include "gfx/renderer.h"
 #include "gfx/shaders.h"
 #include "gfx/passes.h"
+#include "gfx/shader_file.h"
+#include "stb/stb_image.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -32,13 +34,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 namespace fe::gfx {
 
 namespace {
 
 constexpr int kMaxLights = shaders::kMaxLights;
-constexpr uint32_t kVertexBytes = 24;               // position xyz, normal xyz
+constexpr uint32_t kVertexBytes = 32;               // position xyz, normal xyz, UV
 constexpr uint32_t kChunkVertices = 600000;         // a buffer holds up to 16 MiB; multiple of 3
 constexpr int kMaxChunks = 8;
 constexpr int kMaxCachedBuffers = 2048;             // the kernel allows 4096 per program
@@ -61,7 +64,7 @@ struct MeshEntry {
 struct Locs {
     int post = -1, tint = -1, res = -1, mat = -1, cam = -1, sky = -1, gnd = -1;
     int l0 = -1, l1 = -1, l2 = -1, l3 = -1;
-    int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1;
+    int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
 };
 
 struct Shader {
@@ -75,6 +78,18 @@ struct Variant {
     bool draft = false;
     uint64_t last_use = 0;
     bool used = false;
+};
+
+struct TextureEntry {
+    char path[256] = {};
+    FGLTexture texture = 0;
+    uint64_t last_use = 0;
+};
+
+struct CustomShaderEntry {
+    char path[256] = {};
+    Shader shader;
+    uint64_t last_use = 0;
 };
 
 // The lights of a frame, packed for the lit shader.
@@ -142,6 +157,9 @@ struct Renderer::Impl {
     FGLBuffer temp[kMaxTempBuffers];
     int temp_count = 0;
     float* scratch = nullptr;               // kUploadSlice interleaved vertices
+    FGLTexture white_texture = 0;
+    TextureEntry textures[128];
+    CustomShaderEntry custom_shaders[32];
 
     void set_error(const char* what, int code = 0) {
         if (code) snprintf(error, sizeof error, "%s (error %d)", what, code);
@@ -162,8 +180,8 @@ struct Renderer::Impl {
         d.page_flip = 0;
         gl = fglCreateContext(&d);
         if (!gl) { set_error("FarcadeGL: cannot create the render surfaces"); return false; }
-        static const FGLAttribute attrs[2] = { { 0, 3 }, { 12, 3 } };
-        fglVertexLayout(gl, kVertexBytes, 2, attrs);
+        static const FGLAttribute attrs[3] = { { 0, 3 }, { 12, 3 }, { 24, 2 } };
+        fglVertexLayout(gl, kVertexBytes, 3, attrs);
         return true;
     }
 
@@ -206,6 +224,7 @@ struct Renderer::Impl {
         l->grd = fglUniformLocation(sh, "u_grd");
         l->sun = fglUniformLocation(sh, "u_sun");
         l->suncol = fglUniformLocation(sh, "u_suncol");
+        l->texture = fglUniformLocation(sh, "u_texture");
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
@@ -221,6 +240,97 @@ struct Renderer::Impl {
         out->sh = sh;
         find_locs(sh, &out->loc);
         return true;
+    }
+
+    FGLTexture texture_for(const char* path, const RenderScene& scene) {
+        for (TextureEntry& e : textures) {
+            if (e.texture && strcmp(e.path, path) == 0) { e.last_use = frame; return e.texture; }
+        }
+        if (!scene.read_asset) { set_error("FarcadeGL: no asset reader for texture"); return 0; }
+        size_t size = 0;
+        uint8_t* bytes = (uint8_t*)scene.read_asset(path, &size, scene.asset_user);
+        if (!bytes) { snprintf(error, sizeof error, "FarcadeGL: cannot read texture %s", path); return 0; }
+        if (size == 0 || size > 128u * 1024u * 1024u || size > 0x7FFFFFFFu) {
+            free(bytes);
+            snprintf(error, sizeof error, "FarcadeGL: invalid texture size for %s", path);
+            return 0;
+        }
+        int w = 0, h = 0, comp = 0;
+        if (!stbi_info_from_memory(bytes, (int)size, &w, &h, &comp) || w < 1 || h < 1 || w > 4096 || h > 4096) {
+            free(bytes);
+            snprintf(error, sizeof error, "FarcadeGL: invalid image dimensions for %s", path);
+            return 0;
+        }
+        stbi_uc* rgba = stbi_load_from_memory(bytes, (int)size, &w, &h, &comp, 4);
+        free(bytes);
+        if (!rgba) {
+            snprintf(error, sizeof error, "FarcadeGL: cannot decode texture %s", path);
+            return 0;
+        }
+        uint32_t* pixels = (uint32_t*)malloc((size_t)w * (size_t)h * sizeof(uint32_t));
+        if (!pixels) { stbi_image_free(rgba); set_error("out of memory decoding texture"); return 0; }
+        for (size_t i = 0, n = (size_t)w * h; i < n; i++)
+            pixels[i] = ((uint32_t)rgba[i * 4] << 16) | ((uint32_t)rgba[i * 4 + 1] << 8) | rgba[i * 4 + 2];
+        stbi_image_free(rgba);
+        FGLTexture texture = fglCreateTexture(gl, (uint32_t)w, (uint32_t)h, pixels);
+        free(pixels);
+        if (!texture) { snprintf(error, sizeof error, "FarcadeGL: cannot upload texture %s", path); return 0; }
+        TextureEntry* slot = nullptr;
+        for (TextureEntry& e : textures) if (!e.texture) { slot = &e; break; }
+        if (!slot) {
+            slot = &textures[0];
+            for (TextureEntry& e : textures) if (e.last_use < slot->last_use) slot = &e;
+            fglDestroyTexture(gl, slot->texture);
+        }
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->texture = texture;
+        slot->last_use = frame;
+        return texture;
+    }
+
+    Shader* custom_shader(const char* path, const RenderScene& scene) {
+        for (CustomShaderEntry& e : custom_shaders)
+            if (e.shader.sh && strcmp(e.path, path) == 0) { e.last_use = frame; return &e.shader; }
+        if (!scene.read_asset) { set_error("FarcadeGL: no asset reader for shader"); return nullptr; }
+        size_t size = 0;
+        char* source = (char*)scene.read_asset(path, &size, scene.asset_user);
+        if (!source) { snprintf(error, sizeof error, "FarcadeGL: cannot read shader %s", path); return nullptr; }
+        if (size > shaders::kSourceBytes * 2) {
+            free(source);
+            snprintf(error, sizeof error, "FarcadeGL: shader file is too large (%s)", path);
+            return nullptr;
+        }
+        char* vs = (char*)malloc(shaders::kSourceBytes);
+        char* fs = (char*)malloc(shaders::kSourceBytes);
+        if (!vs || !fs) {
+            free(source); free(vs); free(fs);
+            set_error("out of memory loading shader");
+            return nullptr;
+        }
+        char parse_error[96];
+        bool parsed = parse_shader_file(source, size, vs, shaders::kSourceBytes, fs, shaders::kSourceBytes,
+                                        parse_error, sizeof parse_error);
+        free(source);
+        if (!parsed) {
+            snprintf(error, sizeof error, "FarcadeGL: %s (%s)", path, parse_error);
+            free(vs); free(fs);
+            return nullptr;
+        }
+        Shader shader;
+        bool ok = compile(&shader, vs, fs, path);
+        free(vs); free(fs);
+        if (!ok) return nullptr;
+        CustomShaderEntry* slot = nullptr;
+        for (CustomShaderEntry& e : custom_shaders) if (!e.shader.sh) { slot = &e; break; }
+        if (!slot) {
+            slot = &custom_shaders[0];
+            for (CustomShaderEntry& e : custom_shaders) if (e.last_use < slot->last_use) slot = &e;
+            drop(&slot->shader);
+        }
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->shader = shader;
+        slot->last_use = frame;
+        return &slot->shader;
     }
 
     void drop(Shader* s) {
@@ -243,8 +353,15 @@ struct Renderer::Impl {
     }
 
     bool make_shaders() {
+        const uint32_t white = 0x00FFFFFFu;
+        white_texture = fglCreateTexture(gl, 1, 1, &white);
+        if (!white_texture) { set_error("FarcadeGL: cannot create the default texture"); return false; }
         // The sky: one triangle that covers the screen.
-        static const float tri[18] = { -1, -1, 0, 0, 0, 0,   3, -1, 0, 0, 0, 0,   -1, 3, 0, 0, 0, 0 };
+        static const float tri[24] = {
+            -1, -1, 0, 0, 0, 0, 0, 0,
+             3, -1, 0, 0, 0, 0, 1, 0,
+            -1,  3, 0, 0, 0, 0, 0, 1
+        };
         sky_buffer = fglCreateBuffer(gl, sizeof tri);
         if (!sky_buffer || fglBufferData(gl, sky_buffer, 0, tri, sizeof tri) != 0) {
             set_error("FarcadeGL: cannot create the sky buffer");
@@ -378,9 +495,16 @@ struct Renderer::Impl {
                     const Vec3 ps[3] = { p0, p1, p2 };
                     const Vec3 ns[3] = { n0, n1, n2 };
                     for (int t = 0; t < 3; t++) {
-                        float* o = scratch + (v + t) * 6;
+                        float* o = scratch + (v + t) * 8;
                         o[0] = ps[t].x; o[1] = ps[t].y; o[2] = ps[t].z;
                         o[3] = ns[t].x; o[4] = ns[t].y; o[5] = ns[t].z;
+                        if (fabsf(ns[t].y) > fabsf(ns[t].x) && fabsf(ns[t].y) > fabsf(ns[t].z)) {
+                            o[6] = ps[t].x + 0.5f; o[7] = ps[t].z + 0.5f;
+                        } else if (fabsf(ns[t].x) > fabsf(ns[t].z)) {
+                            o[6] = ps[t].z + 0.5f; o[7] = ps[t].y + 0.5f;
+                        } else {
+                            o[6] = ps[t].x + 0.5f; o[7] = ps[t].y + 0.5f;
+                        }
                     }
                 }
                 double tu = now_ms();
@@ -652,9 +776,12 @@ struct Renderer::Impl {
         return true;
     }
 
-    bool draw_item(const DrawItem& it, const Shader& s, bool* failed) {
+    bool draw_item(const DrawItem& it, const Shader& s, const RenderScene& scene, bool* failed) {
+        FGLTexture texture = it.texture_path && it.texture_path[0] ? texture_for(it.texture_path, scene) : white_texture;
+        if (!texture) { *failed = true; return false; }
         fglUseShader(gl, s.sh);
         fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
+        fglUniformTexture(gl, s.sh, s.loc.texture, texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         return draw_mesh(it, true, failed);
     }
 
@@ -695,19 +822,24 @@ struct Renderer::Impl {
         gl->error = 0;
         frame++;
 
-        // GPU tier / fog: replaces the main pass below (passes.cpp); the readback is shared.
+        // The GPU tier replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
         LightSet ls;
         pack_lights(scene, &ls, plan.local_shadows ? settings.local_shadow_lights : 0);
-        if (plan.any() && banding) {
+        bool has_asset_material = false;
+        for (int i = 0; i < scene.item_count; i++)
+            has_asset_material |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
+                                  (scene.items[i].shader_path && scene.items[i].shader_path[0]);
+        bool run_tier = plan.any() && !has_asset_material;
+        if (run_tier && banding) {
             set_error("FarcadeGL: bands are not available with the GPU tier or fog");
             in_render = false;
             return false;
         }
         bool failed = false;
         bool tier_done = false;
-        tier_ran = plan.any();
-        if (plan.any()) {
+        tier_ran = run_tier;
+        if (tier_ran) {
             PackedLights pl;
             pl.l0 = ls.l0; pl.l1 = ls.l1; pl.l2 = ls.l2; pl.l3 = ls.l3;
             pl.nd = ls.nd; pl.np = ls.np; pl.ns = ls.ns;
@@ -748,7 +880,10 @@ struct Renderer::Impl {
 
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
-            draw_item(it, it.unlit ? unlit_s : *lit, &failed);
+            Shader* item_shader = it.shader_path && it.shader_path[0] ? custom_shader(it.shader_path, scene) :
+                                  (it.unlit ? &unlit_s : lit);
+            if (!item_shader) { failed = true; break; }
+            draw_item(it, *item_shader, scene, &failed);
         }
         if (!failed) {
             // The sky last, at the far plane: only uncovered pixels are shaded.
@@ -792,6 +927,13 @@ struct Renderer::Impl {
             forget_all();
             for (Variant& v : variants) { if (v.used) drop(&v.shader); v.used = false; }
             for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
+            for (CustomShaderEntry& e : custom_shaders) { drop(&e.shader); e.path[0] = 0; }
+            for (TextureEntry& e : textures) {
+                if (e.texture) fglDestroyTexture(gl, e.texture);
+                e = TextureEntry();
+            }
+            if (white_texture) fglDestroyTexture(gl, white_texture);
+            white_texture = 0;
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
             tier.release(gl);

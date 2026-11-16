@@ -10,6 +10,7 @@
 //   -- @prop mode    list(idle, patrol, chase) = patrol
 //   -- @prop active  toggle = true
 //   -- @prop target  object
+//   -- @prop skin    file = "assets/skin.png"
 //
 // An `object` input links to another object in the scene; at run time the
 // script reaches that object's scripts through it (target:script("door"),
@@ -24,7 +25,7 @@ namespace fe {
 
 typedef uint32_t ObjectId;      // an object in the scene document (the editor's id)
 
-enum class PropType : uint8_t { Number, Text, Toggle, List, Object };
+enum class PropType : uint8_t { Number, Text, Toggle, List, Object, File };
 
 constexpr int kMaxScripts = 6;          // per object
 constexpr int kMaxProps = 12;           // per script
@@ -36,8 +37,11 @@ struct ScriptProp {
     // Number
     float number = 0;
     float min = 0, max = 0;             // min == max: no range
-    // Text
-    char text[64] = {};
+    // Text and file inputs use mutually exclusive storage.
+    union {
+        char text[64] = {};
+        char file[256];       // project-relative when possible
+    };
     // Toggle
     bool toggle = false;
     // List: the choices, and the chosen one

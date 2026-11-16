@@ -733,6 +733,9 @@ void Editor::script_section(Object* o, int si) {
                 }
                 break;
             }
+            case PropType::File:
+                slot_field(p.name, p.file, sizeof(p.file), this, path_any, Icon::Wave);
+                break;
         }
         char pk[48];
         snprintf(pk, sizeof(pk), "script:%d:%s", si, p.name);
@@ -1027,6 +1030,7 @@ void Editor::panel_inspector() {
         prop_label("Color");
         ImGui::ColorEdit3("##color", &o->color.x, ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_DisplayHex);
         slot_field("Texture", o->texture_path, sizeof(o->texture_path), this, path_is_image, Icon::Image);
+        slot_field("Shader", o->shader_path, sizeof(o->shader_path), this, path_is_shader, Icon::File);
         prop_label("Roughness");
         ImGui::SliderFloat("##roughness", &o->roughness, 0.0f, 1.0f, "%.2f");
         track("inspector:roughness");

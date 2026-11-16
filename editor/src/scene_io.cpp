@@ -11,7 +11,7 @@ namespace {
 
 const char* const kObjectKinds[] = { "mesh", "empty", "camera", "skylight", "sky", "post_process" };
 const char* const kMeshKinds[] = { "cube", "plane", "sphere", "cylinder", "model" };
-const char* const kPropTypes[] = { "number", "text", "toggle", "list", "object" };
+const char* const kPropTypes[] = { "number", "text", "toggle", "list", "object", "file" };
 static_assert(sizeof(kObjectKinds) / sizeof(kObjectKinds[0]) == (int)ObjectKind::Count, "object kinds");
 
 int index_of(const char* const* names, int count, const char* s) {
@@ -215,6 +215,7 @@ char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsig
             o.f("  mesh %s\n", kMeshKinds[(int)ob.mesh]);
             if (ob.model_path[0]) { o.raw("  model ", 8); o.str(relative(ob.model_path, project_dir)); o.raw("\n", 1); }
             if (ob.texture_path[0]) { o.raw("  texture ", 10); o.str(relative(ob.texture_path, project_dir)); o.raw("\n", 1); }
+            if (ob.shader_path[0]) { o.raw("  shader ", 9); o.str(relative(ob.shader_path, project_dir)); o.raw("\n", 1); }
             o.f("  color"); o.vec(ob.color); o.raw("\n", 1);
             o.f("  roughness"); o.num(ob.roughness); o.raw("\n", 1);
             o.f("  metallic"); o.num(ob.metallic); o.raw("\n", 1);
@@ -256,6 +257,7 @@ char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsig
                     for (int c = 0; c < pr.choice_count; c++) { o.raw(" ", 1); o.str(pr.choices[c]); }
                     break;
                 case PropType::Object: o.f(" %u", (unsigned)pr.object); break;
+                case PropType::File: o.raw(" ", 1); o.str(relative(pr.file, project_dir)); break;
                 }
                 o.raw("\n", 1);
             }
@@ -354,6 +356,7 @@ bool load_scene_text(Scene& scene, const char* text, size_t size, SceneLoadRepor
                 if (k >= 0) ob->mesh = (MeshKind)k; else ok = false;
             } else if (strcmp(key, "model") == 0 && l.n >= 2) copy_str(ob->model_path, sizeof ob->model_path, l.tok[1]);
             else if (strcmp(key, "texture") == 0 && l.n >= 2) copy_str(ob->texture_path, sizeof ob->texture_path, l.tok[1]);
+            else if (strcmp(key, "shader") == 0 && l.n >= 2) copy_str(ob->shader_path, sizeof ob->shader_path, l.tok[1]);
             else if (strcmp(key, "color") == 0) ok = parse_vec(l, 1, &ob->color);
             else if (strcmp(key, "roughness") == 0 && l.n >= 2) ok = parse_float(l.tok[1], &ob->roughness);
             else if (strcmp(key, "metallic") == 0 && l.n >= 2) ok = parse_float(l.tok[1], &ob->metallic);
@@ -388,7 +391,7 @@ bool load_scene_text(Scene& scene, const char* text, size_t size, SceneLoadRepor
             if (strcmp(key, "end") == 0) { state = InObject; slot = nullptr; break; }
             if (!slot) break;
             if (strcmp(key, "prop") != 0 || l.n < 4 || slot->prop_count >= kMaxProps) { bad(lineno); break; }
-            int t = index_of(kPropTypes, 5, l.tok[2]);
+            int t = index_of(kPropTypes, 6, l.tok[2]);
             if (t < 0) { bad(lineno); break; }
             ScriptProp pr;
             copy_str(pr.name, sizeof pr.name, l.tok[1]);
@@ -410,6 +413,7 @@ bool load_scene_text(Scene& scene, const char* text, size_t size, SceneLoadRepor
                 if (pr.choice_count == 0) { copy_str(pr.choices[0], sizeof pr.choices[0], l.tok[3]); pr.choice_count = 1; }
                 break;
             case PropType::Object: { long v; ok = parse_int(l.tok[3], &v) && v >= 0; if (ok) pr.object = (ObjectId)v; break; }
+            case PropType::File: copy_str(pr.file, sizeof pr.file, l.tok[3]); break;
             }
             if (ok) slot->props[slot->prop_count++] = pr;
             else bad(lineno);

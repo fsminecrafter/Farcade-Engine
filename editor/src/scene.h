@@ -37,6 +37,7 @@ struct Object {
     MeshKind mesh = MeshKind::Cube;
     char model_path[256] = {};      // MeshKind::Model: the .mof file
     char texture_path[256] = {};    // a texture dropped on the object
+    char shader_path[256] = {};     // custom .fshader material
     // Modules (Rigidbody 3D, Light, ...) and, for special objects, their
     // settings (Camera, Sky, ...): see engine/scene/modules.h.
     ModuleSet modules;

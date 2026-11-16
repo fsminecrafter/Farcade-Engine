@@ -26,6 +26,7 @@ Lua. One per line, anywhere in the file:
 -- @prop mode    list(closed, open, locked) = locked
 -- @prop active  toggle = true            -- true/false, on/off, yes/no
 -- @prop target  object                   -- a link to another object
+-- @prop skin    file                     -- any project file; drag one onto the slot
 ```
 
 | Type | Inspector | Default | Lua value |
@@ -35,6 +36,7 @@ Lua. One per line, anywhere in the file:
 | `toggle` (`bool`) | switch | `= true` / `false` (false) | boolean |
 | `list(a, b, ...)` | drop-down, up to 8 choices | `= b` (the first) | the chosen string |
 | `object` | object picker; drop a Hierarchy row on it | none | object handle or nil |
+| `file` (`asset`) | file slot; drop a file from the Files panel | `= "assets/image.png"` or empty | path string (project paths save relative) |
 
 Rules:
 - A script can declare up to 12 inputs.
@@ -112,7 +114,18 @@ frame, objects in the order their instances were added (Hierarchy order).
 | `on_collision(self, other)` | this object's body hit another one (called on both objects) |
 
 Inputs: Number is a number (an integral value is a Lua integer), Text a
-string, Toggle a boolean, List the chosen string, Object a handle or nil.
+string, Toggle a boolean, List the chosen string, Object a handle or nil,
+and File a path string. Project paths are saved relative to the project. A File input can be used to assign an asset to any
+object with a mesh:
+
+```lua
+-- @prop target object
+-- @prop skin file
+function on_start(self)
+  if self.target then self.target.material.texture = self.skin end
+end
+```
+
 What a script stores in `self` stays there.
 
 ### Objects
@@ -157,16 +170,22 @@ the Inspector's Look section:
 | `unlit` | true / false | |
 | `cast_shadows` | true / false | |
 | `visible` | true / false | |
+| `texture` | file path string | Image file path; assign `""` to clear |
+| `shader` | file path string | Combined `.fshader` shader path; assign `""` to clear |
 
 ```lua
 local m = self.object.material
 m.metallic = 1
 m.roughness = 0.2
 m.color = fe.vec3(1, 0.8, 0.3)
+m.texture = self.skin
 ```
 
 - Roughness, metal and shadows show only with FarcadeGL's GPU tier. Color,
-  unlit and visible show with every renderer.
+  unlit and visible show with every renderer. Texture and custom shader
+  assignments are rendered by FarcadeGL's base renderer; while any such
+  material is visible, the advanced GPU-tier effects are not run for that
+  frame.
 - Changes made in Play are visible in the editor while playing and are put
   back on Stop, like everything else.
 - A wrong type or an unknown field raises an error naming the field.

@@ -56,6 +56,7 @@ static bool ext_is(const char* path, const char* const* list) {
 }
 
 bool path_is_image(const char* p) { static const char* l[] = { ".png", ".jpg", ".jpeg", ".bmp", ".tga", nullptr }; return ext_is(p, l); }
+bool path_is_shader(const char* p) { static const char* l[] = { ".fshader", nullptr }; return ext_is(p, l); }
 bool path_is_model(const char* p) { static const char* l[] = { ".mof", ".gltf", ".glb", ".obj", nullptr }; return ext_is(p, l); }
 bool path_is_script(const char* p) { static const char* l[] = { ".lua", ".cpp", ".h", nullptr }; return ext_is(p, l); }
 bool path_is_scene(const char* p) { static const char* l[] = { ".fscene", nullptr }; return ext_is(p, l); }
@@ -617,6 +618,8 @@ void Editor::build_world() {
             Renderable* r = world_->add_renderable(e);
             r->mesh = (uint8_t)o.mesh;
             memcpy(r->model_path, o.model_path, sizeof(r->model_path));
+            memcpy(r->texture_path, o.texture_path, sizeof(r->texture_path));
+            memcpy(r->shader_path, o.shader_path, sizeof(r->shader_path));
             r->color = o.color;
             r->visible = o.visible;
             r->roughness = o.roughness;
@@ -773,6 +776,8 @@ void Editor::step_world(float dt) {
             o->metallic = r->metallic;
             o->unlit = r->unlit;
             o->cast_shadows = r->cast_shadows;
+            memcpy(o->texture_path, r->texture_path, sizeof(o->texture_path));
+            memcpy(o->shader_path, r->shader_path, sizeof(o->shader_path));
         }
         // Modules too: scripts and physics change them (a light's
         // intensity, a body's velocity, which camera is current).
@@ -1060,6 +1065,9 @@ void Editor::apply_file_to_object(const char* path, ObjectId id) {
     if (path_is_image(path)) {
         snprintf(o->texture_path, sizeof(o->texture_path), "%s", path);
         log(LogLevel::Info, "%s: texture %s", o->name, path_filename(path));
+    } else if (path_is_shader(path)) {
+        snprintf(o->shader_path, sizeof(o->shader_path), "%s", path);
+        log(LogLevel::Info, "%s: shader %s", o->name, path_filename(path));
     } else if (path_is_model(path)) {
         o->mesh = MeshKind::Model;
         snprintf(o->model_path, sizeof(o->model_path), "%s", path);

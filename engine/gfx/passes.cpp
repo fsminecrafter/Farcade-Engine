@@ -183,7 +183,11 @@ struct GpuTier::Impl {
 
     bool make_tri() {
         if (tri) return true;
-        static const float v[18] = { -1, -1, 0, 0, 0, 0,   3, -1, 0, 0, 0, 0,   -1, 3, 0, 0, 0, 0 };
+        static const float v[24] = {
+            -1, -1, 0, 0, 0, 0, 0, 0,
+             3, -1, 0, 0, 0, 0, 1, 0,
+            -1,  3, 0, 0, 0, 0, 0, 1
+        };
         tri = fglCreateBuffer(gl, sizeof v);
         if (!tri || fglBufferData(gl, tri, 0, v, sizeof v) != 0) return fail("FarcadeGL: cannot create the pass buffer");
         return true;

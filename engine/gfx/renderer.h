@@ -16,6 +16,7 @@
 #include "core/math.h"
 #include "scene/modules.h"
 #include "gfx/graphics_settings.h"
+#include <stddef.h>
 #include <stdint.h>
 
 namespace fe::gfx {
@@ -33,6 +34,8 @@ struct RenderMesh {
 struct DrawItem {
     RenderMesh mesh;
     Mat4 model;                         // object to world
+    const char* texture_path = nullptr;
+    const char* shader_path = nullptr;
     Vec3 color = Vec3(0.8f, 0.8f, 0.8f);  // sRGB albedo
     float roughness = 0.6f;
     float metallic = 0.0f;              // GPU tier (PBR)
@@ -71,6 +74,11 @@ struct RenderScene {
     Sky sky;
     SkyLight sky_light;
     PostProcess post;
+    // Optional project asset reader. It returns malloc-compatible file bytes
+    // (or null); the renderer releases them with free(). Required when a draw
+    // item references a texture or custom shader.
+    void* (*read_asset)(const char* path, size_t* size, void* user) = nullptr;
+    void* asset_user = nullptr;
     // Cheaper shading for images that are replaced at once (a camera drag):
     // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
     bool draft = false;

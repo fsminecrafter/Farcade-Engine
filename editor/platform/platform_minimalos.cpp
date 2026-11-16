@@ -160,6 +160,13 @@ void resize_to(int w, int h) {
     push(e);
 }
 
+void make_opaque(int x, int y, int w, int h) {
+    for (int row = y; row < y + h; row++) {
+        uint32_t* pixels = g_fb.pixels + (size_t)row * g_fb.pitch + x;
+        for (int col = 0; col < w; col++) pixels[col] |= 0xFF000000u;
+    }
+}
+
 // The window's events. mosWM sends the mouse in window coordinates (its
 // buttons and the key modifiers use the raw input bits).
 void pump_window() {
@@ -323,6 +330,7 @@ Framebuffer& framebuffer() { return g_fb; }
 
 void present() {
     if (g_window) {
+        make_opaque(0, 0, g_fb.width, g_fb.height);
         mos_window_present(g_window, g_fb.pixels, (uint32_t)g_fb.pitch * 4, 0, 0, (uint32_t)g_fb.width, (uint32_t)g_fb.height);
         return;
     }
@@ -338,6 +346,7 @@ void present_region(int x, int y, int w, int h) {
     if (y + h > g_fb.height) h = g_fb.height - y;
     if (w <= 0 || h <= 0) return;
     if (g_window) {
+        make_opaque(x, y, w, h);
         mos_window_present(g_window, g_fb.pixels, (uint32_t)g_fb.pitch * 4, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
         return;
     }

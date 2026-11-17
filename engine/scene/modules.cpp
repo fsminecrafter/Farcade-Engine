@@ -13,6 +13,15 @@ const char* const kLightTypes[] = { "Directional", "Point", "Spot", nullptr };
 const char* const kProjections[] = { "Perspective", "Orthographic", nullptr };
 const char* const kSkyModes[] = { "Gradient", "Color", nullptr };
 const char* const kTonemaps[] = { "None", "Reinhard", "ACES", nullptr };
+const char* const kEmitShapes[] = { "Point", "Sphere", "Cone", "Box", nullptr };
+const char* const kBlends[] = { "Additive", "Alpha", nullptr };
+const char* const kSpaces[] = { "World", "Local", nullptr };
+const char* const kJointTypes[] = { "Fixed", "Hinge", "Spring", "Ball socket", nullptr };
+const char* const kFieldShapes[] = { "Box", "Sphere", nullptr };
+const char* const kFieldModes[] = { "Directional", "Radial", "Vortex", nullptr };
+const char* const kFalloffs[] = { "None", "Linear", "Quadratic", nullptr };
+const char* const kBillboardModes[] = { "Full", "Vertical", nullptr };
+const char* const kAligns[] = { "Left", "Center", "Right", nullptr };
 
 #define FE_F(T, f, label, type, lo, hi, enums) { #f, label, FieldType::type, (uint16_t)offsetof(T, f), lo, hi, enums }
 
@@ -88,6 +97,139 @@ const FieldInfo kLight[] = {
     FE_F(Light, shadows, "Shadows", Bool, 0, 0, nullptr),
 };
 
+const FieldInfo kParticles[] = {
+    FE_F(ParticleEmitter, playing, "Playing", Bool, 0, 0, nullptr),
+    FE_F(ParticleEmitter, play_on_start, "Play on start", Bool, 0, 0, nullptr),
+    FE_F(ParticleEmitter, looping, "Loop", Bool, 0, 0, nullptr),
+    FE_F(ParticleEmitter, duration, "Duration", Float, 0.05f, 600, nullptr),
+    FE_F(ParticleEmitter, prewarm, "Prewarm", Bool, 0, 0, nullptr),
+    FE_F(ParticleEmitter, emission_rate, "Rate (per s)", Float, 0, 2000, nullptr),
+    FE_F(ParticleEmitter, burst_count, "Burst", Int, 0, 2000, nullptr),
+    FE_F(ParticleEmitter, burst_interval, "Burst every", Float, 0, 60, nullptr),
+    FE_F(ParticleEmitter, max_particles, "Max particles", Int, 1, 2000, nullptr),
+    FE_F(ParticleEmitter, lifetime_min, "Lifetime min", Float, 0.05f, 60, nullptr),
+    FE_F(ParticleEmitter, lifetime_max, "Lifetime max", Float, 0.05f, 60, nullptr),
+    FE_F(ParticleEmitter, speed_min, "Speed min", Float, 0, 200, nullptr),
+    FE_F(ParticleEmitter, speed_max, "Speed max", Float, 0, 200, nullptr),
+    FE_F(ParticleEmitter, shape, "Shape", Enum, 0, 0, kEmitShapes),
+    FE_F(ParticleEmitter, shape_radius, "Shape radius", Float, 0, 100, nullptr),
+    FE_F(ParticleEmitter, box_size, "Box size", Vec3, 0, 0, nullptr),
+    FE_F(ParticleEmitter, cone_angle, "Cone angle", Float, 0, 90, nullptr),
+    FE_F(ParticleEmitter, gravity, "Gravity", Float, -5, 5, nullptr),
+    FE_F(ParticleEmitter, drag, "Drag", Float, 0, 20, nullptr),
+    FE_F(ParticleEmitter, size_start, "Size start", Float, 0, 50, nullptr),
+    FE_F(ParticleEmitter, size_end, "Size end", Float, 0, 50, nullptr),
+    FE_F(ParticleEmitter, color_start, "Color start", Color, 0, 0, nullptr),
+    FE_F(ParticleEmitter, color_end, "Color end", Color, 0, 0, nullptr),
+    FE_F(ParticleEmitter, alpha_start, "Alpha start", Float, 0, 1, nullptr),
+    FE_F(ParticleEmitter, alpha_end, "Alpha end", Float, 0, 1, nullptr),
+    FE_F(ParticleEmitter, texture, "Texture", Path, 0, 0, nullptr),
+    FE_F(ParticleEmitter, blend, "Blend", Enum, 0, 0, kBlends),
+    FE_F(ParticleEmitter, space, "Space", Enum, 0, 0, kSpaces),
+    FE_F(ParticleEmitter, seed, "Seed", Int, 0, 1000000, nullptr),
+    FE_F(ParticleEmitter, particle_count, "Alive", Int, 0, 0, nullptr),
+};
+
+const FieldInfo kJoint[] = {
+    FE_F(Joint3D, type, "Type", Enum, 0, 0, kJointTypes),
+    FE_F(Joint3D, connected, "Connected to", Object, 0, 0, nullptr),
+    FE_F(Joint3D, anchor, "Anchor", Vec3, 0, 0, nullptr),
+    FE_F(Joint3D, axis, "Axis", Vec3, 0, 0, nullptr),
+    FE_F(Joint3D, use_limits, "Limits", Bool, 0, 0, nullptr),
+    FE_F(Joint3D, limit_min, "Limit min", Float, -180, 180, nullptr),
+    FE_F(Joint3D, limit_max, "Limit max", Float, -180, 180, nullptr),
+    FE_F(Joint3D, use_motor, "Motor", Bool, 0, 0, nullptr),
+    FE_F(Joint3D, motor_speed, "Motor speed", Float, -3600, 3600, nullptr),
+    FE_F(Joint3D, motor_torque, "Motor torque", Float, 0, 100000, nullptr),
+    FE_F(Joint3D, rest_length, "Rest length", Float, 0, 1000, nullptr),
+    FE_F(Joint3D, stiffness, "Stiffness", Float, 0, 100000, nullptr),
+    FE_F(Joint3D, damping, "Damping", Float, 0, 10000, nullptr),
+    FE_F(Joint3D, break_force, "Break force", Float, 0, 1000000, nullptr),
+    FE_F(Joint3D, collide_connected, "Collide connected", Bool, 0, 0, nullptr),
+    FE_F(Joint3D, broken, "Broken", Bool, 0, 0, nullptr),
+    FE_F(Joint3D, angle, "Angle", Float, 0, 0, nullptr),
+    FE_F(Joint3D, force, "Force", Float, 0, 0, nullptr),
+};
+
+const FieldInfo kAnimator[] = {
+    FE_F(Animator, source, "Animation file", Path, 0, 0, nullptr),
+    FE_F(Animator, clip, "Clip", Text, 0, 0, nullptr),
+    FE_F(Animator, speed, "Speed", Float, -4, 4, nullptr),
+    FE_F(Animator, loop, "Loop", Bool, 0, 0, nullptr),
+    FE_F(Animator, play_on_start, "Play on start", Bool, 0, 0, nullptr),
+    FE_F(Animator, crossfade, "Crossfade", Float, 0, 5, nullptr),
+    FE_F(Animator, playing, "Playing", Bool, 0, 0, nullptr),
+    FE_F(Animator, time, "Time", Float, 0, 100000, nullptr),
+    FE_F(Animator, duration, "Duration", Float, 0, 0, nullptr),
+};
+
+const FieldInfo kForceField[] = {
+    FE_F(ForceField, enabled, "Enabled", Bool, 0, 0, nullptr),
+    FE_F(ForceField, shape, "Shape", Enum, 0, 0, kFieldShapes),
+    FE_F(ForceField, size, "Size", Vec3, 0, 0, nullptr),
+    FE_F(ForceField, radius, "Radius", Float, 0.01f, 1000, nullptr),
+    FE_F(ForceField, mode, "Mode", Enum, 0, 0, kFieldModes),
+    FE_F(ForceField, strength, "Strength", Float, -100000, 100000, nullptr),
+    FE_F(ForceField, direction, "Direction", Vec3, 0, 0, nullptr),
+    FE_F(ForceField, falloff, "Falloff", Enum, 0, 0, kFalloffs),
+    FE_F(ForceField, turbulence, "Turbulence", Float, 0, 1, nullptr),
+    FE_F(ForceField, turbulence_scale, "Swirl size", Float, 0.05f, 100, nullptr),
+    FE_F(ForceField, turbulence_speed, "Swirl speed", Float, 0, 20, nullptr),
+    FE_F(ForceField, affect_bodies, "Pushes bodies", Bool, 0, 0, nullptr),
+    FE_F(ForceField, affect_particles, "Pushes particles", Bool, 0, 0, nullptr),
+    FE_F(ForceField, layers, "Layers", Bits, 0, 0, nullptr),
+};
+
+const FieldInfo kSpawner[] = {
+    FE_F(Spawner, source, "Copy of", Object, 0, 0, nullptr),
+    FE_F(Spawner, auto_spawn, "Automatic", Bool, 0, 0, nullptr),
+    FE_F(Spawner, spawn_on_start, "One at start", Bool, 0, 0, nullptr),
+    FE_F(Spawner, interval, "Every (s)", Float, 0.01f, 3600, nullptr),
+    FE_F(Spawner, max_alive, "Max alive", Int, 1, 500, nullptr),
+    FE_F(Spawner, total, "Total (0 = no end)", Int, 0, 100000, nullptr),
+    FE_F(Spawner, offset, "Random offset", Vec3, 0, 0, nullptr),
+    FE_F(Spawner, velocity, "Velocity", Vec3, 0, 0, nullptr),
+    FE_F(Spawner, velocity_random, "Random speed", Float, 0, 100, nullptr),
+    FE_F(Spawner, inherit_velocity, "Inherit motion", Float, 0, 2, nullptr),
+    FE_F(Spawner, lifetime, "Lifetime (s)", Float, 0, 3600, nullptr),
+    FE_F(Spawner, random_rotation, "Random rotation", Bool, 0, 0, nullptr),
+    FE_F(Spawner, seed, "Seed", Int, 0, 1000000, nullptr),
+    FE_F(Spawner, spawned, "Spawned", Int, 0, 0, nullptr),
+    FE_F(Spawner, alive, "Alive", Int, 0, 0, nullptr),
+};
+
+const FieldInfo kReverb[] = {
+    FE_F(ReverbZone, enabled, "Enabled", Bool, 0, 0, nullptr),
+    FE_F(ReverbZone, shape, "Shape", Enum, 0, 0, kFieldShapes),
+    FE_F(ReverbZone, size, "Size", Vec3, 0, 0, nullptr),
+    FE_F(ReverbZone, radius, "Radius", Float, 0.01f, 1000, nullptr),
+    FE_F(ReverbZone, wet, "Wet", Float, 0, 1, nullptr),
+    FE_F(ReverbZone, room_size, "Room size", Float, 0, 1, nullptr),
+    FE_F(ReverbZone, damping, "Damping", Float, 0, 1, nullptr),
+    FE_F(ReverbZone, lowpass, "Muffle", Float, 0, 1, nullptr),
+    FE_F(ReverbZone, fade_distance, "Fade distance", Float, 0, 100, nullptr),
+};
+
+const FieldInfo kBillboard[] = {
+    FE_F(Billboard, visible, "Visible", Bool, 0, 0, nullptr),
+    FE_F(Billboard, texture, "Texture", Path, 0, 0, nullptr),
+    FE_F(Billboard, color, "Color", Color, 0, 0, nullptr),
+    FE_F(Billboard, alpha, "Alpha", Float, 0, 1, nullptr),
+    FE_F(Billboard, width, "Width", Float, 0.001f, 1000, nullptr),
+    FE_F(Billboard, height, "Height", Float, 0.001f, 1000, nullptr),
+    FE_F(Billboard, mode, "Faces", Enum, 0, 0, kBillboardModes),
+    FE_F(Billboard, blend, "Blend", Enum, 0, 0, kBlends),
+};
+
+const FieldInfo kText3D[] = {
+    FE_F(Text3D, visible, "Visible", Bool, 0, 0, nullptr),
+    FE_F(Text3D, text, "Text", Text, 0, 0, nullptr),
+    FE_F(Text3D, color, "Color", Color, 0, 0, nullptr),
+    FE_F(Text3D, size, "Size", Float, 0.01f, 100, nullptr),
+    FE_F(Text3D, align, "Align", Enum, 0, 0, kAligns),
+    FE_F(Text3D, outline, "Outline", Bool, 0, 0, nullptr),
+};
+
 const FieldInfo kCamera[] = {
     FE_F(Camera, current, "Current", Bool, 0, 0, nullptr),
     FE_F(Camera, projection, "Projection", Enum, 0, 0, kProjections),
@@ -140,6 +282,14 @@ const ModuleInfo kInfos[kModuleKindCount] = {
     FE_M(AudioStream, AudioStream, "audio_stream", "Audio Stream", kStream, false, 0),
     FE_M(AudioSampler, AudioSampler, "audio_sampler", "Audio Sampler", kSampler, false, 0),
     FE_M(Light, Light, "light", "Light", kLight, false, 0),
+    FE_M(ParticleEmitter, ParticleEmitter, "particles", "Particle Emitter", kParticles, false, 0),
+    FE_M(Joint3D, Joint3D, "joint3d", "Joint 3D", kJoint, false, 0),
+    FE_M(Animator, Animator, "animator", "Animator", kAnimator, false, 0),
+    FE_M(ForceField, ForceField, "force_field", "Force Field", kForceField, false, 0),
+    FE_M(Spawner, Spawner, "spawner", "Spawner", kSpawner, false, 0),
+    FE_M(ReverbZone, ReverbZone, "reverb_zone", "Audio Reverb Zone", kReverb, false, 0),
+    FE_M(Billboard, Billboard, "billboard", "Billboard", kBillboard, false, 0),
+    FE_M(Text3D, Text3D, "text3d", "Text 3D", kText3D, false, 0),
     FE_M(Camera, Camera, "camera", "Camera", kCamera, true, offsetof(Camera, current)),
     FE_M(SkyLight, SkyLight, "skylight", "Sky Light", kSkyLight, true, offsetof(SkyLight, current)),
     FE_M(Sky, Sky, "sky", "Sky", kSky, true, offsetof(Sky, current)),
@@ -210,6 +360,14 @@ void* ModuleSet::data(ModuleKind k) {
         case ModuleKind::AudioStream: return &audio_stream;
         case ModuleKind::AudioSampler: return &audio_sampler;
         case ModuleKind::Light: return &light;
+        case ModuleKind::ParticleEmitter: return &particles;
+        case ModuleKind::Joint3D: return &joint3d;
+        case ModuleKind::Animator: return &animator;
+        case ModuleKind::ForceField: return &force_field;
+        case ModuleKind::Spawner: return &spawner;
+        case ModuleKind::ReverbZone: return &reverb_zone;
+        case ModuleKind::Billboard: return &billboard;
+        case ModuleKind::Text3D: return &text3d;
         case ModuleKind::Camera: return &camera;
         case ModuleKind::SkyLight: return &sky_light;
         case ModuleKind::Sky: return &sky;
@@ -229,6 +387,14 @@ void ModuleSet::reset(ModuleKind k) {
         case ModuleKind::AudioStream: audio_stream = AudioStream(); break;
         case ModuleKind::AudioSampler: audio_sampler = AudioSampler(); break;
         case ModuleKind::Light: light = Light(); break;
+        case ModuleKind::ParticleEmitter: particles = ParticleEmitter(); break;
+        case ModuleKind::Joint3D: joint3d = Joint3D(); break;
+        case ModuleKind::Animator: animator = Animator(); break;
+        case ModuleKind::ForceField: force_field = ForceField(); break;
+        case ModuleKind::Spawner: spawner = Spawner(); break;
+        case ModuleKind::ReverbZone: reverb_zone = ReverbZone(); break;
+        case ModuleKind::Billboard: billboard = Billboard(); break;
+        case ModuleKind::Text3D: text3d = Text3D(); break;
         case ModuleKind::Camera: camera = Camera(); break;
         case ModuleKind::SkyLight: sky_light = SkyLight(); break;
         case ModuleKind::Sky: sky = Sky(); break;

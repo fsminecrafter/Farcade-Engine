@@ -1266,10 +1266,12 @@ int main() {
                     case FieldType::Float: { float v; memcpy(&v, p, 4); v = v * 1.5f + 0.3125f; memcpy(p, &v, 4); break; }
                     case FieldType::Int: { int32_t v; memcpy(&v, p, 4); v += 3; memcpy(p, &v, 4); break; }
                     case FieldType::Bits: { uint32_t v; memcpy(&v, p, 4); v ^= 0x80000010u; memcpy(p, &v, 4); break; }
+                    case FieldType::Object: { uint32_t v = 7; memcpy(p, &v, 4); break; }
                     case FieldType::Bool: *(bool*)p = !*(bool*)p; break;
                     case FieldType::Enum: { int n = 0; while (fi.enum_names[n]) n++; *p = (uint8_t)((*p + 1) % n); break; }
                     case FieldType::Color:
                     case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
+                    case FieldType::Text:
                     case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
                     }
                 }
@@ -1289,7 +1291,7 @@ int main() {
                 const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
                 for (int f = 0; f < mi.field_count; f++) {
                     const FieldInfo& fi = mi.fields[f];
-                    size_t sz = fi.type == FieldType::Path ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
+                    size_t sz = fi.type == FieldType::Path || fi.type == FieldType::Text ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
                               : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
                     if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
                 }

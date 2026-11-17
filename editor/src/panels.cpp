@@ -27,6 +27,13 @@ Icon object_icon(const Object& o) {
             if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
             if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
             if (o.modules.has(ModuleKind::AudioListener)) return Icon::Ear;
+            if (o.modules.has(ModuleKind::ReverbZone)) return Icon::Reverb;
+            if (o.modules.has(ModuleKind::ParticleEmitter)) return Icon::Sparks;
+            if (o.modules.has(ModuleKind::ForceField)) return Icon::Wind;
+            if (o.modules.has(ModuleKind::Spawner)) return Icon::Spawn;
+            if (o.modules.has(ModuleKind::Billboard)) return Icon::Sprite;
+            if (o.modules.has(ModuleKind::Text3D)) return Icon::TextT;
+            if (o.modules.has(ModuleKind::Joint3D)) return Icon::Joint;
             return Icon::Empty;
         default: return mesh_icon(o.mesh);
     }
@@ -41,6 +48,14 @@ Icon module_icon(ModuleKind k) {
         case ModuleKind::AudioStream: return Icon::Wave;
         case ModuleKind::AudioSampler: return Icon::Speaker;
         case ModuleKind::Light: return Icon::Bulb;
+        case ModuleKind::ParticleEmitter: return Icon::Sparks;
+        case ModuleKind::Joint3D: return Icon::Joint;
+        case ModuleKind::Animator: return Icon::Clip;
+        case ModuleKind::ForceField: return Icon::Wind;
+        case ModuleKind::Spawner: return Icon::Spawn;
+        case ModuleKind::ReverbZone: return Icon::Reverb;
+        case ModuleKind::Billboard: return Icon::Sprite;
+        case ModuleKind::Text3D: return Icon::TextT;
         case ModuleKind::Camera: return Icon::Camera;
         case ModuleKind::SkyLight: return Icon::Sun;
         case ModuleKind::Sky: return Icon::Cloud;
@@ -381,9 +396,55 @@ static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bo
 
 // Whether a field means something with the other settings as they are
 // (a spot angle only for spot lights, a radius only for round colliders).
+static bool g_playing_inspector = false;     // live (read-only) fields show only while playing
+
 static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f) {
     const char* n = f.name;
     switch (kind) {
+        case ModuleKind::ParticleEmitter: {
+            const ParticleEmitter& e = *(const ParticleEmitter*)data;
+            if (!strcmp(n, "particle_count") || !strcmp(n, "playing")) return g_playing_inspector;
+            if (!strcmp(n, "shape_radius")) return e.shape == EmitShape::Sphere || e.shape == EmitShape::Cone;
+            if (!strcmp(n, "box_size")) return e.shape == EmitShape::Box;
+            if (!strcmp(n, "cone_angle")) return e.shape == EmitShape::Cone;
+            if (!strcmp(n, "burst_interval")) return e.burst_count > 0;
+            if (!strcmp(n, "duration")) return !e.looping;
+            if (!strcmp(n, "prewarm")) return e.looping;
+            return true;
+        }
+        case ModuleKind::Joint3D: {
+            const Joint3D& j = *(const Joint3D*)data;
+            bool hinge = j.type == JointType::Hinge;
+            if (!strcmp(n, "axis") || !strcmp(n, "use_limits") || !strcmp(n, "use_motor")) return hinge;
+            if (!strcmp(n, "limit_min") || !strcmp(n, "limit_max")) return hinge && j.use_limits;
+            if (!strcmp(n, "motor_speed") || !strcmp(n, "motor_torque")) return hinge && j.use_motor;
+            if (!strcmp(n, "rest_length") || !strcmp(n, "stiffness") || !strcmp(n, "damping")) return j.type == JointType::Spring;
+            if (!strcmp(n, "angle")) return g_playing_inspector && hinge;
+            if (!strcmp(n, "force") || !strcmp(n, "broken")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::Animator: {
+            if (!strcmp(n, "playing") || !strcmp(n, "time") || !strcmp(n, "duration")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::ForceField: {
+            const ForceField& ff = *(const ForceField*)data;
+            if (!strcmp(n, "size")) return ff.shape == FieldShape::Box;
+            if (!strcmp(n, "radius")) return ff.shape == FieldShape::Sphere;
+            if (!strcmp(n, "direction")) return ff.mode == FieldMode::Directional;
+            if (!strcmp(n, "turbulence_scale") || !strcmp(n, "turbulence_speed")) return ff.turbulence > 0;
+            return true;
+        }
+        case ModuleKind::Spawner: {
+            if (!strcmp(n, "spawned") || !strcmp(n, "alive")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::ReverbZone: {
+            const ReverbZone& r = *(const ReverbZone*)data;
+            if (!strcmp(n, "size")) return r.shape == FieldShape::Box;
+            if (!strcmp(n, "radius")) return r.shape == FieldShape::Sphere;
+            return true;
+        }
         case ModuleKind::Light: {
             const Light& l = *(const Light*)data;
             if (!strcmp(n, "range")) return l.type != LightType::Directional;
@@ -441,6 +502,7 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
     bool open = section_header(title, module_icon(kind));
     track(key);
     if (!open) return true;
+    g_playing_inspector = playing();
     ImGui::PushID(title);
     float bs = ImGui::GetFrameHeight();
     if (is_module(kind)) {
@@ -448,6 +510,9 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
         static const char* about[] = {
             "Physics: gravity, velocity, collisions.", "A shape that collides or triggers.", "An upright capsule driven by velocity.",
             "Where the game hears from.", "A long sound streamed from a file.", "Short sounds played on demand.", "Lights the scene.",
+            "Particles: sparks, smoke, fire, rain.", "Ties this body to another body or the world.", "Plays a clip from an animation file.",
+            "Wind, fans and vortices that push things.", "Makes copies of another object.", "Echo and muffling inside a volume.",
+            "A picture that always faces the camera.", "A text label in the world.",
         };
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         ImGui::AlignTextToFramePadding();
@@ -565,6 +630,52 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
                 ImGui::InputScalar("##v", ImGuiDataType_U32, fp, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
                 break;
             }
+            case FieldType::Text:
+                prop_label(f.label);
+                ImGui::InputText("##v", (char*)fp, kPathMax);
+                break;
+            case FieldType::Object: {
+                // A link to another object: pick from the list or drop a hierarchy row.
+                prop_label(f.label);
+                ObjectId* link = (ObjectId*)fp;
+                Object* t = scene.get(*link);
+                if (t && t == o) { *link = kNoObject; t = nullptr; }
+                float lw = ImGui::GetContentRegionAvail().x - (t ? bs + 4 : 0);
+                ImGui::SetNextItemWidth(lw);
+                const char* none = !strcmp(f.name, "connected") ? "The world (drop an object)" : "None (drop an object)";
+                if (!t) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                bool combo = ImGui::BeginCombo("##v", t ? t->name : none);
+                if (!t) ImGui::PopStyleColor();
+                if (combo) {
+                    if (ImGui::Selectable("None", !t)) *link = kNoObject;
+                    for (int oi = 0; oi < scene.count(); oi++) {
+                        Object& c = scene.at(oi);
+                        if (c.id == o->id) continue;
+                        ImGui::PushID((int)c.id);
+                        if (ImGui::Selectable(c.name, c.id == *link)) *link = c.id;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("FE_OBJECT")) {
+                        ObjectId dropped = *(const ObjectId*)pl->Data;
+                        if (dropped != o->id) *link = dropped;
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                if (t) {
+                    ImGui::SameLine(0, 4);
+                    if (icon_button(Icon::Pointer, "Select it", false, bs)) {
+                        ObjectId target = t->id;
+                        ImGui::PopID();
+                        ImGui::PopID();
+                        scene.select_only(target);
+                        return false;
+                    }
+                }
+                break;
+            }
         }
         if (!tracked) track(key);
         ImGui::PopID();
@@ -595,10 +706,19 @@ void Editor::add_module_button(Object* o) {
     track("inspector:add_module");
     if (clicked) ImGui::OpenPopup("##add_module_menu");
     if (ImGui::BeginPopup("##add_module_menu")) {
-        static const char* groups[] = { "Physics", nullptr, nullptr, "Audio", nullptr, nullptr, "Rendering" };
-        for (int k = 0; k < kFirstObjectSettings; k++) {
-            ModuleKind mk = (ModuleKind)k;
-            if (groups[k]) { if (k) ImGui::Separator(); ImGui::TextDisabled("%s", groups[k]); }
+        static const struct { const char* group; ModuleKind kind; } menu[] = {
+            { "Physics", ModuleKind::RigidBody3D }, { nullptr, ModuleKind::Collider3D }, { nullptr, ModuleKind::CharacterController3D },
+            { nullptr, ModuleKind::Joint3D }, { nullptr, ModuleKind::ForceField },
+            { "Audio", ModuleKind::AudioListener }, { nullptr, ModuleKind::AudioStream }, { nullptr, ModuleKind::AudioSampler },
+            { nullptr, ModuleKind::ReverbZone },
+            { "Rendering", ModuleKind::Light }, { nullptr, ModuleKind::ParticleEmitter }, { nullptr, ModuleKind::Billboard },
+            { nullptr, ModuleKind::Text3D },
+            { "Gameplay", ModuleKind::Animator }, { nullptr, ModuleKind::Spawner },
+        };
+        bool first_group = true;
+        for (auto& it : menu) {
+            ModuleKind mk = it.kind;
+            if (it.group) { if (!first_group) ImGui::Separator(); first_group = false; ImGui::TextDisabled("%s", it.group); }
             const ModuleInfo& mi = module_info(mk);
             bool have = o->modules.has(mk);
             ImVec2 ip = ImGui::GetCursorScreenPos();

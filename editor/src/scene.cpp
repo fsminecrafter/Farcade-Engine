@@ -93,6 +93,16 @@ void Scene::remove_one(ObjectId id) {
             for (int k = 0; k < sl.prop_count; k++)
                 if (sl.props[k].type == PropType::Object && sl.props[k].object == id) sl.props[k].object = kNoObject;
         }
+    // Module links (Joint 3D's connected body, a Spawner's source) too.
+    for (int i = 0; i < count_; i++)
+        for (int k = 0; k < kModuleKindCount; k++) {
+            if (!objects_[i]->modules.has((ModuleKind)k)) continue;
+            const ModuleInfo& mi = module_info((ModuleKind)k);
+            char* data = (char*)objects_[i]->modules.data((ModuleKind)k);
+            for (int f = 0; f < mi.field_count; f++)
+                if (mi.fields[f].type == FieldType::Object && *(ObjectId*)(data + mi.fields[f].offset) == id)
+                    *(ObjectId*)(data + mi.fields[f].offset) = kNoObject;
+        }
 }
 
 bool Scene::add_module(ObjectId id, ModuleKind kind) {

@@ -109,6 +109,39 @@ struct WorldImpl {
     ecs_entity_t sys_transform = 0;
     ecs_query_t* cur_query[kModuleKindCount] = {};
     struct CurCtx { WorldImpl* impl; int kind; } cur_ctx[kModuleKindCount] = {};
+    // Object links: ids to entities (open addressing, id 0 = empty slot).
+    struct LinkSlot { uint32_t id; Entity e; };
+    LinkSlot* links = nullptr;
+    uint32_t link_cap = 0, link_used = 0;
+    ~WorldImpl() { free(links); }
+    void link_put(uint32_t id, Entity e) {
+        if ((link_used + 1) * 2 > link_cap) {
+            uint32_t nc = link_cap ? link_cap * 2 : 64;
+            LinkSlot* nl = (LinkSlot*)calloc(nc, sizeof(LinkSlot));
+            for (uint32_t i = 0; i < link_cap; i++)
+                if (links[i].id) {
+                    uint32_t h = (links[i].id * 2654435761u) & (nc - 1);
+                    while (nl[h].id) h = (h + 1) & (nc - 1);
+                    nl[h] = links[i];
+                }
+            free(links);
+            links = nl;
+            link_cap = nc;
+        }
+        uint32_t h = (id * 2654435761u) & (link_cap - 1);
+        while (links[h].id && links[h].id != id) h = (h + 1) & (link_cap - 1);
+        if (!links[h].id) link_used++;
+        links[h] = { id, e };
+    }
+    Entity link_get(uint32_t id) const {
+        if (!id || !link_cap) return 0;
+        uint32_t h = (id * 2654435761u) & (link_cap - 1);
+        while (links[h].id) {
+            if (links[h].id == id) return links[h].e;
+            h = (h + 1) & (link_cap - 1);
+        }
+        return 0;
+    }
 };
 
 namespace {
@@ -258,9 +291,11 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
         case FieldType::Float: m[i].type = ecs_id(ecs_f32_t); break;
         case FieldType::Int: m[i].type = ecs_id(ecs_i32_t); break;
         case FieldType::Bool: m[i].type = ecs_id(ecs_bool_t); break;
-        case FieldType::Bits: m[i].type = ecs_id(ecs_u32_t); break;
+        case FieldType::Bits:
+        case FieldType::Object: m[i].type = ecs_id(ecs_u32_t); break;
         case FieldType::Vec3:
         case FieldType::Color: m[i].type = I->t_vec3; break;
+        case FieldType::Text:
         case FieldType::Path: m[i].type = ecs_id(ecs_char_t); m[i].count = kPathMax; break;
         case FieldType::Enum: {
             char nm[96];
@@ -562,9 +597,11 @@ bool World::get_field(Entity e, ModuleKind k, const char* field, FieldValue* out
         r.s = r.i < n ? f->enum_names[r.i] : nullptr;
         break;
     }
-    case FieldType::Bits: r.i = (int32_t)*(const uint32_t*)p; break;
+    case FieldType::Bits:
+    case FieldType::Object: r.i = (int32_t)*(const uint32_t*)p; break;
     case FieldType::Vec3:
     case FieldType::Color: r.v = *(const Vec3*)p; break;
+    case FieldType::Text:
     case FieldType::Path: r.s = p; break;
     }
     *out = r;
@@ -620,11 +657,16 @@ bool World::set_field(Entity e, ModuleKind k, const char* field, const FieldValu
         if (v.type != FieldType::Bits && v.type != FieldType::Int) return false;
         *(uint32_t*)p = (uint32_t)v.i;
         break;
+    case FieldType::Object:
+        if (v.type != FieldType::Object && v.type != FieldType::Int) return false;
+        *(uint32_t*)p = (uint32_t)v.i;
+        break;
     case FieldType::Vec3:
     case FieldType::Color:
         if (v.type != FieldType::Vec3 && v.type != FieldType::Color) return false;
         *(Vec3*)p = v.v;
         break;
+    case FieldType::Text:
     case FieldType::Path: {
         if (v.type != FieldType::Path || !v.s) return false;
         size_t n = strlen(v.s);
@@ -638,6 +680,23 @@ bool World::set_field(Entity e, ModuleKind k, const char* field, const FieldValu
     }
     modified(e, k);
     return true;
+}
+
+// ---- links
+
+void World::bind_link(uint32_t link, Entity e) {
+    if (impl_ && link) impl_->link_put(link, e);
+}
+Entity World::link_entity(uint32_t link) const {
+    if (!impl_) return 0;
+    Entity e = impl_->link_get(link);
+    return e && alive(e) ? e : 0;
+}
+uint32_t World::link_of(Entity e) const {
+    if (!impl_ || !e) return 0;
+    for (uint32_t i = 0; i < impl_->link_cap; i++)
+        if (impl_->links[i].id && impl_->links[i].e == e) return impl_->links[i].id;
+    return 0;
 }
 
 // ---- current

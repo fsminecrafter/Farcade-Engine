@@ -86,8 +86,8 @@ struct ScriptRuntime::Impl {
     ScriptStats stats;
 
     // Methods on module proxies (add_module_method).
-    struct Method { int kind; char name[32]; ScriptRuntime::ModuleMethod fn; void* user; };
-    Method methods[32];
+    struct Method { int kind; char name[32]; ScriptRuntime::ModuleMethod fn; ScriptRuntime::ModuleMethodEx fnx; void* user; };
+    Method methods[64];
     int method_count = 0;
 
     // ---- entity hash
@@ -749,6 +749,25 @@ int mod_method_call(lua_State* L) {
     const Impl::Method& md = I->methods[idx];
     if (md.kind != m->kind) return luaL_error(L, "%s is not a method of %s", md.name, module_info((ModuleKind)m->kind).name);
     if (I->dead(m->e)) return luaL_error(L, "cannot call %s: the object no longer exists", md.name);
+    if (md.fnx) {
+        ScriptRuntime::MethodCall call;
+        int top = lua_gettop(L);
+        for (int i = 2; i <= top && call.argc < 4; i++, call.argc++) {
+            int t = lua_type(L, i);
+            if (t == LUA_TNUMBER) call.num[call.argc] = lua_tonumber(L, i);
+            else if (t == LUA_TBOOLEAN) call.num[call.argc] = lua_toboolean(L, i) ? 1.0 : 0.0;
+            else if (t == LUA_TSTRING) call.str[call.argc] = lua_tostring(L, i);
+        }
+        ScriptRuntime::MethodResult res;
+        md.fnx(m->e, call, &res, md.user);
+        switch (res.type) {
+        case ScriptRuntime::MethodResult::Number: lua_pushnumber(L, res.n); break;
+        case ScriptRuntime::MethodResult::String: lua_pushstring(L, res.s ? res.s : ""); break;
+        case ScriptRuntime::MethodResult::Nothing: return 0;
+        default: lua_pushboolean(L, res.b); break;
+        }
+        return 1;
+    }
     lua_pushboolean(L, md.fn(m->e, md.user) != 0);
     return 1;
 }
@@ -776,8 +795,14 @@ int mod_index(lua_State* L) {
     case FieldType::Enum: if (v.s) lua_pushstring(L, v.s); else lua_pushinteger(L, v.i); break;
     case FieldType::Color:
     case FieldType::Vec3: push_vec3(L, v.v); break;
+    case FieldType::Text:
     case FieldType::Path: lua_pushstring(L, v.s ? v.s : ""); break;
     case FieldType::Bits: lua_pushinteger(L, (lua_Integer)(uint32_t)v.i); break;
+    case FieldType::Object: {
+        Entity t = I->world->link_entity((uint32_t)v.i);
+        if (t) push_object(L, t); else lua_pushnil(L);
+        break;
+    }
     }
     return 1;
 }
@@ -820,6 +845,7 @@ int mod_newindex(lua_State* L) {
         v = f->type == FieldType::Color ? FieldValue::from_color(x) : FieldValue::from_vec3(x);
         break;
     }
+    case FieldType::Text:
     case FieldType::Path:
         if (t != LUA_TSTRING) return luaL_error(L, "%s.%s expects a string, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_string(lua_tostring(L, 3));
@@ -827,6 +853,15 @@ int mod_newindex(lua_State* L) {
     case FieldType::Bits:
         if (t != LUA_TNUMBER) return luaL_error(L, "%s.%s expects a number, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_bits((uint32_t)(int64_t)lua_tonumber(L, 3));
+        break;
+    case FieldType::Object:
+        if (t == LUA_TNIL) v = FieldValue::from_link(0);
+        else if (t == LUA_TUSERDATA) {
+            Entity target = live_entity(L, 3);
+            uint32_t link = I->world->link_of(target);
+            if (!link) return luaL_error(L, "%s.%s: that object has no link id (it was not part of the scene)", mi.name, key);
+            v = FieldValue::from_link(link);
+        } else return luaL_error(L, "%s.%s expects an object or nil, got %s", mi.name, key, luaL_typename(L, 3));
         break;
     }
     if (!I->world->set_field(m->e, (ModuleKind)m->kind, key, v)) {
@@ -1287,13 +1322,33 @@ bool ScriptRuntime::add_module_method(ModuleKind kind, const char* name, ModuleM
     for (int i = 0; i < I->method_count; i++)
         if (I->methods[i].kind == (int)kind && strcmp(I->methods[i].name, name) == 0) slot = i;
     if (slot == I->method_count) {
-        if (I->method_count >= 32) return false;
+        if (I->method_count >= 64) return false;
         I->method_count++;
     }
     Impl::Method& m = I->methods[slot];
     m.kind = (int)kind;
     strcpy(m.name, name);
     m.fn = fn;
+    m.fnx = nullptr;
+    m.user = user;
+    return true;
+}
+
+bool ScriptRuntime::add_module_method_ex(ModuleKind kind, const char* name, ModuleMethodEx fn, void* user) {
+    if (!impl_ || !name || !fn || strlen(name) >= sizeof(impl_->methods[0].name)) return false;
+    Impl* I = impl_;
+    int slot = I->method_count;
+    for (int i = 0; i < I->method_count; i++)
+        if (I->methods[i].kind == (int)kind && strcmp(I->methods[i].name, name) == 0) slot = i;
+    if (slot == I->method_count) {
+        if (I->method_count >= 64) return false;
+        I->method_count++;
+    }
+    Impl::Method& m = I->methods[slot];
+    m.kind = (int)kind;
+    strcpy(m.name, name);
+    m.fn = nullptr;
+    m.fnx = fn;
     m.user = user;
     return true;
 }

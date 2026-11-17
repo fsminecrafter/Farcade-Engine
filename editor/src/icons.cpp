@@ -258,6 +258,48 @@ void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
             dl->AddLine(P(2, 8), P(14, 8), c, t);
             dl->AddCircle(P(8, 8), 3.0f * k, c, 12, t);
             break;
+        case Icon::Sparks: {
+            static const float pts[7][3] = { { 8, 3, 1.4f }, { 4, 7, 1.0f }, { 12, 6, 1.1f }, { 6, 11, 1.2f }, { 11, 11, 0.9f }, { 8, 14, 0.8f }, { 2.5f, 3.5f, 0.7f } };
+            for (auto& q : pts) dl->AddCircleFilled(P(q[0], q[1]), q[2] * k, c, 8);
+            break;
+        }
+        case Icon::Joint:
+            dl->AddCircle(P(4, 8), 2.6f * k, c, 12, t);
+            dl->AddCircle(P(12, 8), 2.6f * k, c, 12, t);
+            dl->AddLine(P(6.6f, 8), P(9.4f, 8), c, t);
+            break;
+        case Icon::Clip:
+            dl->AddRect(P(2, 3), P(14, 13), c, 1.5f * k, 0, t);
+            dl->AddTriangleFilled(P(6.5f, 5.5f), P(6.5f, 10.5f), P(10.8f, 8), c);
+            break;
+        case Icon::Wind:
+            for (int i = 0; i < 3; i++) {
+                float y = 4.5f + i * 3.5f;
+                dl->AddLine(P(2, y), P(11 - i * 1.5f, y), c, t);
+                dl->PathArcTo(P(11 - i * 1.5f, y - 1.6f), 1.6f * k, radians(90), radians(-90), 8);
+                dl->PathStroke(c, 0, t);
+            }
+            break;
+        case Icon::Spawn:
+            dl->AddRect(P(2, 7), P(9, 14), c, 1.0f * k, 0, t);
+            dl->AddRect(P(7, 2), P(14, 9), c, 1.0f * k, 0, t);
+            break;
+        case Icon::Reverb:
+            for (int i = 0; i < 3; i++) {
+                dl->PathArcTo(P(3, 8), (3.5f + i * 3.0f) * k, radians(-55), radians(55), 10);
+                dl->PathStroke(c, 0, t);
+            }
+            dl->AddCircleFilled(P(3, 8), 1.4f * k, c, 8);
+            break;
+        case Icon::Sprite:
+            dl->AddRect(P(2, 2), P(14, 14), c, 1.5f * k, 0, t);
+            dl->AddTriangleFilled(P(4, 12), P(8, 6), P(12, 12), c);
+            dl->AddCircleFilled(P(11.2f, 5), 1.3f * k, c, 8);
+            break;
+        case Icon::TextT:
+            dl->AddLine(P(3, 3.5f), P(13, 3.5f), c, t);
+            dl->AddLine(P(8, 3.5f), P(8, 13.5f), c, t);
+            break;
         case Icon::Star: {
             ImVec2 st[10];
             for (int i = 0; i < 10; i++) {

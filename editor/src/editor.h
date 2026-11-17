@@ -19,6 +19,7 @@ class PhysicsWorld;
 class ScriptRuntime;
 class AudioDevice;
 class AudioSystem;
+class FxBridge;
 
 enum class Tool : uint8_t { Select, Move, Rotate, Scale };
 enum class LogLevel : uint8_t { Info, Warning, Error };
@@ -177,6 +178,8 @@ public:
     ScriptRuntime* play_scripts() { return scripts_; }
     AudioSystem* play_audio() { return audio_; }
     AudioDevice* audio_device() { return audio_device_; }
+    // The effects bridge (fx_bridge.h): fx systems while playing, previews and overlays in the viewport.
+    FxBridge* fx();
     // A script file's text (full path, or relative to the project); malloc'd, or null.
     char* read_script_text(const char* path, size_t* size);
     uint64_t entity_of(ObjectId id) const;      // 0 when not playing / unknown
@@ -248,6 +251,8 @@ public:
     bool log_scroll_to_end = false;
 
 private:
+    friend class FxBridge;
+    FxBridge* fx_bridge_ = nullptr;
     int collider_drag_ = -1;                    // the handle being dragged
     ObjectId collider_drag_object_ = kNoObject;
     World* world_ = nullptr;

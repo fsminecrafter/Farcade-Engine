@@ -6,6 +6,8 @@
 #include "script/runtime.h"
 #include "audio/audio.h"
 #include "scene_io.h"
+#include "fx_bridge.h"
+#include "fx/fx.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -1472,6 +1474,39 @@ int main() {
         CHECK(strstr(ed.scene_path, "main.fscene") != nullptr, "then the other scene opens (%s)", ed.scene_path);
         ed.open_scene("scenes/level2.fscene");
         CHECK(ed.scene.count() == with_new, "the change was saved to level2 before leaving it");
+        ed.new_scene();
+        frames(2);
+    }
+
+    // ---- effects modules in the editor: preview, Play, Lua
+    {
+        ed.new_scene();
+        frames(2);
+        ObjectId em = ed.create_object("Fire", MeshKind::Cube, Vec3(0, 1, 0));
+        CHECK(ed.scene.add_module(em, ModuleKind::ParticleEmitter), "Particle Emitter can be added");
+        ed.scene.get(em)->modules.particles.emission_rate = 60;
+        ed.scene.get(em)->modules.particles.lifetime_min = ed.scene.get(em)->modules.particles.lifetime_max = 5;
+        ed.scene.select_only(em);
+        frames(40);
+        CHECK(ed.fx()->preview_emitters() == 1 && ed.fx()->last_particles > 5, "a selected emitter previews in the viewport (%d drawn)", ed.fx()->last_particles);
+        ed.scene.clear_selection();
+        frames(3);
+        CHECK(ed.fx()->preview_emitters() == 0, "deselected: the preview stops");
+        ed.scene.select_only(em);
+        ed.play();
+        frames(40);
+        CHECK(ed.fx()->world() != nullptr && ed.scene.get(em)->modules.particles.particle_count > 20 && ed.scene.get(em)->modules.particles.playing,
+              "Play runs the emitter (%d alive)", ed.scene.get(em)->modules.particles.particle_count);
+        CHECK(ed.fx()->last_particles > 5, "and the viewport draws its particles (%d)", ed.fx()->last_particles);
+        ed.play_scripts()->run("local f = fe.find('Fire'); f.particles:stop(); f.particles:clear(); f.particles:emit(12)");
+        frames(1);
+        CHECK(ed.scene.get(em)->modules.particles.particle_count == 12 && !ed.scene.get(em)->modules.particles.playing, "Lua: stop(), clear(), emit(12) (%d alive)", ed.scene.get(em)->modules.particles.particle_count);
+        ed.play_scripts()->run("fe.find('Fire').particles:play()");
+        frames(10);
+        CHECK(ed.scene.get(em)->modules.particles.playing && ed.scene.get(em)->modules.particles.particle_count > 12, "Lua: play()");
+        ed.stop();
+        frames(2);
+        CHECK(ed.fx()->world() == nullptr && ed.scene.get(em)->modules.particles.particle_count == 0, "Stop puts the scene back");
         ed.new_scene();
         frames(2);
     }

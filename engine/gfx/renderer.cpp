@@ -150,6 +150,29 @@ struct Renderer::Impl {
     GpuTier tier;
     bool tier_ran = false;                  // the last frame used the GPU tier
 
+    // Particles (particles.h): drawn over the read-back image.
+    ParticleRaster particle_raster;
+    Occluder* occluders = nullptr;
+    int occluder_cap = 0;
+    void draw_particles(const RenderScene& scene, uint32_t* dst, int y0, int rows, bool rgba) {
+        if (!scene.particles || scene.particle_batch_count <= 0) return;
+        int n = scene.item_count;
+        if (occluder_cap < n) {
+            Occluder* nb = (Occluder*)realloc(occluders, sizeof(Occluder) * (n < 64 ? 64 : n * 2));
+            if (nb) { occluders = nb; occluder_cap = n < 64 ? 64 : n * 2; }
+        }
+        int m = 0;
+        for (int i = 0; i < n && occluders && m < occluder_cap; i++) {
+            const DrawItem& it = scene.items[i];
+            occluders[m].positions = it.mesh.positions;
+            occluders[m].vertex_count = it.mesh.vertex_count;
+            occluders[m].model = it.model;
+            m++;
+        }
+        particle_raster.draw(scene.particles, scene.particle_batch_count, scene.camera.view, scene.camera.proj, occluders, m,
+                             dst, width, height, y0, rows, rgba, scene.read_asset, scene.asset_user);
+    }
+
     // Mesh cache: open addressing on key, entries never move between rebuilds.
     MeshEntry* table = nullptr;
     uint32_t table_cap = 0, table_used = 0;
@@ -907,6 +930,7 @@ struct Renderer::Impl {
         }
         double ts = now_ms();
         if (banding) {
+            draw_particles(scene, dst, band_y0, rows, false);   // particles hook (bands)
             stats.ms = now_ms() - t0;
             return true;
         }
@@ -917,6 +941,7 @@ struct Renderer::Impl {
             pixels[i] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
         }
         stats.swizzle_ms = now_ms() - ts;
+        draw_particles(scene, pixels, 0, height, true);         // particles hook
         stats.ms = now_ms() - t0;
         return true;
     }
@@ -983,6 +1008,7 @@ void Renderer::shutdown() {
     if (!impl_) return;
     impl_->destroy_gl_objects();
     free(impl_->scratch);
+    free(impl_->occluders);
     free(impl_->pixels);
     delete impl_;
     impl_ = nullptr;

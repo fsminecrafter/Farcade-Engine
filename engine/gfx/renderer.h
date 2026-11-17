@@ -16,6 +16,7 @@
 #include "core/math.h"
 #include "scene/modules.h"
 #include "gfx/graphics_settings.h"
+#include "gfx/particles.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -82,6 +83,10 @@ struct RenderScene {
     // Cheaper shading for images that are replaced at once (a camera drag):
     // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
     bool draft = false;
+    // Particles and sprites drawn over the finished image (particles.h). The
+    // items are only read during render().
+    const ParticleBatch* particles = nullptr;
+    int particle_batch_count = 0;
 };
 
 struct RendererStats {

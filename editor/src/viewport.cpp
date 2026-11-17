@@ -9,6 +9,7 @@
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "fx_bridge.h"
 #include "view_quality.h"
 #include "platform/platform.h"
 
@@ -466,6 +467,8 @@ void Editor::panel_viewport() {
         fgl_tex.pixels = use_fgl ? (const uint8_t*)rgba : nullptr;     // "there is an image" marker
     }
     if (shown_tex.pixels) dl->AddImage((ImTextureID)SwRenderer::texture_id(&shown_tex), v.pos, ImVec2(v.pos.x + shown_tex.width, v.pos.y + shown_tex.height));
+    // Particles, billboards, text and the gizmos of the effects modules.
+    fx()->draw_overlay(*this, dl, v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y, eye);
     // Icons for objects without a mesh (cameras, lights, sky ...), where
     // they are: they are picked by clicking near them.
     {

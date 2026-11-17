@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "fx_bridge.h"
 #include "icons.h"
 #include "swraster.h"
 #include "platform/platform.h"
@@ -294,6 +295,8 @@ void Editor::shutdown() {
 
 Editor::~Editor() {
     free_world();
+    delete fx_bridge_;
+    fx_bridge_ = nullptr;
     if (audio_device_) { audio_device_->shutdown(); delete audio_device_; }
     delete play_backup_;
 }
@@ -722,6 +725,8 @@ void Editor::build_world() {
             physics_->set_mesh(world_entities_[i], md.positions, (int)md.vertex_count);
         }
     }
+    // Effects: particles, force fields, spawners, animation (engine/fx).
+    fx()->start(*this);
 }
 
 ObjectId Editor::object_of(uint64_t e) const {
@@ -785,7 +790,13 @@ void Editor::step_world(float dt) {
     }
 }
 
+FxBridge* Editor::fx() {
+    if (!fx_bridge_) fx_bridge_ = new FxBridge();
+    return fx_bridge_;
+}
+
 void Editor::free_world() {
+    if (fx_bridge_) fx_bridge_->stop();
     if (audio_) { audio_->shutdown(); delete audio_; }
     audio_ = nullptr;
     if (scripts_) { scripts_->shutdown(); delete scripts_; }
@@ -1161,6 +1172,8 @@ bool Editor::frame() {
     if (playing()) {
         play_time += io.DeltaTime;
         step_world(io.DeltaTime);
+    } else {
+        fx()->update_preview(*this, io.DeltaTime);      // the selected emitters
     }
 
     ui_rect_count = 0;

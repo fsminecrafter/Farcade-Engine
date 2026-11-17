@@ -1459,6 +1459,53 @@ void test_bands() {
     CHECK(render_ok(r, t.scene));       // and a full render still works after bands
 }
 
+
+// Particles over the image (particles.h): drawn after the readback, hidden by
+// meshes in front of them, the same in bands.
+void test_particles() {
+    Renderer r;
+    CHECK(r.init(W, H));
+    TestScene t;
+    t.camera(Vec3(0, 0, 6), Vec3(0, 0, 0));
+    Particle p;
+    p.pos = Vec3(0, 0, -2);         // behind the unit cube at the origin
+    p.size = 1.0f; p.r = 1; p.g = 0; p.b = 0; p.a = 1;
+    ParticleBatch b;
+    b.items = &p; b.count = 1; b.additive = false;
+    if (!render_ok(r, t.scene)) return;
+    Px before = t.at(r, Vec3(0.9f, 0.3f, 0.5f));
+    p.pos = Vec3(0.9f, 0.3f, 0.5f);   // beside the cube, in front of the background
+    t.scene.particles = &b;
+    t.scene.particle_batch_count = 1;
+    if (!render_ok(r, t.scene)) return;
+    Px red = t.at(r, p.pos);
+    CHECK_MSG(red.r > 180 && red.g < 60, "a red particle shows over the sky");
+    CHECK_MSG(before.r < 120, "(sanity: the pixel was not red without it)");
+    // Behind the cube: hidden by it.
+    p.pos = Vec3(0, 0, -2);
+    p.size = 0.4f;
+    if (!render_ok(r, t.scene)) return;
+    Px hidden = t.at(r, Vec3(0, 0, 0.5f));
+    CHECK_MSG(!(hidden.r > 150 && hidden.g < 60), "a particle behind the cube is hidden by it");
+    // In front of the cube: visible.
+    p.pos = Vec3(0, 0, 2.5f);
+    if (!render_ok(r, t.scene)) return;
+    Px shown = t.at(r, p.pos);
+    CHECK_MSG(shown.r > 150 && shown.g < 80, "a particle in front of the cube shows");
+    // Bands draw the same.
+    uint32_t* tmp = (uint32_t*)malloc((size_t)W * 6 * 4);
+    float fx, fy;
+    t.project(p.pos, &fx, &fy);
+    int y0 = (int)fy - 3;
+    if (r.render_rows(t.scene, y0, 6, tmp)) {
+        uint32_t v = tmp[3 * W + (int)fx];
+        CHECK_MSG(((v >> 16) & 0xFF) > 150 && (v & 0xFF) < 80, "bands draw particles too");
+    } else {
+        CHECK_MSG(false, "render_rows with particles");
+    }
+    free(tmp);
+}
+
 }  // namespace
 
 int main() {
@@ -1487,5 +1534,6 @@ int main() {
     test_fxaa();
     test_gpu_tier_everything();
     test_bands();
+    test_particles();
     return finish_tests("gfx_tests");
 }

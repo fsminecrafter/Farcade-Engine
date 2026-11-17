@@ -15,6 +15,7 @@
 #   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <base> <hq>": base tier and GPU tier checksums)
 
 GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp engine/gfx/shaders_hq.cpp engine/gfx/passes.cpp engine/gfx/shader_file.cpp engine/gfx/stb_image_impl.c
+GFX_SRC      += engine/gfx/particles.cpp     # particles and sprites over the image (particles.h)
 GFX_HOST_SRC := engine/gfx/host/fgpu_host.c external/fgpu/fgpu_raster.c external/fgpu/fgpu_shader.c \
                 external/fgpu/fgpu_jit_x64.c external/fgpu/fgpu_ir.c
 

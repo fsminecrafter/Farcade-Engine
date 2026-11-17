@@ -154,8 +154,9 @@ enum class ParticleBlend : uint8_t { Additive, Alpha };
 enum class ParticleSpace : uint8_t { World, Local };
 
 // CPU particles (engine/fx/particles.h): emitted at the object, drawn as
-// camera-facing quads. Particles fly along the object's -Z axis (Cone) or
-// away from its center (Sphere, Box, Point: any direction).
+// camera-facing quads. Cone and Box particles fly along the object's -Z axis
+// (Cone spread by cone_angle); Sphere particles fly away from the center,
+// Point particles in any direction.
 struct ParticleEmitter {
     float emission_rate = 20.0f;        // particles per second
     int burst_count = 0;                // particles in one burst (0 = none)

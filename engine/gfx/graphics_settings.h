@@ -25,7 +25,12 @@ struct GraphicsSettings {
     FeatureLevelMode feature_level = FeatureLevelMode::Auto;
 
     // ---- base tier (CPU and GPU)
-    float render_scale = 1.0f;              // internal resolution, 0.25..1 (upscaled when shown)
+    float render_scale = 1.0f;              // internal resolution, 0.25..1 (upscaled bilinearly when read back)
+    // Dynamic resolution: the internal scale follows the frame time, between
+    // min_render_scale and render_scale, to hold target_frame_ms (post_stack.h).
+    bool dynamic_resolution = false;
+    float target_frame_ms = 33.3f;
+    float min_render_scale = 0.5f;
 
     // ---- GPU tier (ignored on the CPU backend unless forced)
     bool shadows = true;                    // directional sun shadows from a shadow map

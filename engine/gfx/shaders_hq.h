@@ -2,6 +2,8 @@
 // Like shaders.h they are generated as text: FGSL has no preprocessor, so each
 // shader is made for the exact set of features of a frame.
 //
+// The post chain (tonemap, grading, grain) is generated per frame: see shaders_post.h.
+//
 // Encodings used between passes (every target is 8 bit XRGB):
 //   packed depth   24 bit fixed point in r:g:b (r high byte), 0..1; the clear
 //                  value is white (= 1.0, the far end)
@@ -10,6 +12,7 @@
 //   AO + depth     r = occlusion (1 = open), g:b = 16 bit packed depth / far
 #pragma once
 
+#include "gfx/shaders_post.h"
 #include <stddef.h>
 
 namespace fe::gfx::shaders {
@@ -31,8 +34,9 @@ struct HqLitKey {
     // the first nss spot lights (in packed order) have one.
     int nps = 0, nss = 0;
     bool local_soft = false;                        // 4 taps, else 1
+    PostKey post;                                   // tonemap, grading, grain (shaders_post.h)
     bool operator==(const HqLitKey& o) const {
-        return nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return post == o.post && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }
@@ -45,8 +49,8 @@ struct HqLitKey {
 void hq_lit_vertex(char* out, size_t cap, bool shadow);
 void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k);
 void hq_unlit_vertex(char* out, size_t cap);
-void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr);
-void hq_sky_fragment(char* out, size_t cap, bool hdr);         // vertex: shaders::sky_vertex
+void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr, const PostKey& post);
+void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post);         // vertex: shaders::sky_vertex
 
 // Depth-only geometry passes: the shadow map (u_shm in fgl matrices) and the
 // linear depth for SSAO (u_pp.x = 1 / far).
@@ -72,7 +76,8 @@ void pp_blur_fragment(char* out, size_t cap);                  // u_dir: xy texe
 void pp_bright_fragment(char* out, size_t cap);                // u_q.x threshold
 void pp_down_fragment(char* out, size_t cap);
 void pp_up_fragment(char* out, size_t cap);                    // sampler u_fine, u_coarse
-void pp_composite_fragment(char* out, size_t cap, bool bloom); // sampler u_scene, u_bloom; u_q.x strength
+void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic);
+                                                               // sampler u_scene, u_bloom; u_q.x strength; u_ca.x fringe (chromatic)
 void pp_fxaa_mask_fragment(char* out, size_t cap);             // sampler u_n: copies, discards the edge pixels
 void pp_fxaa_fragment(char* out, size_t cap);                  // samplers u_n (nearest), u_l (linear): the same image
 

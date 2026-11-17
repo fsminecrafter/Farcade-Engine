@@ -48,6 +48,70 @@ shadows, SSAO and fog) are not applied.
   `allow_gpu_effects_on_cpu` forces it (slow; tests, screenshots).
 - **Fog** (`Sky.fog`) works in both tiers.
 
+## Feature levels
+
+`engine/gfx/feature_level.h` is the one place that turns what the device says
+(`fglGetDeviceInfo` caps) into the pipeline that runs. Settings > Graphics >
+Device shows the level and lets you request one (`GraphicsSettings::feature_level`);
+`Renderer::features().level`, `Renderer::feature_level()` and `Renderer::caps()` give it
+to code.
+
+| Level | When | What runs |
+|---|---|---|
+| FL0 | today's FGPU on the CPU backend | the base tier: forward lights, ambient, sky, post folded into the shaders, CPU GI |
+| FL1-ready | FL0 plus scissor, mipmaps and 16 texture units | the same, with the passes that need those caps taking their cheaper path (below) |
+| GPU tier | a graphics card (`FGPU_CAP_HW_3D`), or forced | the multi pass pipeline of the next sections |
+
+`Auto` picks the highest level the caps allow. Asking for more than the device has is
+clamped (FL1-ready without the caps gives FL0) except the GPU tier, which can always be
+forced on the CPU backend (slow; the old `allow_gpu_effects_on_cpu` switch does the same).
+The optional hardware features are cap bits (`PassCaps`: `scissor`, `mipmaps`, `mrt`,
+`tex16`); `DeviceCaps::from_abi` reads them from `FGPU_CAP_SCISSOR`, `FGPU_CAP_MIPMAPS`
+and `FGPU_CAP_MRT` as soon as the kernel's `fgpu_abi.h` defines them, and the texture unit
+count from `FGPU_MAX_TEXTURE_UNITS`; until then they are off. Nothing branches on the backend name.
+
+## Post processing stack
+
+Every final-colour shader (base tier and GPU tier) gets the same generated chain
+(`shaders_post.h`): exposure and tint, tonemap, contrast, saturation, lift / gamma / gain,
+vignette, film grain, sRGB. Each choice (operator, grading, grain) is compiled into the
+shader, not branched on (the host shader machine runs `if` as predication), so the default
+look is not slower than before and a neutral grade costs nothing. Changing the operator
+recompiles the shader once.
+
+| Setting (Post Processing object) | Notes |
+|---|---|
+| Tonemap | None, Reinhard, ACES, AgX (Sobotka's look: Rec.2020 inset matrix, log2 over -12.47..4.03 EV, a polynomial sigmoid) |
+| Lift / Gamma / Gain | `out = pow(max(c * gain + lift * (1 - c), 0), 1 / gamma)` after tonemap and saturation |
+| Film grain | 0..1, interleaved gradient noise, a new pattern every frame, weaker in the highlights |
+| Chromatic aberration | 0..1, GPU tier only (3 taps in the composite pass, linear filtering) |
+| Bloom radius | 0..1: the weight of the wide levels in the upsample chain (0.5 = the old look) |
+| Auto exposure | see below; Exposure becomes a compensation |
+
+**Bloom** is a chain of up to 5 levels (1/4 to 1/64; a level needs 4 texels on each side, so a small
+image gets fewer): a bright pass with a soft knee and Karis averaging (no fireflies), a 13 tap
+downsample at each level, and a tent upsample that adds the wider level scaled by `2 * radius`.
+
+**Auto exposure** costs no GPU pass. After each frame the renderer meters the image it already
+read back: 64 x 36 samples with a mild centre weight, each undone through the sRGB curve, the
+tonemap (inverted from a table) and the exposure that was applied, so the answer is the scene's
+average luminance (geometric mean) whatever the exposure was. The controller eases the automatic EV
+towards the value that maps that mean to 0.18, with the rate `exposure_speed` (1 / s) and the range
+`auto_exposure_min / max`; `RenderScene::delta_time` is the step (negative: wall clock, at most
+0.25 s). It works on FL0 and the GPU tier alike. The measurement is a frame late (the first
+frame is drawn with 0 EV), and contrast / saturation / grading are not undone, so heavy grading
+shifts the target a little. `RendererStats::exposure_ev` and `meter_log2` show what happened.
+
+**Internal resolution.** `render_scale` (0.25..1) renders every pass at that fraction (sizes rounded
+to multiples of 8) and upscales bilinearly when the image is read back; the stats report
+`internal_width / internal_height`. A 0.5 scale costs about a quarter of the shading. **Dynamic
+resolution** (`dynamic_resolution`, `target_frame_ms`, `min_render_scale`) moves the scale between
+`min_render_scale` and `render_scale` to hold the target: the step follows the square root of the
+time ratio, down by up to 15% a frame, up by at most 3% and only with 15% of the time to spare.
+It uses the measured frame time (render, readback and upscale). Bands (`render_rows`) always draw at
+full size. Screenshots: `gfx-agx.png`, `gfx-graded.png`, `gfx-autoexposure.png`, `gfx-post-high.png`
+(`fe-gfx-shot --tonemap agx --grade warm --auto-exposure --scale 0.5 ...`).
+
 ## Materials
 
 Each mesh object has a material in the Inspector's Look section: color, Roughness, Metal, Unlit and Shadows. The editor passes these to `DrawItem` (`color`, `roughness`, `metallic`, `unlit`, `cast_shadows`).
@@ -82,7 +146,7 @@ pixels bit for bit).
 | 3 | ssao | half size | Alchemy style, 12 spiral samples, `ao_radius`, `ao_strength` |
 | 4 | blur x2 | half size | depth aware 5 tap, horizontal then vertical |
 | 5 | lit | scene (HDR encoded) or final | items + sky; PBR, shadow lookup (PCF), AO, fog |
-| 6 | bloom | 1/4, 1/8, 1/16, 1/32 | bright pass (threshold), 4 downsamples, tent upsampling chain |
+| 6 | bloom | 1/4 .. 1/64 | bright pass (threshold, Karis average), 13 tap downsamples, tent upsampling chain |
 | 7 | composite | LDR or final | scene + bloom, then tonemap, grade, vignette, sRGB |
 | 8 | fxaa | final (context color) | FXAA 3.11 style, two draws with a depth mask |
 

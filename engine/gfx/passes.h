@@ -10,6 +10,7 @@
 
 #include "gfx/renderer.h"
 #include "gfx/shaders_hq.h"
+#include "gfx/post_stack.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -72,7 +73,7 @@ public:
     // Draws the frame into the context's color surface (`gl->color`), leaving
     // the context bound to it. False on a FarcadeGL error (`error` says which).
     bool render(FGLContext* gl, const RenderScene& scene, const PackedLights& lights, const GraphicsSettings& settings,
-                const GpuPlan& plan, const PassHost& host, char* error, int error_cap);
+                const GpuPlan& plan, const PassHost& host, const PostFrame& post, char* error, int error_cap);
 
     // Frees every GL object (targets, shaders); call before the context goes.
     void release(FGLContext* gl);

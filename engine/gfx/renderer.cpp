@@ -21,6 +21,7 @@
 #include "gfx/renderer.h"
 #include "gfx/shaders.h"
 #include "gfx/feature_level.h"
+#include "gfx/post_stack.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
 #include "stb/stb_image.h"
@@ -66,17 +67,19 @@ struct Locs {
     int post = -1, tint = -1, res = -1, mat = -1, cam = -1, sky = -1, gnd = -1;
     int l0 = -1, l1 = -1, l2 = -1, l3 = -1;
     int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
+    int lift = -1, gamma = -1, gain = -1, grain = -1;
 };
 
 struct Shader {
     FGLShader* sh = nullptr;
     Locs loc;
+    shaders::PostKey key;                   // the post chain compiled in
 };
 
 struct Variant {
     Shader shader;
     int nd = 0, np = 0, ns = 0;
-    bool draft = false;
+    shaders::PostKey key;
     uint64_t last_use = 0;
     bool used = false;
 };
@@ -162,6 +165,17 @@ struct Renderer::Impl {
     bool in_render = false;
     uint64_t frame = 0;
 
+    // Post stack (post_stack.h): the internal resolution, auto exposure, the
+    // values of this frame's post chain.
+    int rw = 0, rh = 0;                     // the surfaces being drawn (internal size; a band: the image)
+    uint32_t* ipixels = nullptr;            // the internal-size readback, when it differs from the image
+    size_t ipixels_cap = 0;
+    AutoExposure ae;
+    DynamicResolution dyn;
+    PostFrame pf;
+    double last_render_end_ms = 0;
+    uint32_t post_frames = 0;
+
     // GPU tier (graphics_settings.h, passes.h)
     GraphicsSettings settings;
     bool hw = false;                        // FGPU_CAP_HW_3D: FarcadeGL runs on a graphics card
@@ -245,6 +259,10 @@ struct Renderer::Impl {
         l->sun = fglUniformLocation(sh, "u_sun");
         l->suncol = fglUniformLocation(sh, "u_suncol");
         l->texture = fglUniformLocation(sh, "u_texture");
+        l->lift = fglUniformLocation(sh, "u_lift");
+        l->gamma = fglUniformLocation(sh, "u_gamma");
+        l->gain = fglUniformLocation(sh, "u_gain");
+        l->grain = fglUniformLocation(sh, "u_grain");
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
@@ -359,14 +377,16 @@ struct Renderer::Impl {
     }
 
     // The unlit and the sky shader (compiled on first use, cached).
-    bool use_shader(Shader* s, bool sky_shader, bool draft) {
-        if (s->sh) return true;
+    bool use_shader(Shader* s, bool sky_shader, const shaders::PostKey& key) {
+        if (s->sh && s->key == key) return true;
+        if (s->sh) drop(s);
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return false; }
-        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, draft); }
-        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, draft); }
+        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, key); }
+        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, key); }
         bool ok = compile(s, vs, fs, sky_shader ? "sky" : "unlit");
+        if (ok) s->key = key;
         free(vs);
         free(fs);
         return ok;
@@ -392,9 +412,9 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns, bool draft) {
+    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key) {
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.draft == draft) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.key == key) { v.last_use = frame; return &v.shader; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -408,14 +428,14 @@ struct Renderer::Impl {
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
         shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, draft);
+        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key);
         Shader s;
         bool ok = compile(&s, vs, fs, "lit");
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
-        slot->nd = nd; slot->np = np; slot->ns = ns; slot->draft = draft;
+        slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key;
         slot->used = true;
         slot->last_use = frame;
         return &slot->shader;
@@ -698,9 +718,15 @@ struct Renderer::Impl {
 
     void set_post(const Shader& s, const PostProcess& p) {
         const Locs& l = s.loc;
-        fglUniform4f(s.sh, l.post, p.exposure, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
+        fglUniform4f(s.sh, l.post, pf.exposure_ev, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
         fglUniform4f(s.sh, l.tint, p.tint.x, p.tint.y, p.tint.z, (float)(int)p.tonemap);
-        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, banding ? (float)band_y0 : 0.0f);
+        fglUniform4f(s.sh, l.res, (float)rw, (float)rh, 0, banding ? (float)band_y0 : 0.0f);
+        if (l.lift >= 0) {
+            fglUniform4f(s.sh, l.lift, pf.lift[0], pf.lift[1], pf.lift[2], 0);
+            fglUniform4f(s.sh, l.gamma, pf.inv_gamma[0], pf.inv_gamma[1], pf.inv_gamma[2], 0);
+            fglUniform4f(s.sh, l.gain, pf.gain[0], pf.gain[1], pf.gain[2], 0);
+        }
+        if (l.grain >= 0) fglUniform4f(s.sh, l.grain, pf.grain[0], pf.grain[1], pf.grain[2], 0);
     }
 
     void set_lit_frame(const Shader& s, const RenderScene& scene, const LightSet& ls) {
@@ -828,9 +854,38 @@ struct Renderer::Impl {
         error[0] = 0;
         banding = rows > 0;
         band_y0 = y0;
-        if (!ensure_surface(width, banding ? rows : height)) return false;
+
+        // Internal resolution (post_stack.h): the passes draw at iw x ih and the image is upscaled
+        // when read back. Bands are always drawn at full size (the editor has its own adaptive resolution).
+        float scale = 1.0f;
+        if (!banding) {
+            scale = fclamp(settings.render_scale, 0.25f, 1.0f);
+            if (settings.dynamic_resolution) {
+                float lo = fclamp(settings.min_render_scale, 0.25f, scale);
+                if (dyn.scale > scale || dyn.scale < lo) dyn.scale = fclamp(dyn.scale, lo, scale);
+                scale = dyn.scale;
+            } else {
+                dyn.scale = scale;
+            }
+        }
+        int iw = DynamicResolution::internal_size(width, scale);
+        int ih = DynamicResolution::internal_size(height, scale);
+        rw = banding ? width : iw;
+        rh = banding ? height : ih;
+        stats.render_scale = (float)iw / (float)width;
+        stats.internal_width = rw;
+        stats.internal_height = banding ? rows : rh;
+        if (!ensure_surface(rw, banding ? rows : rh)) return false;
         gl->error = 0;
         frame++;
+
+        // This frame's post chain values: the exposure is the manual one plus the automatic one (measured
+        // from the previous frame). Bands of one image share the values of the image.
+        float dt = scene.delta_time;
+        if (dt < 0) dt = last_render_end_ms > 0 ? fclamp((float)((t0 - last_render_end_ms) * 0.001), 0.0f, 0.25f) : 1.0f / 60.0f;
+        if (!banding) post_frames++;
+        pf = PostFrame::make(scene.post, scene.post.auto_exposure ? ae.ev : 0.0f, post_frames, scene.draft, false);
+        stats.exposure_ev = pf.exposure_ev;
 
         // The GPU tier replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
@@ -860,7 +915,7 @@ struct Renderer::Impl {
             host.user = this;
             host.draw_mesh = &Impl::tier_draw_mesh;
             host.set_viewport = &Impl::tier_set_viewport;
-            failed = !tier.render(gl, scene, pl, settings, plan, host, error, (int)sizeof error);
+            failed = !tier.render(gl, scene, pl, settings, plan, host, pf, error, (int)sizeof error);
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
             tier_done = true;
         }
@@ -869,7 +924,7 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
         if (any_lit) {
-            lit = lit_variant(ls.nd, ls.np, ls.ns, scene.draft);
+            lit = lit_variant(ls.nd, ls.np, ls.ns, pf.key);
             if (!lit) return false;
             set_lit_frame(*lit, scene, ls);
         }
@@ -877,7 +932,7 @@ struct Renderer::Impl {
         Shader& sky_s = sky[scene.draft ? 1 : 0];
         bool any_unlit = false;
         for (int i = 0; i < scene.item_count; i++) if (scene.items[i].unlit) { any_unlit = true; break; }
-        if ((any_unlit && !use_shader(&unlit_s, false, scene.draft)) || !use_shader(&sky_s, true, scene.draft)) return false;
+        if ((any_unlit && !use_shader(&unlit_s, false, pf.key)) || !use_shader(&sky_s, true, pf.key)) return false;
         if (any_unlit) set_post(unlit_s, scene.post);
         set_sky_frame(sky_s, scene, ls);
 
@@ -909,7 +964,19 @@ struct Renderer::Impl {
         free_temps();
         if (failed) return false;
         double tr = now_ms();
-        int rr = fglReadPixels(gl, banding ? dst : pixels, (uint32_t)width * 4);
+        bool scaled = !banding && (rw != width || rh != height);
+        uint32_t* target = banding ? dst : pixels;
+        if (scaled) {
+            size_t need = (size_t)rw * (size_t)rh;
+            if (ipixels_cap < need) {
+                free(ipixels);
+                ipixels = (uint32_t*)malloc(need * 4);
+                ipixels_cap = ipixels ? need : 0;
+                if (!ipixels) { set_error("out of memory"); return false; }
+            }
+            target = ipixels;
+        }
+        int rr = fglReadPixels(gl, target, (uint32_t)rw * 4);
         stats.read_ms = now_ms() - tr;
         if (rr != 0) {
             set_error("FarcadeGL: readback failed", gl->error);
@@ -920,14 +987,21 @@ struct Renderer::Impl {
             stats.ms = now_ms() - t0;
             return true;
         }
-        // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque.
-        uint32_t n = (uint32_t)width * (uint32_t)height;
-        for (uint32_t i = 0; i < n; i++) {
-            uint32_t p = pixels[i];
-            pixels[i] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
+        // Auto exposure: meter the frame just drawn (XRGB), for the next one.
+        if (scene.post.auto_exposure) {
+            float l2 = AutoExposure::meter(target, rw, rh, false, scene.post.tonemap, pf.exposure_ev);
+            float tgt = AutoExposure::target_for(l2, scene.post.auto_exposure_min, scene.post.auto_exposure_max);
+            ae.step(tgt, scene.post.exposure_speed, dt);
+            stats.meter_log2 = l2;
+        } else {
+            ae.reset();
         }
+        // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque; upscaled from the internal size.
+        upscale_xrgb_to_rgba(target, rw, rh, pixels, width, height);
         stats.swizzle_ms = now_ms() - ts;
         stats.ms = now_ms() - t0;
+        last_render_end_ms = now_ms();
+        if (settings.dynamic_resolution) dyn.update((float)stats.ms, settings.target_frame_ms, settings.min_render_scale, settings.render_scale);
         return true;
     }
 
@@ -950,6 +1024,9 @@ struct Renderer::Impl {
             fglDestroyContext(gl);
             gl = nullptr;
         }
+        free(ipixels);
+        ipixels = nullptr;
+        ipixels_cap = 0;
     }
 };
 

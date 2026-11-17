@@ -1,4 +1,5 @@
 #include "gfx/shaders_hq.h"
+#include "gfx/shaders_post.h"
 #include "core/math.h"
 
 #include <string.h>
@@ -41,39 +42,12 @@ struct Text {
     }
 };
 
-// Post processing shared by the final-color shaders. `tone` is everything after
-// exposure and tint (tonemap, contrast, saturation, vignette, linear to sRGB),
-// `post` is the base tier's chain, `hdr_enc` / `hdr_dec` the 8 bit HDR codec
-// (exposure and tint are applied when encoding).
-const char* const kTone =
-    "uniform vec4 u_post;\n"
-    "uniform vec4 u_tint;\n"
-    "uniform vec4 u_res;\n"
-    "vec3 lin2srgb(vec3 c) {\n"
-    "    return mix(c * 12.92, 1.055 * pow(c, vec3(0.4166667)) - 0.055, step(0.0031308, c));\n"
-    "}\n"
-    "vec3 tone(vec3 c) {\n"
-    "    vec3 t = c;\n"
-    "    if (u_tint.w > 1.5) t = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);\n"
-    "    else if (u_tint.w > 0.5) t = c / (1.0 + c);\n"
-    "    t = clamp(t, 0.0, 1.0);\n"
-    "    t = clamp((t - 0.18) * u_post.y + 0.18, 0.0, 1.0);\n"
-    "    float luma = dot(t, vec3(0.2126, 0.7152, 0.0722));\n"
-    "    t = mix(vec3(luma), t, u_post.z);\n"
-    "    vec2 q = gl_FragCoord.xy / u_res.xy - 0.5;\n"
-    "    float edge = clamp(length(q) * 1.4142136, 0.0, 1.0);\n"
-    "    t = t * (1.0 - u_post.w * smoothstep(0.25, 1.0, edge));\n"
-    "    return lin2srgb(clamp(t, 0.0, 1.0));\n"
-    "}\n"
-    "vec3 post(vec3 c) {\n"
-    "    return tone(c * exp2(u_post.x) * u_tint.rgb);\n"
-    "}\n"
-    "vec3 hdr_enc(vec3 c) {\n"
-    "    return sqrt(clamp(c * exp2(u_post.x) * u_tint.rgb, 0.0, 8.0) * 0.125);\n"
-    "}\n"
-    "vec3 hdr_dec(vec3 e) {\n"
-    "    return e * e * 8.0;\n"
-    "}\n";
+// The post chain (shaders_post.h) for this shader's choices, appended to `t`.
+void add_post(Text& t, const PostKey& pk) {
+    char buf[4096];
+    emit_post_chain(buf, sizeof buf, pk);
+    t.add(buf);
+}
 
 const char* const kSrgb2Lin =
     "vec3 srgb2lin(vec3 c) {\n"
@@ -229,7 +203,11 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
     if (local) {
         t.add("uniform sampler2D u_atlas;\n");
     }
-    t.add(kTone);
+    {
+        PostKey pk = k.post;
+        pk.hdr_codec = k.hdr;
+        add_post(t, pk);
+    }
     t.add(kPack);
     if (local) {
         // d: from the light to the (offset) surface point; s, u, f: the light
@@ -425,20 +403,24 @@ void hq_unlit_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr) {
+void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr, const PostKey& post) {
     Text t(out, cap);
     t.add("uniform vec4 u_cam;\n"
           "uniform vec4 u_fog;\n"
           "varying vec3 v_pos;\n"
           "varying vec3 v_alb;\n");
-    t.add(kTone);
+    {
+        PostKey pk = post;
+        pk.hdr_codec = hdr;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
           "    vec3 col = v_alb;\n");
     if (fog) t.add("    col = mix(u_fog.rgb, col, exp(-u_fog.w * length(u_cam.xyz - v_pos)));\n");
     t.add(hdr ? "    gl_FragColor = vec4(hdr_enc(col), 1.0);\n}\n" : "    gl_FragColor = vec4(post(col), 1.0);\n}\n");
 }
 
-void hq_sky_fragment(char* out, size_t cap, bool hdr) {
+void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post) {
     Text t(out, cap);
     t.add("uniform vec4 u_fwd;\n"
           "uniform vec4 u_rx;\n"
@@ -449,7 +431,11 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr) {
           "uniform vec4 u_sun;\n"
           "uniform vec4 u_suncol;\n"
           "varying vec2 v_ndc;\n");
-    t.add(kTone);
+    {
+        PostKey pk = post;
+        pk.hdr_codec = hdr;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
           "    vec3 d = normalize(u_fwd.xyz + u_rx.xyz * v_ndc.x + u_ry.xyz * v_ndc.y);\n"
           "    float up = clamp(d.y, 0.0, 1.0);\n"
@@ -665,6 +651,9 @@ void pp_blur_fragment(char* out, size_t cap) {
           "}\n");
 }
 
+// The bright pass: 4 bilinear taps = a 4x4 box of the scene, each tap thresholded with a soft knee.
+// The taps are weighted by 1 / (1 + luma) (Karis average), so a few very bright pixels do not make
+// the glow flicker.
 void pp_bright_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform sampler2D u_src;\n"
@@ -682,51 +671,75 @@ void pp_bright_fragment(char* out, size_t cap) {
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
           "    vec2 o = u_p.zw;\n"
-          "    vec3 c = bright(texture(u_src, uv + vec2(-o.x, -o.y)).rgb) + bright(texture(u_src, uv + vec2(o.x, -o.y)).rgb)\n"
-          "           + bright(texture(u_src, uv + vec2(-o.x, o.y)).rgb) + bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n"
-          "    gl_FragColor = vec4(sqrt(clamp(c * 0.25, 0.0, 8.0) * 0.125), 1.0);\n"
+          "    vec3 a = bright(texture(u_src, uv + vec2(-o.x, -o.y)).rgb);\n"
+          "    vec3 b = bright(texture(u_src, uv + vec2(o.x, -o.y)).rgb);\n"
+          "    vec3 c = bright(texture(u_src, uv + vec2(-o.x, o.y)).rgb);\n"
+          "    vec3 d = bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n"
+          "    vec4 w = 1.0 / (1.0 + vec4(dot(a, vec3(0.2126, 0.7152, 0.0722)), dot(b, vec3(0.2126, 0.7152, 0.0722)),\n"
+          "                               dot(c, vec3(0.2126, 0.7152, 0.0722)), dot(d, vec3(0.2126, 0.7152, 0.0722))));\n"
+          "    vec3 s = (a * w.x + b * w.y + c * w.z + d * w.w) / (w.x + w.y + w.z + w.w);\n"
+          "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
           "}\n");
 }
 
+// The downsample of the chain: 13 bilinear taps over a 6x6 source area (the filter of the call of duty
+// "Next generation post processing" talk): 4 inner boxes, 4 outer edges, 4 corners, the centre.
 void pp_down_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform sampler2D u_src;\n"
           "uniform vec4 u_p;\n"
+          "vec3 tap(vec2 uv, float x, float y) {\n"
+          "    return texture(u_src, uv + vec2(x, y) * u_p.zw).rgb;\n"
+          "}\n"
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
-          "    vec2 o = u_p.zw;\n"
-          "    vec3 c = texture(u_src, uv + vec2(-o.x, -o.y)).rgb + texture(u_src, uv + vec2(o.x, -o.y)).rgb\n"
-          "           + texture(u_src, uv + vec2(-o.x, o.y)).rgb + texture(u_src, uv + vec2(o.x, o.y)).rgb;\n"
-          "    gl_FragColor = vec4(c * 0.25, 1.0);\n"
+          "    vec3 c = tap(uv, 0.0, 0.0) * 0.125;\n"
+          "    c += (tap(uv, -1.0, -1.0) + tap(uv, 1.0, -1.0) + tap(uv, -1.0, 1.0) + tap(uv, 1.0, 1.0)) * 0.125;\n"
+          "    c += (tap(uv, 0.0, -2.0) + tap(uv, -2.0, 0.0) + tap(uv, 2.0, 0.0) + tap(uv, 0.0, 2.0)) * 0.0625;\n"
+          "    c += (tap(uv, -2.0, -2.0) + tap(uv, 2.0, -2.0) + tap(uv, -2.0, 2.0) + tap(uv, 2.0, 2.0)) * 0.03125;\n"
+          "    gl_FragColor = vec4(c, 1.0);\n"
           "}\n");
 }
 
-// out = fine + tent(coarse); u_p.zw is the coarse texel size.
+// out = fine + k * tent(coarse); u_p.zw is the coarse texel size, u_q.x the weight k of the wider levels
+// (the glow's radius: 0 keeps only the finest level, 1 doubles the wide ones).
 void pp_up_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform sampler2D u_fine;\n"
           "uniform sampler2D u_coarse;\n"
           "uniform vec4 u_p;\n"
+          "uniform vec4 u_q;\n"
           "vec3 hdr_dec(vec3 e) { return e * e * 8.0; }\n"
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
           "    vec2 o = u_p.zw * 0.5;\n"
           "    vec3 c = texture(u_coarse, uv + vec2(-o.x, -o.y)).rgb + texture(u_coarse, uv + vec2(o.x, -o.y)).rgb\n"
           "           + texture(u_coarse, uv + vec2(-o.x, o.y)).rgb + texture(u_coarse, uv + vec2(o.x, o.y)).rgb;\n"
-          "    vec3 s = hdr_dec(texture(u_fine, uv).rgb) + hdr_dec(c * 0.25);\n"
+          "    vec3 s = hdr_dec(texture(u_fine, uv).rgb) + hdr_dec(c * 0.25) * u_q.x;\n"
           "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
           "}\n");
 }
 
-void pp_composite_fragment(char* out, size_t cap, bool bloom) {
+void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic) {
     Text t(out, cap);
     t.add("uniform sampler2D u_scene;\n");
     if (bloom) t.add("uniform sampler2D u_bloom;\nuniform vec4 u_q;\n");
     t.add("uniform vec4 u_p;\n");
-    t.add(kTone);
+    if (chromatic) t.add("uniform vec4 u_ca;\n");
+    {
+        PostKey pk = post;
+        pk.hdr_codec = true;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
-          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
-          "    vec3 c = hdr_dec(texture(u_scene, uv).rgb);\n");
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n");
+    if (chromatic)
+        // colour fringes: red and blue are sampled a little further out and in along the line from the centre
+        t.add("    vec2 cd = (uv - 0.5) * u_ca.x;\n"
+              "    vec3 c = vec3(hdr_dec(texture(u_scene, uv + cd).rgb).r, hdr_dec(texture(u_scene, uv).rgb).g,\n"
+              "                  hdr_dec(texture(u_scene, uv - cd).rgb).b);\n");
+    else
+        t.add("    vec3 c = hdr_dec(texture(u_scene, uv).rgb);\n");
     if (bloom) t.add("    c += hdr_dec(texture(u_bloom, uv).rgb) * u_q.x;\n");
     t.add("    gl_FragColor = vec4(tone(c), 1.0);\n"
           "}\n");

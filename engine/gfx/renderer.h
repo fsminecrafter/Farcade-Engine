@@ -82,6 +82,9 @@ struct RenderScene {
     // Cheaper shading for images that are replaced at once (a camera drag):
     // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
     bool draft = false;
+    // Seconds since the last frame, for the auto exposure's adaptation (and
+    // other time based effects). Negative: measured with the wall clock.
+    float delta_time = -1.0f;
 };
 
 struct RendererStats {
@@ -94,6 +97,12 @@ struct RendererStats {
     // CPU pass that turns XRGB into RGBA. The rest is recording commands.
     double shader_ms = 0, upload_ms = 0, submit_ms = 0, read_ms = 0, swizzle_ms = 0;
     int shaders_compiled = 0;
+    // The post stack (post_stack.h): the internal resolution that was drawn,
+    // the exposure that was applied (manual + automatic, EV) and what the
+    // meter saw (log2 of the scene's average luminance, auto exposure on).
+    float render_scale = 1.0f;
+    int internal_width = 0, internal_height = 0;
+    float exposure_ev = 0, meter_log2 = 0;
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

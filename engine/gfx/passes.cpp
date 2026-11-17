@@ -25,7 +25,7 @@ namespace fe::gfx {
 
 namespace {
 
-constexpr int kBloomLevels = 4;
+constexpr int kBloomLevels = 5;
 constexpr int kMaxLitVariants = 8;
 constexpr int kBoundsCache = 128;
 constexpr uint32_t kFrameVec4Count = 10u + 3u * shaders::kMaxLights + kMaxLocalShadows;
@@ -125,7 +125,9 @@ struct GpuTier::Impl {
     FGLShader* bright_p = nullptr;
     FGLShader* down_p = nullptr;
     FGLShader* up_p = nullptr;
-    FGLShader* comp_p[2] = {};
+    FGLShader* comp_p[4] = {};              // [chromatic * 2 + bloom]
+    shaders::PostKey comp_key[4], unlit_key[4], sky_key[2];
+    const PostFrame* pf = nullptr;          // this frame's post chain values
     FGLShader* fxaa_p = nullptr;
     FGLShader* unlit_p[4] = {};             // [fog * 2 + hdr]
     FGLShader* sky_p[2] = {};               // [hdr]
@@ -137,6 +139,7 @@ struct GpuTier::Impl {
     LocalShadow locals[kMaxLocalShadows];
     int local_count = 0;
     Target bl_down[kBloomLevels], bl_up[kBloomLevels - 1];
+    int bl_levels = 0;                      // levels used this frame
     uint64_t shadow_hash = 0;
     MeshBounds bounds_cache[kBoundsCache];
     int bounds_next = 0;
@@ -317,9 +320,25 @@ struct GpuTier::Impl {
     }
 
     void set_post(FGLShader* sh, const PostProcess& p, int w, int h) {
-        u4(sh, "u_post", p.exposure, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
+        u4(sh, "u_post", pf->exposure_ev, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
         u4(sh, "u_tint", p.tint.x, p.tint.y, p.tint.z, (float)(int)p.tonemap);
         u4(sh, "u_res", (float)w, (float)h, 0, 0);
+        if (pf->key.grade) {
+            u4(sh, "u_lift", pf->lift[0], pf->lift[1], pf->lift[2], 0);
+            u4(sh, "u_gamma", pf->inv_gamma[0], pf->inv_gamma[1], pf->inv_gamma[2], 0);
+            u4(sh, "u_gain", pf->gain[0], pf->gain[1], pf->gain[2], 0);
+        }
+        if (pf->key.grain) u4(sh, "u_grain", pf->grain[0], pf->grain[1], pf->grain[2], 0);
+    }
+
+    // A program whose source depends on the post chain: recompiled when the chain's choices change.
+    template <class V, class F>
+    bool make_keyed(FGLShader** out, shaders::PostKey* stored, V vgen, F fgen, const char* what) {
+        if (*out && *stored != pf->key) drop(out);
+        if (*out) return true;
+        if (!make(out, vgen, fgen, what)) return false;
+        *stored = pf->key;
+        return true;
     }
 
     // ---- camera
@@ -782,15 +801,17 @@ struct GpuTier::Impl {
             key.nps = ls.nps;
             key.nss = ls.nss;
             key.local_soft = (ls.nps + ls.nss) > 0 && gs.soft_shadows;
+            key.post = pf->key;
             lit = lit_variant(key);
             if (!lit) return false;
         }
         int ui = (plan.fog ? 2 : 0) + (hdr ? 1 : 0);
         bool fog = plan.fog, h2 = hdr;
-        if (!make(&unlit_p[ui], shaders::hq_unlit_vertex,
-                  [fog, h2](char* o, size_t c) { shaders::hq_unlit_fragment(o, c, fog, h2); }, "unlit")) return false;
-        if (!make(&sky_p[hdr ? 1 : 0], shaders::sky_vertex,
-                  [h2](char* o, size_t c) { shaders::hq_sky_fragment(o, c, h2); }, "sky")) return false;
+        shaders::PostKey pk = pf->key;
+        if (!make_keyed(&unlit_p[ui], &unlit_key[ui], shaders::hq_unlit_vertex,
+                        [fog, h2, pk](char* o, size_t c) { shaders::hq_unlit_fragment(o, c, fog, h2, pk); }, "unlit")) return false;
+        if (!make_keyed(&sky_p[hdr ? 1 : 0], &sky_key[hdr ? 1 : 0], shaders::sky_vertex,
+                        [h2, pk](char* o, size_t c) { shaders::hq_sky_fragment(o, c, h2, pk); }, "sky")) return false;
         FGLShader* unlit = unlit_p[ui];
         FGLShader* sky = sky_p[hdr ? 1 : 0];
 
@@ -847,9 +868,14 @@ struct GpuTier::Impl {
 
     bool bloom_passes(const RenderScene& s, const PostProcess& post, const Target& hdr) {
         int w = gl->desc.width, h = gl->desc.height;
-        for (int i = 0; i < kBloomLevels; i++) {
+        // Levels stop where a side would be under 4 texels (a small image gets fewer, so the glow of a
+        // thumbnail is not a haze over the whole picture); bl_levels is at least 2.
+        int levels = 2;
+        while (levels < kBloomLevels && (w >> (2 + levels)) >= 4 && (h >> (2 + levels)) >= 4) levels++;
+        bl_levels = levels;
+        for (int i = 0; i < levels; i++) {
             if (!ensure(bl_down[i], w >> (2 + i), h >> (2 + i), false)) return false;
-            if (i < kBloomLevels - 1 && !ensure(bl_up[i], w >> (2 + i), h >> (2 + i), false)) return false;
+            if (i < levels - 1 && !ensure(bl_up[i], w >> (2 + i), h >> (2 + i), false)) return false;
         }
         double t0 = now_ms();
         if (!make(&bright_p, shaders::pp_vertex, shaders::pp_bright_fragment, "bloom bright")) return false;
@@ -865,7 +891,7 @@ struct GpuTier::Impl {
             bind_tex(bright_p, "u_src", hdr, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             fs_draw(bright_p);
         }
-        for (int i = 1; i < kBloomLevels; i++) {
+        for (int i = 1; i < levels; i++) {
             const Target& d = bl_down[i];
             const Target& sr = bl_down[i - 1];
             fs_begin(d);
@@ -873,12 +899,13 @@ struct GpuTier::Impl {
             bind_tex(down_p, "u_src", sr, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             fs_draw(down_p);
         }
-        for (int i = kBloomLevels - 2; i >= 0; i--) {
+        for (int i = levels - 2; i >= 0; i--) {
             const Target& d = bl_up[i];
             const Target& fine = bl_down[i];
-            const Target& coarse = i == kBloomLevels - 2 ? bl_down[kBloomLevels - 1] : bl_up[i + 1];
+            const Target& coarse = i == levels - 2 ? bl_down[levels - 1] : bl_up[i + 1];
             fs_begin(d);
             u4(up_p, "u_p", 1.0f / (float)d.w, 1.0f / (float)d.h, 1.0f / (float)coarse.w, 1.0f / (float)coarse.h);
+            u4(up_p, "u_q", 2.0f * pf->bloom_radius, 0, 0, 0);
             bind_tex(up_p, "u_fine", fine, FGL_TEXTURE_CLAMP);
             bind_tex(up_p, "u_coarse", coarse, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             fs_draw(up_p);
@@ -889,16 +916,21 @@ struct GpuTier::Impl {
     bool composite(const RenderScene& s, const Target& scene_t, bool with_bloom, FGLSurface dst_color) {
         int w = gl->desc.width, h = gl->desc.height;
         double t0 = now_ms();
-        FGLShader** slot = &comp_p[with_bloom ? 1 : 0];
+        bool ca = pf->chromatic > 0.001f;
+        int ci = (ca ? 2 : 0) + (with_bloom ? 1 : 0);
+        FGLShader** slot = &comp_p[ci];
         bool b = with_bloom;
-        if (!make(slot, shaders::pp_vertex, [b](char* o, size_t c) { shaders::pp_composite_fragment(o, c, b); }, "composite"))
+        shaders::PostKey pk = pf->key;
+        if (!make_keyed(slot, &comp_key[ci], shaders::pp_vertex,
+                        [b, pk, ca](char* o, size_t c) { shaders::pp_composite_fragment(o, c, b, pk, ca); }, "composite"))
             return false;
         FGLShader* sh = *slot;
         set_target(dst_color, 0);
         fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         set_post(sh, s.post, w, h);
         u4(sh, "u_p", 1.0f / (float)w, 1.0f / (float)h, 0, 0);
-        bind_tex(sh, "u_scene", scene_t, FGL_TEXTURE_CLAMP);
+        bind_tex(sh, "u_scene", scene_t, ca ? (FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP) : FGL_TEXTURE_CLAMP);
+        if (ca) u4(sh, "u_ca", pf->chromatic * 0.012f, 0, 0, 0);
         if (with_bloom) {
             u4(sh, "u_q", fclamp(s.post.bloom, 0.0f, 1.0f) * 0.3f, 0, 0, 0);
             bind_tex(sh, "u_bloom", bl_up[0], FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
@@ -932,8 +964,9 @@ struct GpuTier::Impl {
     }
 
     bool render(FGLContext* ctx, const RenderScene& s, const PackedLights& ls, const GraphicsSettings& gs, const GpuPlan& plan,
-                const PassHost& host, char* error, int error_cap) {
+                const PassHost& host, const PostFrame& post_frame, char* error, int error_cap) {
         gl = ctx;
+        pf = &post_frame;
         err = error;
         err_cap = error_cap;
         frame++;
@@ -1037,7 +1070,7 @@ struct GpuTier::Impl {
     void release_all() {
         if (!gl) return;
         drop(&shadow_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
-        drop(&up_p); drop(&comp_p[0]); drop(&comp_p[1]); drop(&fxaa_p);
+        drop(&up_p); for (FGLShader*& c : comp_p) drop(&c); drop(&fxaa_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
         for (LitProg& v : lit_p) { drop(&v.sh); v = LitProg(); }
@@ -1082,8 +1115,8 @@ GpuPlan GpuTier::plan(const RenderScene& scene, const GraphicsFeatures& f) {
 }
 
 bool GpuTier::render(FGLContext* gl, const RenderScene& scene, const PackedLights& lights, const GraphicsSettings& settings,
-                     const GpuPlan& plan, const PassHost& host, char* error, int error_cap) {
-    return impl_->render(gl, scene, lights, settings, plan, host, error, error_cap);
+                     const GpuPlan& plan, const PassHost& host, const PostFrame& post_frame, char* error, int error_cap) {
+    return impl_->render(gl, scene, lights, settings, plan, host, post_frame, error, error_cap);
 }
 
 void GpuTier::release(FGLContext*) { impl_->release_all(); }

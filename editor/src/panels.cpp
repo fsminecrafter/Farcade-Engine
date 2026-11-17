@@ -873,6 +873,16 @@ void Editor::settings_graphics() {
         track("gfx:preset");
         prop_label("Render scale");
         ImGui::SliderFloat("##rscale", &g.render_scale, 0.25f, 1.0f, "%.2f");
+        track("gfx:rscale");
+        prop_label("Dynamic resolution");
+        toggle_switch("##dynres", &g.dynamic_resolution);
+        track("gfx:dynres");
+        if (g.dynamic_resolution) {
+            prop_label("  Target");
+            ImGui::SliderFloat("##dynms", &g.target_frame_ms, 8.0f, 100.0f, "%.0f ms");
+            prop_label("  Lowest scale");
+            ImGui::SliderFloat("##dynmin", &g.min_render_scale, 0.25f, 1.0f, "%.2f");
+        }
         faint("Fog is set on the Sky object.");
         ImGui::Dummy(ImVec2(0, 4));
     }

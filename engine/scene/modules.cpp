@@ -12,7 +12,7 @@ const char* const kColliderModes[] = { "Collision", "Trigger", nullptr };
 const char* const kLightTypes[] = { "Directional", "Point", "Spot", nullptr };
 const char* const kProjections[] = { "Perspective", "Orthographic", nullptr };
 const char* const kSkyModes[] = { "Gradient", "Color", nullptr };
-const char* const kTonemaps[] = { "None", "Reinhard", "ACES", nullptr };
+const char* const kTonemaps[] = { "None", "Reinhard", "ACES", "AgX", nullptr };
 
 #define FE_F(T, f, label, type, lo, hi, enums) { #f, label, FieldType::type, (uint16_t)offsetof(T, f), lo, hi, enums }
 
@@ -125,6 +125,16 @@ const FieldInfo kPost[] = {
     FE_F(PostProcess, vignette, "Vignette", Float, 0, 1, nullptr),
     FE_F(PostProcess, bloom, "Bloom", Float, 0, 1, nullptr),
     FE_F(PostProcess, bloom_threshold, "Bloom from", Float, 0, 10, nullptr),
+    FE_F(PostProcess, bloom_radius, "Bloom radius", Float, 0, 1, nullptr),
+    FE_F(PostProcess, lift, "Lift", Color, 0, 0, nullptr),
+    FE_F(PostProcess, gamma, "Gamma", Vec3, 0.2f, 3, nullptr),
+    FE_F(PostProcess, gain, "Gain", Vec3, 0, 3, nullptr),
+    FE_F(PostProcess, chromatic_aberration, "Chromatic aberration", Float, 0, 1, nullptr),
+    FE_F(PostProcess, film_grain, "Film grain", Float, 0, 1, nullptr),
+    FE_F(PostProcess, auto_exposure, "Auto exposure", Bool, 0, 0, nullptr),
+    FE_F(PostProcess, exposure_speed, "Adapt speed", Float, 0.1f, 10, nullptr),
+    FE_F(PostProcess, auto_exposure_min, "Auto min EV", Float, -8, 0, nullptr),
+    FE_F(PostProcess, auto_exposure_max, "Auto max EV", Float, 0, 8, nullptr),
 };
 
 #undef FE_F

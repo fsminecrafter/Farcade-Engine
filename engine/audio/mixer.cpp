@@ -126,7 +126,95 @@ static void release(Mixer::Voice& v) {
     v = Mixer::Voice();
 }
 
+// ---- reverb
+
+struct Mixer::Reverb {
+    static constexpr int kCombs = 4, kAllpass = 2;
+    float* buf = nullptr;
+    int comb_len[2][kCombs], ap_len[2][kAllpass];
+    int comb_pos[2][kCombs] = {}, ap_pos[2][kAllpass] = {};
+    float* comb[2][kCombs];
+    float* ap[2][kAllpass];
+    float comb_lp[2][kCombs] = {};
+    float lp[2] = {};
+    float wet = 0, room = 0.5f, damping = 0.5f, lowpass = 0;     // the current (ramped) values
+
+    bool init(int rate) {
+        static const int cl[kCombs] = { 1116, 1188, 1277, 1356 }, al[kAllpass] = { 556, 441 };
+        int total = 0;
+        for (int s = 0; s < 2; s++) {
+            for (int i = 0; i < kCombs; i++) { comb_len[s][i] = (cl[i] + s * 23) * rate / 44100; total += comb_len[s][i]; }
+            for (int i = 0; i < kAllpass; i++) { ap_len[s][i] = (al[i] + s * 23) * rate / 44100; total += ap_len[s][i]; }
+        }
+        buf = (float*)calloc((size_t)total, sizeof(float));
+        if (!buf) return false;
+        float* p = buf;
+        for (int s = 0; s < 2; s++) {
+            for (int i = 0; i < kCombs; i++) { comb[s][i] = p; p += comb_len[s][i]; }
+            for (int i = 0; i < kAllpass; i++) { ap[s][i] = p; p += ap_len[s][i]; }
+        }
+        return true;
+    }
+    ~Reverb() { free(buf); }
+
+    // Processes interleaved stereo in place.
+    void process(float* x, int frames) {
+        const float fb = 0.70f + 0.28f * room;
+        const float d = 0.1f + 0.7f * damping;
+        const float a = 1.0f - lowpass * 0.97f;
+        const bool wet_on = wet > 0.0005f;
+        for (int i = 0; i < frames; i++) {
+            float in = (x[i * 2] + x[i * 2 + 1]) * 0.25f;
+            float out[2] = { 0, 0 };
+            if (wet_on) {
+                for (int s = 0; s < 2; s++) {
+                    float sum = 0;
+                    for (int c = 0; c < kCombs; c++) {
+                        float* b = comb[s][c];
+                        int& pos = comb_pos[s][c];
+                        float y = b[pos];
+                        comb_lp[s][c] = y * (1.0f - d) + comb_lp[s][c] * d;
+                        b[pos] = in + comb_lp[s][c] * fb;
+                        if (++pos >= comb_len[s][c]) pos = 0;
+                        sum += y;
+                    }
+                    for (int k = 0; k < kAllpass; k++) {
+                        float* b = ap[s][k];
+                        int& pos = ap_pos[s][k];
+                        float bo = b[pos];
+                        float y = -sum + bo;
+                        b[pos] = sum + bo * 0.5f;
+                        if (++pos >= ap_len[s][k]) pos = 0;
+                        sum = y;
+                    }
+                    out[s] = sum;
+                }
+            }
+            for (int s = 0; s < 2; s++) {
+                float v = x[i * 2 + s] * (1.0f - wet * 0.35f) + out[s] * wet * 1.2f;
+                lp[s] += a * (v - lp[s]);
+                x[i * 2 + s] = lowpass > 0.001f ? lp[s] : v;
+            }
+        }
+    }
+};
+
+void Mixer::set_reverb(const ReverbParams& p) {
+    rv_target_ = p;
+    if ((p.wet > 0.0005f || p.lowpass > 0.001f) && !rv_) {
+        rv_ = new Reverb();
+        if (!rv_->init(rate_)) { delete rv_; rv_ = nullptr; }
+    }
+}
+
+bool Mixer::reverb_active() const {
+    return rv_ && (rv_->wet > 0.0005f || rv_->lowpass > 0.001f || rv_target_.wet > 0.0005f || rv_target_.lowpass > 0.001f);
+}
+
 void Mixer::shutdown() {
+    delete rv_;
+    rv_ = nullptr;
+    tail_ = 0;
     for (int i = 0; i < nvoices_; i++) release(voices_[i]);
     delete[] voices_;
     voices_ = nullptr;
@@ -344,10 +432,23 @@ void Mixer::mix_block(int frames) {
 
 void Mixer::mix(int16_t* out, int frames) {
     if (!out || frames <= 0) return;
-    if (!voices_ || active_count() == 0) { memset(out, 0, sizeof(int16_t) * (size_t)frames * 2); return; }
+    const bool voices = voices_ && active_count() > 0;
+    if (voices) tail_ = rate_ * 3;
+    const bool ringing = reverb_active() && tail_ > 0;
+    if (!voices && !ringing) { memset(out, 0, sizeof(int16_t) * (size_t)frames * 2); return; }
     while (frames > 0) {
         int n = frames < kBlock ? frames : kBlock;
-        mix_block(n);
+        if (voices) mix_block(n); else memset(acc_, 0, sizeof(float) * (size_t)n * 2);
+        if (rv_) {
+            // Ramp the controls towards the target, then run the effect.
+            const float k = 0.15f;
+            rv_->wet += (rv_target_.wet - rv_->wet) * k;
+            rv_->room += (rv_target_.room - rv_->room) * k;
+            rv_->damping += (rv_target_.damping - rv_->damping) * k;
+            rv_->lowpass += (rv_target_.lowpass - rv_->lowpass) * k;
+            rv_->process(acc_, n);
+            if (!voices) tail_ -= n;
+        }
         for (int i = 0; i < n * 2; i++) out[i] = to_s16(acc_[i]);
         out += n * 2;
         frames -= n;

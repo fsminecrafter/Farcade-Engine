@@ -765,6 +765,7 @@ void Editor::step_world(float dt) {
     if (!world_) return;
     world_->progress(dt);
     if (fx_bridge_ && fx_bridge_->world()) fx_bridge_->world()->post_frame(dt);     // spawners
+    if (audio_) audio_->reverb_enabled = settings.fx.reverb;
     // Objects whose entity was destroyed (a script's destroy(), a spawner's lifetime) leave the scene.
     for (int i = 0; i < world_count_;) {
         if (world_->alive(world_entities_[i])) { i++; continue; }

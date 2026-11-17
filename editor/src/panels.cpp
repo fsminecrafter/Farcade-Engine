@@ -978,6 +978,8 @@ void Editor::settings_graphics() {
         track("gfx:particle_density");
         prop_label("Hidden by meshes");
         toggle_switch("##fxs", &settings.fx.depth_test);
+        prop_label("Audio reverb zones");
+        toggle_switch("##fxr", &settings.fx.reverb);
         faint("Density scales every emitter's rate and max particles; the depth test is used by the FarcadeGL renderer and costs a coarse depth map.");
         ImGui::Dummy(ImVec2(0, 4));
     }

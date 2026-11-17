@@ -220,6 +220,7 @@ int FxBridge::preview_emitters() const { return preview_ ? preview_->sim_count()
 void FxBridge::update_preview(Editor& ed, float dt) {
     if (fx_) return;
     if (!preview_) preview_ = new ParticleBank();
+    preview_->quality = ed.settings.fx;
     preview_time_ += dt;
     FieldVolume fields[kMaxFieldsPerStep];
     int nf = 0;
@@ -249,6 +250,8 @@ void FxBridge::draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const 
     // Particles: the play world's, or the preview of the selected emitters.
     const gfx::ParticleBatch* batches = nullptr;
     int nb = 0;
+    if (fx_) fx_->particles.bank().quality = ed.settings.fx;
+    if (preview_) preview_->quality = ed.settings.fx;
     if (fx_) nb = fx_->particles.collect(eye, &batches);
     else if (preview_) nb = preview_->collect(eye, &batches);
     int budget = 4000;

@@ -218,6 +218,18 @@ ParticleSim* ParticleBank::get(uint64_t key, bool create) {
 }
 
 ParticleSim* ParticleBank::update(uint64_t key, const ParticleEmitter& cfg, const Mat4& world, float dt, const FieldVolume* fields, int field_count, float time) {
+    if (!quality.particles) return nullptr;
+    ParticleEmitter scaled;
+    const ParticleEmitter* use = &cfg;
+    if (quality.density < 0.999f) {
+        scaled = cfg;
+        float d = quality.density < 0.1f ? 0.1f : quality.density;
+        scaled.emission_rate *= d;
+        scaled.burst_count = (int)(scaled.burst_count * d + 0.5f);
+        scaled.max_particles = (int)(scaled.max_particles * d + 0.5f);
+        if (scaled.max_particles < 1) scaled.max_particles = 1;
+        use = &scaled;
+    }
     Entry* en = nullptr;
     for (int i = 0; i < n_; i++)
         if (e_[i].key == key) { en = &e_[i]; break; }
@@ -228,12 +240,12 @@ ParticleSim* ParticleBank::update(uint64_t key, const ParticleEmitter& cfg, cons
     }
     if (!en->init_done) {
         en->init_done = true;
-        if (cfg.play_on_start) en->sim->start(cfg, world);
+        if (cfg.play_on_start) en->sim->start(*use, world);
     }
     en->used = true;
-    en->cfg = cfg;
+    en->cfg = *use;
     en->world = world;
-    en->sim->update(cfg, world, dt, fields, field_count, time);
+    en->sim->update(*use, world, dt, fields, field_count, time);
     return en->sim;
 }
 
@@ -251,6 +263,7 @@ void ParticleBank::end() {
 
 int ParticleBank::collect(const Vec3& eye, const gfx::ParticleBatch** out) {
     int total = 0, nb = 0;
+    if (!quality.particles) { *out = nullptr; return 0; }
     for (int i = 0; i < n_; i++) if (e_[i].used && e_[i].sim->count() > 0) { total += e_[i].sim->count(); nb++; }
     *out = nullptr;
     if (total == 0) return 0;

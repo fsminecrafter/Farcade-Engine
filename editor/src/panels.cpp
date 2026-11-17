@@ -969,6 +969,18 @@ void Editor::settings_graphics() {
         else ImGui::TextDisabled("not started yet: switch the viewport to FarcadeGL");
         ImGui::Dummy(ImVec2(0, 4));
     }
+    if (section_header("Effects", Icon::Sparks)) {
+        prop_label("Particles");
+        toggle_switch("##fxp", &settings.fx.particles);
+        track("gfx:particles");
+        prop_label("Density");
+        ImGui::SliderFloat("##fxd", &settings.fx.density, 0.1f, 1.0f, "%.2f");
+        track("gfx:particle_density");
+        prop_label("Hidden by meshes");
+        toggle_switch("##fxs", &settings.fx.depth_test);
+        faint("Density scales every emitter's rate and max particles; the depth test is used by the FarcadeGL renderer and costs a coarse depth map.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
     if (section_header("Quality", Icon::Sun)) {
         static const char* presets[] = { "Low", "Medium", "High", "Ultra", "Custom" };
         int p = (int)g.preset;

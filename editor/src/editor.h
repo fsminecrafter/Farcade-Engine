@@ -2,6 +2,7 @@
 #pragma once
 
 #include "gfx/graphics_settings.h"
+#include "fx/particles.h"
 
 #include "scene.h"
 #include "widgets.h"
@@ -48,6 +49,7 @@ struct Settings {
     bool view_shadows = true;           // shadows on the ground
 #endif
     bool play_through_camera = true;    // Play shows the scene through the current Camera object
+    FxQuality fx;                       // particle quality: off, density (Settings > Graphics > Effects)
     gfx::GraphicsSettings graphics;     // FarcadeGL quality (GPU tier: graphics card only)
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees

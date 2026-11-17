@@ -156,7 +156,7 @@ struct Renderer::Impl {
     int occluder_cap = 0;
     void draw_particles(const RenderScene& scene, uint32_t* dst, int y0, int rows, bool rgba) {
         if (!scene.particles || scene.particle_batch_count <= 0) return;
-        int n = scene.item_count;
+        int n = scene.particles_depth_test ? scene.item_count : 0;
         if (occluder_cap < n) {
             Occluder* nb = (Occluder*)realloc(occluders, sizeof(Occluder) * (n < 64 ? 64 : n * 2));
             if (nb) { occluders = nb; occluder_cap = n < 64 ? 64 : n * 2; }

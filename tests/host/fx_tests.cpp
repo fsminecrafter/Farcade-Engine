@@ -330,11 +330,30 @@ static void system_tests() {
     w.shutdown();
 }
 
+static void quality_tests() {
+    Mat4 id = Mat4::identity();
+    ParticleEmitter e;
+    e.emission_rate = 100; e.lifetime_min = e.lifetime_max = 10; e.max_particles = 1000;
+    const gfx::ParticleBatch* b = nullptr;
+    ParticleBank full, half, off;
+    half.quality.density = 0.5f;
+    off.quality.particles = false;
+    for (int i = 0; i < 60; i++) {
+        ParticleBank* banks[3] = { &full, &half, &off };
+        for (ParticleBank* k : banks) { k->begin(); k->update(1, e, id, 1.0f / 60.0f, nullptr, 0, 0); k->end(); }
+    }
+    int nf = full.collect(Vec3(0, 0, 5), &b), cf = nf ? b[0].count : 0;
+    int nh = half.collect(Vec3(0, 0, 5), &b), ch = nh ? b[0].count : 0;
+    CHECK(cf >= 97 && ch >= 47 && ch <= 53, "density 0.5 halves the particles (%d vs %d)", ch, cf);
+    CHECK(off.collect(Vec3(0, 0, 5), &b) == 0 && off.sim_count() == 0, "particles off: nothing simulated or drawn");
+}
+
 int main() {
     particle_tests();
     field_tests();
     raster_tests();
     system_tests();
+    quality_tests();
     printf("fx_tests: %d checks, %d failures\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

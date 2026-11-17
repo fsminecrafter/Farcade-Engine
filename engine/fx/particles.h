@@ -21,6 +21,15 @@
 
 namespace fe {
 
+// How much the effects may cost (the editor's Settings > Graphics > Effects;
+// a game sets its own). Everything defaults to full quality; `particles` off
+// draws and simulates nothing.
+struct FxQuality {
+    bool particles = true;              // false: particles are off
+    float density = 1.0f;               // 0.1..1: share of each emitter's rate and max_particles
+    bool depth_test = true;             // renderer: meshes hide particles (off is cheaper: no depth map)
+};
+
 constexpr int kMaxPool = 2000;          // particles per emitter
 constexpr int kMaxFieldsPerStep = 16;   // force fields applied to particles
 
@@ -80,6 +89,7 @@ public:
     // Frame protocol: begin(), update() for each emitter that exists, end()
     // (drops the sims of emitters that were not updated).
     void begin();
+    FxQuality quality;                  // applied by update() and collect()
     // Simulates emitter `key`. A new one starts playing when cfg.play_on_start. Returns its sim.
     ParticleSim* update(uint64_t key, const ParticleEmitter& cfg, const Mat4& world, float dt, const FieldVolume* fields, int field_count, float time);
     void end();

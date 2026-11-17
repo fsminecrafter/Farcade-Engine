@@ -24,6 +24,7 @@ using namespace fe;
 static int g_checks, g_failed;
 #define CHECK(cond, ...) do { g_checks++; if (!(cond)) { g_failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+static float absf_(float x) { return x < 0 ? -x : x; }
 static Editor* E;
 static double g_time;
 
@@ -1493,6 +1494,10 @@ int main() {
         frames(3);
         CHECK(ed.fx()->preview_emitters() == 0, "deselected: the preview stops");
         ed.scene.select_only(em);
+        ObjectId hang = ed.create_object("Hang", MeshKind::Cube, Vec3(5, 6, 0));
+        ed.scene.add_module(hang, ModuleKind::RigidBody3D);
+        ed.scene.add_module(hang, ModuleKind::Joint3D);       // fixed to the world
+        ed.scene.get(hang)->modules.rigidbody3d.mass = 2;
         ed.play();
         frames(40);
         CHECK(ed.fx()->world() != nullptr && ed.scene.get(em)->modules.particles.particle_count > 20 && ed.scene.get(em)->modules.particles.playing,
@@ -1504,6 +1509,10 @@ int main() {
         ed.play_scripts()->run("fe.find('Fire').particles:play()");
         frames(10);
         CHECK(ed.scene.get(em)->modules.particles.playing && ed.scene.get(em)->modules.particles.particle_count > 12, "Lua: play()");
+        CHECK(absf_(ed.scene.get(hang)->position.y - 6.0f) < 0.05f, "a body fixed to the world with Joint 3D hangs in the air (%.2f)", ed.scene.get(hang)->position.y);
+        ed.play_scripts()->run("fe.find('Hang').joint3d:snap()");
+        frames(60);
+        CHECK(ed.scene.get(hang)->modules.joint3d.broken && ed.scene.get(hang)->position.y < 4.0f, "Lua: joint3d:snap() lets it fall (%.2f)", ed.scene.get(hang)->position.y);
         ed.stop();
         frames(2);
         CHECK(ed.fx()->world() == nullptr && ed.scene.get(em)->modules.particles.particle_count == 0, "Stop puts the scene back");

@@ -30,7 +30,16 @@
 // Mesh colliders: the convex hull of the points given to set_mesh (the
 // collider's `center` is not applied to them; scale is). Without points a
 // mesh collider is its `size` box. Concave triangle meshes are not done.
-// Not done: joints, continuous collision (very fast small bodies can pass
+// Joints (the Joint 3D module, scene/modules.h): fixed, hinge (limits, motor),
+// spring and ball socket between two bodies or a body and the world. They are
+// rows of the same solver (a point constraint on the anchors, angular rows,
+// accumulated impulses warm started), solved with the contacts; a joint
+// breaks above its break force (module field `broken`). The entity added
+// with add() must also have a Rigidbody 3D; the connected object is found
+// with World::link_entity and must be added too.
+// Force Fields (the Force Field module): volumes whose force acts on dynamic
+// bodies inside them (add() the field's entity too).
+// Not done: continuous collision (very fast small bodies can pass
 // through thin colliders), sleeping, concave meshes. Broadphase: sweep and
 // prune on x.
 #pragma once
@@ -48,6 +57,7 @@ struct PhysicsEvents {
 
 struct PhysicsStats {
     int bodies = 0;                     // with a rigidbody or character controller
+    int joints = 0;                     // active joints in the last step
     int colliders = 0;
     int contacts = 0;                   // last step
     int steps = 0;                      // fixed steps so far
@@ -61,6 +71,7 @@ public:
     PhysicsWorld& operator=(const PhysicsWorld&) = delete;
 
     struct Body;                        // internals (physics.cpp)
+    struct JointState;
     struct MeshEntry;
     struct Manifold;
 
@@ -70,8 +81,11 @@ public:
     void shutdown();
 
     // Entities to simulate: call for every entity that has a Rigidbody 3D
-    // and/or a Collider 3D (others are ignored). Dead entities drop out.
+    // and/or a Collider 3D, a Joint 3D or a Force Field (others are
+    // ignored). Dead entities drop out.
     void add(Entity e);
+    // Breaks the entity's joint now (the Joint 3D `broken` field says so).
+    bool break_joint(Entity e);
     void remove(Entity e);
 
     // Points of the entity's mesh in object space, for a Mesh collider (copied;
@@ -106,6 +120,9 @@ private:
     int manifold_count_ = 0, manifold_cap_ = 0;
     MeshEntry* meshes_ = nullptr;
     int mesh_count_ = 0, mesh_cap_ = 0;
+    JointState* joints_ = nullptr;
+    int joint_count_ = 0, joint_cap_ = 0;
+    double time_ = 0;                   // simulated seconds (the clock of field turbulence)
     float accumulator_ = 0;
     PhysicsStats stats_;
 };

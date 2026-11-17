@@ -18,10 +18,12 @@
 namespace fe {
 
 class ScriptRuntime;
+class PhysicsWorld;
 
 // What the host gives the systems.
 struct FxHost {
     void* user = nullptr;
+    PhysicsWorld* physics = nullptr;    // for Joint 3D's snap()
 };
 
 class FxWorld {
@@ -33,8 +35,8 @@ public:
 
     bool init(World* world, const FxHost& host);
     void shutdown();
-    // Adds the Lua methods of the modules: particles (emit, play, stop,
-    // clear). Call after the script runtime started.
+    // Adds the Lua methods of the modules: particles (play, stop, clear, emit),
+    // joints (snap). Call after the script runtime started.
     void bind_script(ScriptRuntime* scripts);
 
     ParticleSystem particles;

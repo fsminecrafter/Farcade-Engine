@@ -194,7 +194,11 @@ enum class JointType : uint8_t { Fixed, Hinge, Spring, BallSocket };
 
 // A constraint between this object's rigid body and another (or the world).
 // The anchor is a point on this object; the joint keeps it on the same point
-// of the connected body, as the two sit at the start of Play.
+// of the connected body, as the two sit at the start of Play. A Spring is
+// different: it hangs from the anchor (a point of the connected body, or of
+// the world) to this object's origin, and rest_length is the distance between
+// those two. Hinge angle, motor speed and limits count this body turning
+// about its axis, relative to the connected one.
 struct Joint3D {
     JointType type = JointType::Fixed;
     ObjectLink connected = 0;           // the other body; none = fixed to the world

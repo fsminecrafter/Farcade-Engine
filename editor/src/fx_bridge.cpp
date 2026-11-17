@@ -204,6 +204,7 @@ void FxBridge::start(Editor& ed) {
     fx_ = new FxWorld();
     FxHost host;
     host.user = &ed;
+    host.physics = ed.play_physics();
     if (!fx_->init(w, host)) { delete fx_; fx_ = nullptr; return; }
     if (ed.play_scripts()) fx_->bind_script(ed.play_scripts());
     delete preview_;

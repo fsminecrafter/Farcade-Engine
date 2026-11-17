@@ -24,10 +24,8 @@ public:
     FxBridge(const FxBridge&) = delete;
     FxBridge& operator=(const FxBridge&) = delete;
 
-    // Play: creates the fx systems on the editor's play world (after physics
-    // and scripts), and removes them again.
-    void start(Editor& ed);
-    void stop();
+    // The fx systems of the running Play session (PlaySession::fx), as of the
+    // last frame; null in edit mode.
     FxWorld* world() { return fx_; }
 
     // Edit mode, once per frame: simulates the selected Particle Emitters.
@@ -37,9 +35,6 @@ public:
     // objects' module gizmos. view/proj as drawn, `pos`/`size` the viewport
     // rectangle on screen, `eye` the camera position.
     void draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const Mat4& proj, float x, float y, float w, float h, const Vec3& eye);
-
-    // The Spawner's copy of `source` (FxHost::spawn).
-    static Entity spawn_copy(Editor& ed, Entity source, const Mat4& world);
 
     // Counts of what the last overlay drew (tests).
     int last_particles = 0;

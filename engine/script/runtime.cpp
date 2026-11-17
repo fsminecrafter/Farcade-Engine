@@ -90,6 +90,27 @@ struct ScriptRuntime::Impl {
     Method methods[64];
     int method_count = 0;
 
+    // Input from the host (key_event / mouse_*): fe.key_down("w"), fe.mouse_x() ...
+    struct KeyState { char name[16]; bool down, pressed, released; };
+    KeyState keys[96];
+    int key_count = 0;
+    float mouse_x = 0, mouse_y = 0, mouse_wheel = 0;
+    uint8_t mouse_down = 0, mouse_pressed = 0, mouse_released = 0;
+    KeyState* key_slot(const char* name, bool create) {
+        for (int i = 0; i < key_count; i++)
+            if (strcmp(keys[i].name, name) == 0) return &keys[i];
+        if (!create || key_count == 96 || strlen(name) >= sizeof keys[0].name) return nullptr;
+        KeyState* k = &keys[key_count++];
+        memset(k, 0, sizeof *k);
+        strcpy(k->name, name);
+        return k;
+    }
+    void end_input_frame() {
+        for (int i = 0; i < key_count; i++) keys[i].pressed = keys[i].released = false;
+        mouse_pressed = mouse_released = 0;
+        mouse_wheel = 0;
+    }
+
     // ---- entity hash
     int bucket_of(Entity e) const {
         return (int)(((e * 0x9E3779B97F4A7C15ull) >> 40) & (uint64_t)(nbuckets - 1));
@@ -334,6 +355,7 @@ struct ScriptRuntime::Impl {
         }
         stats.update_ms = (now_seconds() - t) * 1000.0;
         stats.instances = live;
+        end_input_frame();
         lua_gc(L, LUA_GCSTEP, 0);
     }
 
@@ -913,6 +935,34 @@ int f_broadcast(lua_State* L) {
     return 0;
 }
 
+// Input: fe.key_down(name), fe.key_pressed(name), fe.key_released(name) (pressed
+// and released are true for the frame after the event), fe.mouse_x(),
+// fe.mouse_y(), fe.mouse_down(button), fe.mouse_pressed(button), fe.mouse_wheel().
+// Key names: "a".."z", "0".."9", "space", "enter", "escape", "tab", "backspace",
+// "left", "right", "up", "down", "shift", "ctrl", "alt", "f1".."f12"; buttons 0 left, 1 right, 2 middle.
+int key_query(lua_State* L, int which) {
+    Impl* I = impl_of(L);
+    Impl::KeyState* k = I->key_slot(luaL_checkstring(L, 1), false);
+    lua_pushboolean(L, k && (which == 0 ? k->down : which == 1 ? k->pressed : k->released));
+    return 1;
+}
+int f_key_down(lua_State* L) { return key_query(L, 0); }
+int f_key_pressed(lua_State* L) { return key_query(L, 1); }
+int f_key_released(lua_State* L) { return key_query(L, 2); }
+int f_mouse_x(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_x); return 1; }
+int f_mouse_y(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_y); return 1; }
+int f_mouse_wheel(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_wheel); return 1; }
+int f_mouse_down(lua_State* L) {
+    int b = (int)luaL_optinteger(L, 1, 0);
+    lua_pushboolean(L, b >= 0 && b < 8 && (impl_of(L)->mouse_down >> b & 1));
+    return 1;
+}
+int f_mouse_pressed(lua_State* L) {
+    int b = (int)luaL_optinteger(L, 1, 0);
+    lua_pushboolean(L, b >= 0 && b < 8 && (impl_of(L)->mouse_pressed >> b & 1));
+    return 1;
+}
+
 int f_time(lua_State* L) {
     Impl* I = impl_of(L);
     lua_pushnumber(L, now_seconds() - I->t0);
@@ -1061,7 +1111,10 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     lua_newtable(L);                                    // fe
     static const luaL_Reg fe_funcs[] = {
         { "vec3", f_vec3 }, { "dot", f_dot }, { "cross", f_cross }, { "find", f_find }, { "current", f_current },
-        { "broadcast", f_broadcast }, { "time", f_time }, { nullptr, nullptr } };
+        { "broadcast", f_broadcast }, { "time", f_time },
+        { "key_down", f_key_down }, { "key_pressed", f_key_pressed }, { "key_released", f_key_released },
+        { "mouse_x", f_mouse_x }, { "mouse_y", f_mouse_y }, { "mouse_wheel", f_mouse_wheel },
+        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { nullptr, nullptr } };
     luaL_setfuncs(L, fe_funcs, 0);
     set_funcs_with_upvalue(L, "log", f_print, (int)ScriptLogLevel::Info);
     set_funcs_with_upvalue(L, "warn", f_print, (int)ScriptLogLevel::Warning);
@@ -1225,6 +1278,32 @@ void ScriptRuntime::remove_instances(Entity e) {
     I->remove_entity(e);
     I->stats.instances = I->live;
     if (I->depth == 0) I->flush();
+}
+
+void ScriptRuntime::key_event(const char* name, bool down) {
+    if (!impl_ || !name) return;
+    Impl::KeyState* k = impl_->key_slot(name, true);
+    if (!k || k->down == down) return;
+    k->down = down;
+    (down ? k->pressed : k->released) = true;
+}
+
+void ScriptRuntime::mouse_move(float x, float y) {
+    if (!impl_) return;
+    impl_->mouse_x = x;
+    impl_->mouse_y = y;
+}
+
+void ScriptRuntime::mouse_button(int button, bool down) {
+    if (!impl_ || button < 0 || button > 7) return;
+    uint8_t bit = (uint8_t)(1u << button);
+    if (((impl_->mouse_down & bit) != 0) == down) return;
+    if (down) { impl_->mouse_down |= bit; impl_->mouse_pressed |= bit; }
+    else { impl_->mouse_down &= (uint8_t)~bit; impl_->mouse_released |= bit; }
+}
+
+void ScriptRuntime::mouse_wheel(float dy) {
+    if (impl_) impl_->mouse_wheel += dy;
 }
 
 void ScriptRuntime::send(Entity target, const char* event) {

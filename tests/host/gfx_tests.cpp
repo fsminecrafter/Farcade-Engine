@@ -194,6 +194,24 @@ void test_device() {
     CHECK_EQ(buf[0] & 0xFFFFFF, 0x336699);
     CHECK_EQ(buf[32 * 24 - 1] & 0xFFFFFF, 0x336699);
 
+    // ABI 4 on the host device: scissored clears only touch the rectangle.
+    CHECK(fglHasScissor());
+    CHECK(fglHasMipmaps());
+    CHECK(info.max_texture_units == 16u);
+    fglEnable(gl, FGL_SCISSOR_TEST);
+    fglScissor(gl, 4, 2, 8, 6);
+    fglClearColor(gl, 1.0f, 0.0f, 0.0f);
+    fglClear(gl, FGL_COLOR_BUFFER_BIT);
+    fglDisable(gl, FGL_SCISSOR_TEST);
+    CHECK(fglSubmit(gl) == 0);
+    CHECK(fglReadPixels(gl, buf, 32 * 4) == 0);
+    CHECK_EQ(buf[2 * 32 + 4] & 0xFFFFFF, 0xFF0000);         // first pixel inside
+    CHECK_EQ(buf[7 * 32 + 11] & 0xFFFFFF, 0xFF0000);        // last pixel inside
+    CHECK_EQ(buf[2 * 32 + 12] & 0xFFFFFF, 0x336699);        // right of it
+    CHECK_EQ(buf[8 * 32 + 4] & 0xFFFFFF, 0x336699);         // below it
+    CHECK_EQ(buf[0] & 0xFFFFFF, 0x336699);
+    fglClearColor(gl, 0.2f, 0.4f, 0.6f);
+
     // A vertex-colored triangle with a built-in program (CCW, covers the center).
     FGLVertex tri[3] = {
         { -0.8f, -0.8f, 0, 0, 0, 1, 1, 0, 0, 1 },

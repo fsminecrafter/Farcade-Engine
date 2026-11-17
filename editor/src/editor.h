@@ -5,6 +5,8 @@
 #include "fx/particles.h"
 
 #include "scene.h"
+#include "play_session.h"
+#include "project.h"
 #include "widgets.h"
 #include "gfx/renderer.h"
 #include "swraster.h"
@@ -136,6 +138,19 @@ public:
     void history_capture();                     // records the scene when it changed since the last snapshot
     void history_reset();                       // forgets undo/redo; the scene now counts as saved
 
+    // ---- project settings (project.fe, project.h) and export (export.h)
+    ProjectSettings project;                    // read from project_dir/project.fe at start (defaults when there is none)
+    bool load_project();                        // false when there is no project.fe (the defaults stay)
+    bool save_project();
+    void request_project_settings() { want_project_settings_ = true; }
+    void request_export();                      // File > Export game...
+    char export_name[64] = {};                  // the dialog's fields
+    char export_scene[256] = {};
+    char export_out[256] = {};
+    char export_status[256] = {};               // the last export's result line
+    char export_run_path[512] = {};             // program and package of the last export, for "Run"
+    char export_pak_path[512] = {};
+
     // `path` made full: relative paths are joined to the project.
     void project_path(const char* path, char* out, size_t cap) const;
 
@@ -175,10 +190,10 @@ public:
     // per object, with its transform, modules and mesh. Systems (physics,
     // scripts, audio) plug into it; each frame the transforms come back to
     // the scene so the viewport shows them.
-    World* play_world() { return world_; }
-    PhysicsWorld* play_physics() { return physics_; }
-    ScriptRuntime* play_scripts() { return scripts_; }
-    AudioSystem* play_audio() { return audio_; }
+    World* play_world() { return session_.world(); }
+    PhysicsWorld* play_physics() { return session_.physics(); }
+    ScriptRuntime* play_scripts() { return session_.scripts(); }
+    AudioSystem* play_audio() { return session_.audio(); }
     AudioDevice* audio_device() { return audio_device_; }
     // The effects bridge (fx_bridge.h): fx systems while playing, previews and overlays in the viewport.
     FxBridge* fx();
@@ -257,15 +272,8 @@ private:
     FxBridge* fx_bridge_ = nullptr;
     int collider_drag_ = -1;                    // the handle being dragged
     ObjectId collider_drag_object_ = kNoObject;
-    World* world_ = nullptr;
-    PhysicsWorld* physics_ = nullptr;
-    ScriptRuntime* scripts_ = nullptr;
+    PlaySession session_;                       // the running scene (play_session.h), shared with the player
     AudioDevice* audio_device_ = nullptr;       // opened at the first Play, kept
-    AudioSystem* audio_ = nullptr;
-    ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
-    uint64_t* world_entities_ = nullptr;
-    int world_count_ = 0;
-    int script_count_ = 0;
     void build_world();
     void step_world(float dt);
     void free_world();
@@ -299,6 +307,9 @@ private:
     Scene* play_backup_ = nullptr;
     bool want_save_as_ = false;
     void save_as_popup();
+    bool want_project_settings_ = false, want_export_ = false;
+    void project_settings_popup();
+    void export_popup();
     // history
     char* undo_[kMaxUndo] = {};
     char* redo_[kMaxUndo] = {};

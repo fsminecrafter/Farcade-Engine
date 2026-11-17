@@ -1401,6 +1401,36 @@ int main() {
         frames(2);
     }
 
+    // ---- importing a model
+    {
+        ed.new_scene();
+        frames(2);
+        const char* obj = "o quad\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\nf 2//1 4//1 3//1\n";
+        platform::make_dir("build/host/test-project/models");
+        platform::write_file("build/host/test-project/models/quad.obj", obj, strlen(obj));
+        int before = ed.scene.count();
+        CHECK(click_ui("menubar:Create"), "Create menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Import model..."), "Create > Import model... opens a prompt");
+        frames(2);
+        for (const char* c = "models/quad.obj"; *c; c++) {
+            platform::Event e;
+            e.type = platform::EventType::Text;
+            e.codepoint = (uint32_t)*c;
+            platform::headless_push(e);
+        }
+        frames(2);
+        CHECK(click_ui("import:go"), "the prompt's Import button");
+        frames(2);
+        CHECK(ed.scene.count() == before + 1, "the model is in the scene");
+        Object* mo = ed.scene.get(ed.scene.active());
+        CHECK(mo && mo->mesh == MeshKind::Model && strstr(mo->model_path, "quad.mof"), "the object uses the converted .mof (%s)", mo ? mo->model_path : "");
+        CHECK(mo && Scene::mesh_for(*mo).vertex_count == 6 && Scene::model_for(*mo), "the real mesh is used, not the cube");
+        CHECK(platform::file_exists("build/host/test-project/models/quad.mof"), "quad.mof was written next to the source");
+        ed.new_scene();
+        frames(2);
+    }
+
     // ---- undo and redo
     {
         ed.new_scene();

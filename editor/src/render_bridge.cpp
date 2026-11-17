@@ -1,4 +1,5 @@
 #include "render_bridge.h"
+#include "model_cache.h"
 
 #include <stdlib.h>
 
@@ -17,8 +18,12 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
     scene.camera.near_plane = near_plane;
     scene.camera.far_plane = far_plane;
     int n = sc.count();
-    if (item_cap < n) {
-        int cap = n < 64 ? 64 : n * 2;
+    // A model object is one draw item per part (material).
+    int need = n;
+    for (int i = 0; i < n; i++)
+        if (const Model* mod = Scene::model_for(sc.at(i))) need += mod->part_count;
+    if (item_cap < need || light_cap < n) {
+        int cap = need < 64 ? 64 : need * 2;
         items = (gfx::DrawItem*)realloc(items, sizeof(gfx::DrawItem) * cap);
         lights = (gfx::RenderLight*)realloc(lights, sizeof(gfx::RenderLight) * cap);
         item_cap = light_cap = cap;
@@ -28,7 +33,28 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
         Object& o = sc.at(i);
         if (!sc.visible_in_tree(o)) continue;
         Mat4 m = sc.world_matrix(o);
-        if (o.kind == ObjectKind::Mesh) {
+        if (const Model* mod = Scene::model_for(o)) {
+            // The object's color tints the material colors (the default grey 0.8 is neutral).
+            Vec3 tint(fminf_(o.color.x * 1.25f, 1.0f), fminf_(o.color.y * 1.25f, 1.0f), fminf_(o.color.z * 1.25f, 1.0f));
+            for (int pi = 0; pi < mod->part_count; pi++) {
+                const ModelPart& pt = mod->parts[pi];
+                gfx::DrawItem& d = items[ni++];
+                d = gfx::DrawItem();
+                d.mesh.positions = pt.positions;
+                d.mesh.normals = pt.normals;
+                d.mesh.uvs = pt.uvs;
+                d.mesh.vertex_count = pt.vertex_count;
+                d.mesh.key = (uint64_t)(uintptr_t)pt.positions;
+                d.model = m;
+                d.texture_path = o.texture_path[0] ? o.texture_path : (pt.texture[0] ? pt.texture : nullptr);
+                d.shader_path = o.shader_path;
+                d.color = Vec3(pt.color.x * tint.x, pt.color.y * tint.y, pt.color.z * tint.z);
+                d.roughness = o.roughness;
+                d.metallic = o.metallic;
+                d.unlit = o.unlit;
+                d.cast_shadows = o.cast_shadows;
+            }
+        } else if (o.kind == ObjectKind::Mesh) {
             const MeshData& md = Scene::mesh_for(o);
             gfx::DrawItem& d = items[ni++];
             d = gfx::DrawItem();

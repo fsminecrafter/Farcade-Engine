@@ -1,6 +1,7 @@
 #include "export.h"
 
 #include "core/pak.h"
+#include "mpkg.h"
 #include "platform/platform.h"
 #include "scene.h"
 #include "scene_io.h"
@@ -390,6 +391,32 @@ bool export_game(const ExportOptions& opt, ExportReport* report) {
         if (bundled) { free(pdata); pdata = bundled; psize = bsize; }
     }
     ok = platform::write_file(rep->run_path, pdata, psize);
+    if (ok && opt.mpkg) {
+        // Installable package: the program in programs/, the package and icon in games/<Name>/.
+        MpkgWriter mp;
+        char nm[300];
+        mp.add_dir("programs");
+        mp.add_dir("games");
+        snprintf(nm, sizeof nm, "games/%s", file);
+        mp.add_dir(nm);
+        snprintf(nm, sizeof nm, "programs/%s.run", file);
+        bool good = mp.add_file(nm, pdata, psize);
+        size_t pk_n = 0;
+        void* pk = platform::read_file(rep->pak_path, &pk_n);
+        snprintf(nm, sizeof nm, "games/%s/%s.fepak", file, file);
+        good = good && pk && mp.add_file(nm, pk, pk_n);
+        free(pk);
+        if (icon) {
+            snprintf(nm, sizeof nm, "games/%s/icon%s", file, path_extension_of(ps.icon));
+            mp.add_file(nm, icon, icon_size);
+        }
+        size_t mn = 0;
+        uint8_t* mimg = good ? mp.build(&mn) : nullptr;
+        snprintf(rep->mpkg_path, sizeof rep->mpkg_path, "%s/%s.mpkg", opt.out_dir, file);
+        if (!mimg || !platform::write_file(rep->mpkg_path, mimg, mn)) { rep->mpkg_path[0] = 0; say(c, 1, "could not write the .mpkg"); }
+        else say(c, 0, "wrote %s (%u bytes)", rep->mpkg_path, (unsigned)mn);
+        free(mimg);
+    }
     free(pdata);
     if (!ok) { free(icon); return fail(c, "cannot write %s%s", rep->run_path); }
 #if FE_HOST
@@ -415,7 +442,7 @@ void cli_log(int level, const char* line, void*) {
 
 int export_cli(int argc, char** argv, int i) {
     if (i + 2 >= argc) {
-        printf("FE EXPORT FAIL: usage: --export <project-or-scene> <outdir> [--name N] [--scene S] [--player P] [--run [FRAMES]]\n");
+        printf("FE EXPORT FAIL: usage: --export <project-or-scene> <outdir> [--name N] [--scene S] [--player P] [--mpkg] [--run [FRAMES]]\n");
         return 2;
     }
     const char* in = argv[i + 1];
@@ -430,6 +457,7 @@ int export_cli(int argc, char** argv, int i) {
         else if (!strcmp(argv[k], "--scene") && k + 1 < argc) opt.entry_scene = argv[++k];
         else if (!strcmp(argv[k], "--player") && k + 1 < argc) opt.player_path = argv[++k];
         else if (!strcmp(argv[k], "--entry-only")) opt.all_scenes = false;
+        else if (!strcmp(argv[k], "--mpkg")) opt.mpkg = true;
         else if (!strcmp(argv[k], "--run")) {
             run = true;
             if (k + 1 < argc && argv[k + 1][0] >= '0' && argv[k + 1][0] <= '9') run_frames = atol(argv[++k]);

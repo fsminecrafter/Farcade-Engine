@@ -1,6 +1,7 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
 #include "icons.h"
+#include "model_import.h"
 #include "widgets.h"
 #include "platform/platform.h"
 
@@ -1262,6 +1263,7 @@ void Editor::panel_files() {
                 if (!platform::reveal_in_file_manager(full)) log(LogLevel::Error, "Could not open the file manager");
             }
             if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
+            if (!e.is_dir && path_is_importable_model(e.name) && menu_item("Import as model")) import_model(full);
             if (menu_item("Copy path")) ImGui::SetClipboardText(full);
             ImGui::EndPopup();
         }

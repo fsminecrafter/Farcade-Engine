@@ -338,6 +338,46 @@ static void test_export_and_run() {
         free(orig);
     }
 
+    // ---- the installable .mpkg (format of Minimal-OS's pkgformat.h)
+    {
+        ExportOptions mo = opt;
+        char mout[400];
+        snprintf(mout, sizeof mout, "%s/mp", g_tmp);
+        mo.out_dir = mout;
+        mo.mpkg = true;
+        ExportReport mr;
+        CHECK(export_game(mo, &mr) && mr.mpkg_path[0]);
+        size_t n = 0;
+        uint8_t* pk = (uint8_t*)platform::read_file(mr.mpkg_path, &n);
+        CHECK(pk && n > 16 && memcmp(pk, "MPKG0001", 8) == 0);
+        if (pk && n > 16) {
+            auto rd = [&](size_t off) { return (uint32_t)pk[off] | (uint32_t)pk[off + 1] << 8 | (uint32_t)pk[off + 2] << 16 | (uint32_t)pk[off + 3] << 24; };
+            CHECK(rd(8) == 1);
+            uint32_t count = rd(12);
+            bool run = false, pak = false, icon = false, dirs = false;
+            for (uint32_t i = 0; i < count; i++) {
+                size_t e = 16 + (size_t)i * 148;
+                const char* name = (const char*)pk + e;
+                uint32_t flags = rd(e + 128), method = rd(e + 132), usize = rd(e + 136), csize = rd(e + 140), off = rd(e + 144);
+                if (flags & 1) { dirs |= !strcmp(name, "games/Demo_Game"); continue; }
+                CHECK(method == 0 && usize == csize && off + (size_t)csize <= n);
+                if (!strcmp(name, "programs/Demo_Game.run")) {
+                    size_t rn = 0;
+                    void* rd_run = platform::read_file(mr.run_path, &rn);
+                    run = rd_run && rn == usize && memcmp(rd_run, pk + off, rn) == 0;
+                    free(rd_run);
+                } else if (!strcmp(name, "games/Demo_Game/Demo_Game.fepak")) {
+                    size_t pn = 0;
+                    void* pd = platform::read_file(mr.pak_path, &pn);
+                    pak = pd && pn == usize && memcmp(pd, pk + off, pn) == 0;
+                    free(pd);
+                } else if (!strcmp(name, "games/Demo_Game/icon.bmp")) icon = true;
+            }
+            CHECK(run && pak && icon && dirs);
+        }
+        free(pk);
+    }
+
     // ---- a missing file is reported, not fatal
     put_str("scenes/broken.fscene",
             "farcade-scene 1\nnext_id 2\nobject 1\n  name \"X\"\n  kind mesh\n  mesh cube\n  script \"scripts/gone.lua\"\n  end\nend\n");
@@ -377,6 +417,7 @@ static void test_export_and_run() {
         CHECK(strstr(run20, "FE GAME spin 15") != nullptr);                    // on_update ran 15 times
         CHECK(strstr(run20, "FE PLAYER DONE frames=20") != nullptr);
         CHECK(strstr(run20, "scripts=1") != nullptr);
+        CHECK(strstr(run20, "models=1") != nullptr);                            // the .mof from the package was loaded (drawn as a model)
         CHECK(strstr(run20, "graphics settings from graphics.cfg (preset 0)") != nullptr);   // applied at start
         CHECK(strstr(run20, "FE GAME other") == nullptr);                      // the second scene is not the entry scene
         if (!strstr(run20, "FE PLAYER DONE")) fprintf(stderr, "%s\n", run20);

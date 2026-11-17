@@ -16,6 +16,9 @@ const char* const kRes[] = { "512", "1024", "2048", "4096", nullptr };
 const char* const kAo[] = { "off", "ssao", nullptr };
 const char* const kAa[] = { "off", "fxaa", nullptr };
 const char* const kBloom[] = { "off", "simple", "chain", nullptr };
+const char* const kGi[] = { "hemisphere", "probes", nullptr };
+const char* const kGiDensity[] = { "coarse", "normal", "fine", nullptr };
+const char* const kGiUpdate[] = { "slow", "normal", "fast", nullptr };
 
 const int kResValues[4] = { 512, 1024, 2048, 4096 };
 
@@ -73,6 +76,12 @@ const Prop kProps[] = {
     IP("bloom", GraphicsPropKind::Choice, 0, 0, kBloom, "Bloom: off, the simple 4 level glow, or the 5 level chain",
        [](const GS& s) { return !s.bloom ? 0 : (s.bloom_mode == BloomMode::Simple ? 1 : 2); },
        [](GS& s, int v) { s.bloom = v != 0; if (v == 1) s.bloom_mode = BloomMode::Simple; else if (v == 2) s.bloom_mode = BloomMode::Chain; }),
+    IP("gi", GraphicsPropKind::Choice, 0, 0, kGi, "Ambient light: the hemisphere colours, or probe GI (voxel bounce light, a few CPU ms)",
+       [](const GS& s) { return (int)s.gi_mode; }, [](GS& s, int v) { s.gi_mode = (GiMode)v; }),
+    IP("gi_density", GraphicsPropKind::Choice, 0, 0, kGiDensity, "Probe spacing: 2 / 1 / 0.5 m",
+       [](const GS& s) { return (int)s.gi_density; }, [](GS& s, int v) { s.gi_density = (GiDensity)v; }),
+    IP("gi_update", GraphicsPropKind::Choice, 0, 0, kGiUpdate, "Share of the probes refreshed a frame: 1/32, 1/16, 1/8",
+       [](const GS& s) { return (int)s.gi_update; }, [](GS& s, int v) { s.gi_update = (GiUpdate)v; }),
     BP("pbr", "GGX shading, else Blinn-Phong", pbr),
     BP("allow_gpu_effects_on_cpu", "Run the GPU tier on the CPU backend (slow)", allow_gpu_effects_on_cpu),
 };
@@ -247,6 +256,19 @@ int graphics_settings_from_text(GraphicsSettings* s, const char* text, size_t si
         s->preset = GraphicsPreset::Custom;     // no preset line: the values stand on their own
     }
     return ignored;
+}
+
+char* graphics_settings_to_text(const GraphicsSettings& s, size_t* size) {
+    size_t need = graphics_settings_to_text(s, nullptr, 0);
+    char* out = (char*)malloc(need + 1);
+    if (!out) { if (size) *size = 0; return nullptr; }
+    graphics_settings_to_text(s, out, need + 1);
+    if (size) *size = need;
+    return out;
+}
+
+bool graphics_settings_from_text(const char* text, size_t size, GraphicsSettings* out) {
+    return graphics_settings_from_text(out, text, size) == 0;
 }
 
 }  // namespace fe::gfx

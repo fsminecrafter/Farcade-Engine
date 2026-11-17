@@ -103,6 +103,7 @@ struct RendererStats {
     float render_scale = 1.0f;
     int internal_width = 0, internal_height = 0;
     float exposure_ev = 0, meter_log2 = 0;
+    double gi_ms = 0;                       // the probe GI's CPU update (gi.h)
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

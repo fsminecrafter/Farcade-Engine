@@ -31,13 +31,19 @@ constexpr size_t kSourceBytes = 12 * 1024;
 //                   u_zen (rgb, w 1 = flat color), u_hor, u_grd, u_sun (xyz toward
 //                   the sun, w cos of the disc radius, > 1 = no sun), u_suncol
 
+// The probe GI lookup (gi.h) both lit shaders can include: declares sampler u_gi, u_gi0 (window origin xyz,
+// 1 / spacing), u_gi1 (probe counts xyz, intensity) and `vec3 gi_amb(vec3 N, vec3 P)`, the ambient colour
+// from the probe texture (4 coefficient tiles, linear filtering inside a tile, a manual lerp between two
+// slices: 8 taps). Appends to `out`; returns the length.
+size_t emit_gi_lookup(char* out, size_t cap);
+
 // Lit meshes with `directional`, `point` and `spot` lights.
 // `post.draft` shaders are for images that are replaced at once (camera drags): no
 // specular highlight, no sun disc or halo, no contrast, saturation or vignette,
 // and a two-term square root instead of pow() for the sRGB curve. They cost
 // about a third of the full ones per pixel.
 void lit_vertex(char* out, size_t cap);
-void lit_fragment(char* out, size_t cap, int directional, int point, int spot, const PostKey& post = PostKey());
+void lit_fragment(char* out, size_t cap, int directional, int point, int spot, const PostKey& post = PostKey(), bool gi = false);
 // Flat albedo (still tonemapped and graded).
 void unlit_vertex(char* out, size_t cap);
 void unlit_fragment(char* out, size_t cap, const PostKey& post = PostKey());

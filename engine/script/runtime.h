@@ -90,9 +90,9 @@ public:
     bool add_module_method(ModuleKind kind, const char* name, ModuleMethod fn, void* user);
 
     // The graphics settings scripts see as fe.graphics (lua_graphics.h): `settings` is the host's live struct,
-    // `changed` is set to true whenever a script changes it (the host then calls Renderer::set_settings
+    // `changed` (optional) is set to true whenever a script changes it (the host then calls Renderer::set_settings
     // before the next frame). Null settings: fe.graphics raises errors.
-    void set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed);
+    void set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed = nullptr);
 
     // Runs a line of Lua in the shared environment (a console / REPL; tests).
     bool run(const char* code);

@@ -883,6 +883,26 @@ void Editor::settings_graphics() {
             prop_label("  Lowest scale");
             ImGui::SliderFloat("##dynmin", &g.min_render_scale, 0.25f, 1.0f, "%.2f");
         }
+        {
+            using namespace gfx;
+            static const char* gi_modes[] = { "Hemisphere ambient", "Probe GI" };
+            static const char* gi_density[] = { "Coarse (2 m)", "Normal (1 m)", "Fine (0.5 m)" };
+            static const char* gi_update[] = { "Slow", "Normal", "Fast" };
+            int gm = (int)g.gi_mode, gd = (int)g.gi_density, gu = (int)g.gi_update;
+            bool gchanged = false;
+            prop_label("Global illumination");
+            if (ImGui::Combo("##gimode", &gm, gi_modes, 2)) { g.gi_mode = (GiMode)gm; gchanged = true; }
+            track("gfx:gi");
+            if (g.gi_mode == GiMode::Probes) {
+                prop_label("  Probe density");
+                if (ImGui::Combo("##gidens", &gd, gi_density, 3)) { g.gi_density = (GiDensity)gd; gchanged = true; }
+                prop_label("  Update rate");
+                if (ImGui::Combo("##giupd", &gu, gi_update, 3)) { g.gi_update = (GiUpdate)gu; gchanged = true; }
+                faint("Voxels built from the scene and light probes updated on the CPU: bounce light and colour "
+                      "bleeding on every feature level, a few ms of one core. Strength and bounce are on the Sky Light.");
+            }
+            if (gchanged) g.preset = GraphicsPreset::Custom;
+        }
         faint("Fog is set on the Sky object.");
         ImGui::Dummy(ImVec2(0, 4));
     }

@@ -967,6 +967,7 @@ struct GpuTier::Impl {
             key.nss = ls.nss;
             key.local_soft = (ls.nps + ls.nss) > 0 && gs.soft_shadows;
             key.post = pf->key;
+            key.gi = host.gi_on;
             lit = lit_variant(key);
             if (!lit) return false;
         }
@@ -995,6 +996,10 @@ struct GpuTier::Impl {
             u4(sh, "u_gnd", sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
             u4(sh, "u_fog", fogc.x, fogc.y, fogc.z, density);
             if (!upload_frame_data(ls, cs)) return false;
+            if (host.gi_on) {
+                u4(sh, "u_gi0", host.gi0[0], host.gi0[1], host.gi0[2], host.gi0[3]);
+                u4(sh, "u_gi1", host.gi1[0], host.gi1[1], host.gi1[2], host.gi1[3]);
+            }
         }
 
         set_target(dst.color, main_depth);
@@ -1002,6 +1007,7 @@ struct GpuTier::Impl {
             if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
             if (use_ao) bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             if (ls.nps + ls.nss > 0) bind_tex(lit->sh, "u_atlas", atlas, FGL_TEXTURE_CLAMP);
+            if (host.gi_on) fglUniformTexture(gl, lit->sh, fglUniformLocation(lit->sh, "u_gi"), host.gi_texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         }
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);

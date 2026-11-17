@@ -65,6 +65,37 @@ const char* const kPointHead =
 
 }  // namespace
 
+size_t emit_gi_lookup(char* out, size_t cap) {
+    Text t(out, cap);
+    // Few registers (the GPU tier's lit shader is close to the limit): b = (x, y0, row of y0, fy), r, s, inv.
+    t.add("uniform sampler2D u_gi;\n"
+          "uniform vec4 u_gi0;\n"
+          "uniform vec4 u_gi1;\n"
+          "vec3 gi_amb(vec3 N, vec3 P) {\n"
+          "    vec4 b = vec4(clamp((P - u_gi0.xyz) * u_gi0.w, vec3(0.5), u_gi1.xyz - 0.5), 0.0);\n"
+          "    b.w = b.y - 0.5;\n"
+          "    b.y = min(floor(b.w), u_gi1.y - 2.0);\n"
+          "    b.w = b.w - b.y;\n"
+          "    b.z = b.z + b.y * u_gi1.z;\n"
+          "    vec2 inv = vec2(0.25 / u_gi1.x, 1.0 / (u_gi1.y * u_gi1.z));\n"
+          "    vec3 s = mix(texture(u_gi, vec2(b.x, b.z) * inv).rgb, texture(u_gi, vec2(b.x, b.z + u_gi1.z) * inv).rgb, b.w);\n"
+          "    vec3 r = s * s * 4.0;\n");
+    static const char* const comp[3] = { "x", "y", "z" };
+    for (int c = 1; c <= 3; c++) {
+        t.add("    s = mix(texture(u_gi, vec2(b.x + ");
+        t.add(c == 1 ? "u_gi1.x" : (c == 2 ? "2.0 * u_gi1.x" : "3.0 * u_gi1.x"));
+        t.add(", b.z) * inv).rgb, texture(u_gi, vec2(b.x + ");
+        t.add(c == 1 ? "u_gi1.x" : (c == 2 ? "2.0 * u_gi1.x" : "3.0 * u_gi1.x"));
+        t.add(", b.z + u_gi1.z) * inv).rgb, b.w) * 2.0 - 1.0;\n"
+              "    r += s * abs(s) * (2.0 * N.");
+        t.add(comp[c - 1]);
+        t.add(");\n");
+    }
+    t.add("    return max(r, vec3(0.0)) * u_gi1.w;\n"
+          "}\n");
+    return t.n;
+}
+
 void lit_vertex(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform mat4 fgl_ModelViewProjection;\n"
@@ -88,9 +119,10 @@ void lit_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& pk) {
+void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& pk, bool gi_on) {
     Text t(out, cap);
     const bool draft = pk.draft;
+    const bool gi = gi_on && !draft;       // the draft shaders keep the hemisphere
     int total = nd + np + ns;
     t.add("uniform vec4 u_mat;\n"
           "uniform vec4 u_cam;\n"
@@ -108,6 +140,11 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& 
           "varying vec3 v_alb;\n"
           "varying vec2 v_uv;\n");
     t.add(kSrgb2Lin);
+    if (gi) {
+        char buf[2048];
+        emit_gi_lookup(buf, sizeof buf);
+        t.add(buf);
+    }
     add_post(t, pk);
     const char* tail = draft ? kLightTailDraft : kLightTail;
     t.add("void main() {\n"
@@ -137,8 +174,8 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& 
         t.add("    att = att * smoothstep(u_l3[i].x, u_l3[i].y, dot(-L, u_l1[i].xyz));\n");
         t.add(tail);
     }
-    t.add("    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-          "    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
+    t.add(gi ? "    vec3 amb = gi_amb(N, v_pos);\n" : "    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+    t.add("    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
           "    vec3 lit = albedo * (amb + diff);\n");
     t.add(draft ? "    gl_FragColor = vec4(post(lit), 1.0);\n}\n" : "    gl_FragColor = vec4(post(lit + spec), 1.0);\n}\n");
 }

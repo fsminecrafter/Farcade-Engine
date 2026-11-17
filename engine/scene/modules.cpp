@@ -102,6 +102,8 @@ const FieldInfo kSkyLight[] = {
     FE_F(SkyLight, sky_color, "Sky color", Color, 0, 0, nullptr),
     FE_F(SkyLight, ground_color, "Ground color", Color, 0, 0, nullptr),
     FE_F(SkyLight, intensity, "Intensity", Float, 0, 10, nullptr),
+    FE_F(SkyLight, gi_intensity, "GI intensity", Float, 0, 2, nullptr),
+    FE_F(SkyLight, gi_bounce, "GI bounce", Float, 0, 1, nullptr),
 };
 
 const FieldInfo kSky[] = {

@@ -177,6 +177,39 @@ A change is written to the host's `GraphicsSettings` and sets the host's `change
 `ScriptRuntime::set_graphics_settings(&settings, &changed)` (the editor does it for Play and restores the settings at
 Stop); without it `fe.graphics` raises "the graphics settings are not available here".
 
+## Probe GI (FL0 hybrid GI, CPU side)
+
+`gi` = `probes` (Settings > Graphics > Global illumination; `hemisphere` is the old ambient, free, and the
+default of Low and Medium) replaces the diffuse hemisphere ambient with light the scene itself bounced.
+It is CPU work, not a pass, so it runs on every feature level (`engine/gfx/gi.h`):
+
+1. **Voxels.** A 48^3 grid of 0.5 m voxels around the camera is built from the draw items by conservative
+   triangle / box voxelization (every voxel a triangle touches; albedo, normal, emissive = unlit items).
+   It is rebuilt when the scene changed (at most every 100 ms, so moving objects re-splat at 10 Hz) or when the
+   camera leaves the middle third of the grid (no toroidal scrolling yet).
+2. **Light injection.** A quarter of the surface voxels a frame get the sun (with a voxel DDA shadow ray of at
+   most 64 steps), up to 8 local lights (no shadow), emissive, and the irradiance the probes had last frame
+   times `SkyLight.gi_bounce`: multi-bounce, one frame late.
+3. **Probes.** A window of 16 x 8 x 16 L1 SH probes at 2 / 1 / 0.5 m (`gi_density`) around the camera, toroidal
+   (a probe keeps its world cell while the window slides; new cells start from the hemisphere). 1/32, 1/16 or
+   1/8 of them (`gi_update`) shoot 32 rays through the voxels each frame, never-seen probes first, blended with
+   hysteresis 0.93. A probe that moved out of geometry (it tries its 6 neighbours) and one whose rays mostly hit
+   back faces is marked invalid and keeps the hemisphere.
+4. **Shaders.** The probes become a 64 x 128 ARGB8 texture (4 coefficient tiles; the DC term as sqrt(v / 4), the
+   directional terms signed), sampled with 8 linear taps (hardware filtering inside a tile, a manual lerp
+   between two slices) in the base and the GPU tier's lit shader. `SkyLight.gi_intensity` scales it. Specular
+   ambient (PBR) keeps the hemisphere.
+
+The probes store diffuse irradiance, so a plain sky reads a little less contrasty than the hemisphere
+(`(s + g) / 2 +- (s - g) / 3` instead of `(s + g) / 2 +- (s - g) / 2`). Tests (`gfx_stack_tests`): the voxelizer is
+deterministic and has no gaps, the probes show colour bleeding next to a red wall, converge from a wrong state,
+reproduce an open sky, invalidate probes inside a closed box, and both tiers read them; switching back to the
+hemisphere gives the old pixels. Measured on the host (shared box): a full update of the demo room 60 to 80 ms
+once (the first frame), then about 1 to 2.5 ms a frame (the update-rate setting scales it); the lit shader costs about 8 extra
+linear taps a pixel: the demo at 800 x 530 on the CPU backend goes from 175 to 278 ms in the base tier. That is why
+it is a choice and off at Low. Screenshots: `gfx-gi-hemisphere.png`, `gfx-gi-probes.png` (`fe-gfx-shot --gi probes`).
+Not done: toroidal voxel scrolling, probe specular / the sky atlas, shadows from local lights in the voxels.
+
 ## Cascaded sun shadows
 
 `shadow_cascades` (1..3) splits the sun shadow by view distance (ends at 14% / 38% / 100% of the shadow

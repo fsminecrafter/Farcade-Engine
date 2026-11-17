@@ -22,6 +22,13 @@ enum class GraphicsPreset : uint8_t { Low, Medium, High, Ultra, Custom };
 // average, 13 tap downsamples, the Bloom radius of the Post Processing object).
 enum class BloomMode : uint8_t { Simple, Chain };
 
+// Ambient light: Hemisphere (the sky / ground colours of the Sky Light, free) or Probes (the CPU voxel and
+// L1 SH probe GI of gi.h: bounce light and colour bleeding, a few core-ms). Density is the probe spacing
+// (2 / 1 / 0.5 m around the camera), Update how much of the grid is refreshed a frame (1/32, 1/16, 1/8).
+enum class GiMode : uint8_t { Hemisphere, Probes };
+enum class GiDensity : uint8_t { Coarse, Normal, Fine };
+enum class GiUpdate : uint8_t { Slow, Normal, Fast };
+
 struct GraphicsSettings {
     GraphicsPreset preset = GraphicsPreset::High;
     // Which feature level to run (feature_level.h). Auto picks from the
@@ -61,6 +68,9 @@ struct GraphicsSettings {
     bool bloom = true;                      // uses PostProcess::bloom and bloom_threshold
     BloomMode bloom_mode = BloomMode::Chain;
     bool antialiasing = true;               // FXAA
+    GiMode gi_mode = GiMode::Hemisphere;    // works on every feature level (CPU work, not a pass)
+    GiDensity gi_density = GiDensity::Normal;
+    GiUpdate gi_update = GiUpdate::Normal;
     bool pbr = true;                        // GGX specular, Fresnel, energy-conserving (else Blinn-Phong)
 
     // Run the GPU tier even on the CPU backend (slow).
@@ -83,6 +93,7 @@ struct GraphicsSettings {
 //   ao                off | ssao       ao_radius 0.05..5    ao_strength 0..2
 //   aa                off | fxaa
 //   bloom             off | simple | chain
+//   gi                hemisphere | probes     gi_density coarse | normal | fine     gi_update slow | normal | fast
 //   pbr               bool             allow_gpu_effects_on_cpu  bool
 //
 // to_text / from_text store them as `name value` lines (like .fscene): unknown names and invalid values are
@@ -114,6 +125,11 @@ size_t graphics_settings_to_text(const GraphicsSettings& s, char* out, size_t ca
 // name or invalid value); -1 for a null text.
 int graphics_settings_from_text(GraphicsSettings* s, const char* text, size_t size);
 
+// Convenience forms for hosts that keep the text in a file or a project: malloc'd text (free() it; *size is the
+// length) and a bool load (true when every line was understood).
+char* graphics_settings_to_text(const GraphicsSettings& s, size_t* size);
+bool graphics_settings_from_text(const char* text, size_t size, GraphicsSettings* out);
+
 // What the renderer actually does this frame (the settings, limited by the
 // backend).
 struct GraphicsFeatures {
@@ -125,6 +141,7 @@ struct GraphicsFeatures {
     bool gpu_tier = false;                  // the GPU tier is on (gpu, or forced)
     bool shadows = false, ambient_occlusion = false, bloom = false, antialiasing = false, pbr = false;
     bool local_shadows = false;             // point and spot light shadows
+    bool gi = false;                        // probe GI feeds the ambient light
 };
 
 inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
@@ -133,21 +150,25 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
         case GraphicsPreset::Low:
             shadows = false; ambient_occlusion = false; bloom = false; antialiasing = false; pbr = false;
             local_shadows = false; bloom_mode = BloomMode::Simple; shadow_cascades = 1;
+            gi_mode = GiMode::Hemisphere;
             break;
         case GraphicsPreset::Medium:
             shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30; shadow_cascades = 2;
             ambient_occlusion = false; bloom = true; antialiasing = true; pbr = true;
             local_shadows = false; bloom_mode = BloomMode::Simple;
+            gi_mode = GiMode::Hemisphere;
             break;
         case GraphicsPreset::High:
             shadows = true; shadow_resolution = 2048; soft_shadows = true; shadow_distance = 40; shadow_cascades = 3;
             ambient_occlusion = true; ao_radius = 0.5f; ao_strength = 1.0f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 2; local_shadow_resolution = 1024;
+            gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Normal;
             break;
         case GraphicsPreset::Ultra:
             shadows = true; shadow_resolution = 4096; soft_shadows = true; shadow_distance = 80; shadow_cascades = 3;
             ambient_occlusion = true; ao_radius = 0.7f; ao_strength = 1.2f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 4; local_shadow_resolution = 2048;
+            gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Fast;
             break;
         case GraphicsPreset::Custom:
             break;

@@ -1,4 +1,5 @@
 #include "gfx/shaders_hq.h"
+#include "gfx/shaders.h"
 #include "gfx/shaders_post.h"
 #include "core/math.h"
 
@@ -217,6 +218,11 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         for (int c = 0; c < k.cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
     }
     if (k.ao) t.add("uniform sampler2D u_ao;\n");
+    if (k.gi) {
+        char gbuf[2048];
+        emit_gi_lookup(gbuf, sizeof gbuf);
+        t.add(gbuf);
+    }
     if (local) {
         t.add("uniform sampler2D u_atlas;\n");
     }
@@ -303,6 +309,8 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
           "    vec3 col = vec3(0.0);\n"
           "    {\n"                                  // the shading in a block: its registers are free for post()
           "    vec3 N = normalize(v_nrm);\n");
+    // the probe GI too, in a block (the lookup's registers are free again afterwards)
+    if (k.gi) t.add("    vec3 giA = vec3(0.0);\n    {\n        giA = gi_amb(N, v_pos);\n    }\n");
     // the shadow first: it needs many registers, main has few live values yet
     if (k.shadow && k.nd > 0) {
         // In a block: an inlined function's temporaries live until the block ends.
@@ -414,8 +422,8 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add("    float ao = 1.0;\n    float aod = 1.0;\n");
     }
     if (k.pbr) {
-        t.add("    vec3 hemiN = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-              "    vec3 R = reflect(-V, N);\n"
+        t.add(k.gi ? "    vec3 hemiN = giA;\n" : "    vec3 hemiN = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+        t.add("    vec3 R = reflect(-V, N);\n"
               "    vec3 hemiR = mix(u_gnd.rgb, u_sky.rgb, R.y * 0.5 + 0.5);\n"
               "    vec3 env = mix(hemiR, (u_gnd.rgb + u_sky.rgb) * 0.5, rough * rough);\n"
               "    vec4 rr = rough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);\n"
@@ -425,8 +433,8 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
               "    vec3 ambient = dalb * hemiN * (1.0 - ks) + env * ks;\n"
               "    col = ambient * ao + (dalb * diff + spec) * aod;\n");
     } else {
-        t.add("    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-              "    col = v_alb * (amb * ao + diff * aod) + spec * aod;\n");
+        t.add(k.gi ? "    vec3 amb = giA;\n" : "    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+        t.add("    col = v_alb * (amb * ao + diff * aod) + spec * aod;\n");
     }
     t.add("    }\n");
     if (k.fog) {

@@ -22,6 +22,7 @@
 #include "gfx/shaders.h"
 #include "gfx/feature_level.h"
 #include "gfx/post_stack.h"
+#include "gfx/gi.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
 #include "stb/stb_image.h"
@@ -68,6 +69,7 @@ struct Locs {
     int l0 = -1, l1 = -1, l2 = -1, l3 = -1;
     int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
     int lift = -1, gamma = -1, gain = -1, grain = -1;
+    int gi = -1, gi0 = -1, gi1 = -1;
 };
 
 struct Shader {
@@ -80,6 +82,7 @@ struct Variant {
     Shader shader;
     int nd = 0, np = 0, ns = 0;
     shaders::PostKey key;
+    bool gi = false;
     uint64_t last_use = 0;
     bool used = false;
 };
@@ -144,6 +147,7 @@ GraphicsFeatures make_features(const DeviceCaps& caps, const GraphicsSettings& s
     f.antialiasing = f.gpu_tier && settings.antialiasing;
     f.pbr = f.gpu_tier && settings.pbr;
     f.local_shadows = f.gpu_tier && settings.local_shadows;
+    f.gi = settings.gi_mode == GiMode::Probes;
     return f;
 }
 
@@ -182,6 +186,13 @@ struct Renderer::Impl {
     DeviceCaps caps;                        // from fglGetDeviceInfo (feature_level.h)
     char backend[40] = "";
     GpuTier tier;
+    // Probe GI (gi.h): updated once a frame on the CPU, uploaded as a texture both tiers sample.
+    GiSystem gi;
+    FGLTexture gi_tex = 0;
+    uint64_t gi_uploaded = 0;
+    uint32_t* gi_pixels = nullptr;
+    bool gi_started = false;
+    struct GiFrame { bool on = false; float u0[4] = {}, u1[4] = {}; } gi_frame;
     bool tier_ran = false;                  // the last frame used the GPU tier
 
     // Mesh cache: open addressing on key, entries never move between rebuilds.
@@ -263,6 +274,9 @@ struct Renderer::Impl {
         l->gamma = fglUniformLocation(sh, "u_gamma");
         l->gain = fglUniformLocation(sh, "u_gain");
         l->grain = fglUniformLocation(sh, "u_grain");
+        l->gi = fglUniformLocation(sh, "u_gi");
+        l->gi0 = fglUniformLocation(sh, "u_gi0");
+        l->gi1 = fglUniformLocation(sh, "u_gi1");
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
@@ -412,9 +426,9 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key) {
+    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key, bool gi) {
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.key == key) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.key == key && v.gi == gi) { v.last_use = frame; return &v.shader; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -428,14 +442,14 @@ struct Renderer::Impl {
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
         shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key);
+        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key, gi);
         Shader s;
         bool ok = compile(&s, vs, fs, "lit");
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
-        slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key;
+        slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key; slot->gi = gi;
         slot->used = true;
         slot->last_use = frame;
         return &slot->shader;
@@ -737,6 +751,11 @@ struct Renderer::Impl {
         const SkyLight& sl = scene.sky_light;
         fglUniform4f(s.sh, l.sky, sl.sky_color.x * sl.intensity, sl.sky_color.y * sl.intensity, sl.sky_color.z * sl.intensity, 0);
         fglUniform4f(s.sh, l.gnd, sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
+        if (gi_frame.on && l.gi >= 0) {
+            fglUniform4f(s.sh, l.gi0, gi_frame.u0[0], gi_frame.u0[1], gi_frame.u0[2], gi_frame.u0[3]);
+            fglUniform4f(s.sh, l.gi1, gi_frame.u1[0], gi_frame.u1[1], gi_frame.u1[2], gi_frame.u1[3]);
+            fglUniformTexture(gl, s.sh, l.gi, gi_tex, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        }
         uint32_t total = (uint32_t)(ls.nd + ls.np + ls.ns);
         if (total) {
             fglUniformArray(s.sh, l.l0, 0, ls.l0, total);
@@ -844,6 +863,40 @@ struct Renderer::Impl {
     // The one place where caps + settings become what runs (feature_level.h).
     GraphicsFeatures feature_set() const { return make_features(caps, settings); }
 
+    bool update_gi(const RenderScene& scene, float dt) {
+        double t0 = now_ms();
+        GiInput in;
+        in.items = scene.items;
+        in.item_count = scene.item_count;
+        in.lights = scene.lights;
+        in.light_count = scene.light_count;
+        const SkyLight& sl = scene.sky_light;
+        in.sky_color = sl.sky_color * sl.intensity;
+        in.ground_color = sl.ground_color * sl.intensity;
+        in.camera = scene.camera.position;
+        in.dt = dt;
+        GiParams gp;
+        gp.density = settings.gi_density;
+        gp.update = settings.gi_update;
+        gp.bounce = scene.sky_light.gi_bounce;
+        gp.intensity = scene.sky_light.gi_intensity;
+        gi.update(in, gp, !gi_started);
+        gi_started = true;
+        if (!gi_pixels) gi_pixels = (uint32_t*)malloc((size_t)GiSystem::kTexW * GiSystem::kTexH * 4);
+        if (!gi_pixels) { set_error("out of memory"); return false; }
+        if (!gi_tex || gi_uploaded != gi.version()) {
+            gi.encode(gi_pixels);
+            if (!gi_tex) gi_tex = fglCreateTexture(gl, GiSystem::kTexW, GiSystem::kTexH, gi_pixels);
+            else if (fglTextureData(gl, gi_tex, gi_pixels, GiSystem::kTexW * 4) != 0) { set_error("FarcadeGL: cannot upload the GI probes"); return false; }
+            if (!gi_tex) { set_error("FarcadeGL: cannot create the GI texture"); return false; }
+            gi_uploaded = gi.version();
+        }
+        gi.uniforms(gi_frame.u0, gi_frame.u1);
+        gi_frame.on = true;
+        stats.gi_ms = now_ms() - t0;
+        return true;
+    }
+
     // rows == 0: the whole image into `pixels` (as RGBA); else rows
     // [y0, y0 + rows) into dst (XRGB, width * rows words). Bands are not
     // available while the GPU tier or fog is on (render_rows fails then).
@@ -887,6 +940,15 @@ struct Renderer::Impl {
         pf = PostFrame::make(scene.post, scene.post.auto_exposure ? ae.ev : 0.0f, post_frames, scene.draft, false);
         stats.exposure_ev = pf.exposure_ev;
 
+        // Probe GI: update on the CPU, upload when the probes changed (not for bands, not for draft frames)
+        gi_frame.on = false;
+        if (settings.gi_mode == GiMode::Probes && !scene.draft && !banding) {
+            if (!update_gi(scene, dt)) return false;
+        } else if (settings.gi_mode == GiMode::Probes && !scene.draft && gi_tex && gi_started) {
+            gi_frame.on = true;                     // bands of one image use the probes of that image
+            gi.uniforms(gi_frame.u0, gi_frame.u1);
+        }
+
         // The GPU tier replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
         LightSet ls;
@@ -915,6 +977,10 @@ struct Renderer::Impl {
             host.user = this;
             host.draw_mesh = &Impl::tier_draw_mesh;
             host.set_viewport = &Impl::tier_set_viewport;
+            host.gi_on = gi_frame.on;
+            host.gi_texture = gi_tex;
+            memcpy(host.gi0, gi_frame.u0, sizeof host.gi0);
+            memcpy(host.gi1, gi_frame.u1, sizeof host.gi1);
             failed = !tier.render(gl, scene, pl, settings, plan, host, pf, error, (int)sizeof error);
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
             tier_done = true;
@@ -924,7 +990,7 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
         if (any_lit) {
-            lit = lit_variant(ls.nd, ls.np, ls.ns, pf.key);
+            lit = lit_variant(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on);
             if (!lit) return false;
             set_lit_frame(*lit, scene, ls);
         }
@@ -1018,12 +1084,18 @@ struct Renderer::Impl {
             }
             if (white_texture) fglDestroyTexture(gl, white_texture);
             white_texture = 0;
+            if (gi_tex) fglDestroyTexture(gl, gi_tex);
+            gi_tex = 0;
+            gi_started = false;
+            gi.reset();
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
             tier.release(gl);
             fglDestroyContext(gl);
             gl = nullptr;
         }
+        free(gi_pixels);
+        gi_pixels = nullptr;
         free(ipixels);
         ipixels = nullptr;
         ipixels_cap = 0;

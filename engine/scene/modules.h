@@ -161,6 +161,10 @@ struct SkyLight {
     Vec3 ground_color = Vec3(0.25f, 0.22f, 0.20f);
     float intensity = 0.6f;
     bool current = false;
+    // Probe GI (Settings > Graphics > GI = probes): how strongly the probe light replaces this hemisphere
+    // ambient, and how much of the light a surface got is re-emitted as bounce.
+    float gi_intensity = 1.0f;
+    float gi_bounce = 0.8f;
 };
 
 enum class SkyMode : uint8_t { Gradient, Color };

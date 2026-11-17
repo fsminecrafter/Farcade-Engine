@@ -46,8 +46,9 @@ struct HqLitKey {
     int nps = 0, nss = 0;
     bool local_soft = false;                        // 4 taps, else 1
     PostKey post;                                   // tonemap, grading, grain (shaders_post.h)
+    bool gi = false;                                // probe GI (shaders.h emit_gi_lookup) replaces the hemisphere diffuse ambient
     bool operator==(const HqLitKey& o) const {
-        return post == o.post && cascades == o.cascades && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }

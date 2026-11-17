@@ -6,6 +6,7 @@
 #include "gfx/meshgen.h"
 #include "gfx/post_stack.h"
 #include "gfx/graphics_settings.h"
+#include "gfx/gi.h"
 #include "gfx/host/farcadegl_host.h"
 #include "mof_check.h"
 
@@ -694,6 +695,200 @@ void test_bloom_modes() {
     CHECK_MSG(memcmp(img[1], img[2], sizeof img[1]) != 0, "the chain differs from the simple bloom");
 }
 
+// ---------------------------------------------------------------- probe GI
+
+// A ground plane, a big red wall at x = +4, a sun from the left (so the wall is in shade ... and the sun lights the ground).
+struct GiRoom {
+    Vec3 cube_p[kCubeVertices], cube_n[kCubeVertices], plane_p[kPlaneVertices], plane_n[kPlaneVertices];
+    DrawItem items[3];
+    RenderLight sun;
+    GiInput in;
+    GiRoom() {
+        make_cube(cube_p, cube_n, 1.0f);
+        make_plane(plane_p, plane_n, 10.0f, 0.0f);
+        items[0].mesh = RenderMesh{ plane_p, plane_n, kPlaneVertices, 31 };
+        items[0].model = Mat4::identity();
+        items[0].color = Vec3(0.8f, 0.8f, 0.8f);
+        items[1].mesh = RenderMesh{ cube_p, cube_n, kCubeVertices, 32 };       // the red wall: 0.4 x 4 x 8
+        items[1].model = Mat4::trs(Vec3(4.5f, 2.0f, 0), Quat::axis_angle(Vec3(0, 1, 0), 0), Vec3(0.2f, 2.0f, 4.0f));
+        items[1].color = Vec3(0.9f, 0.1f, 0.05f);
+        items[2].mesh = RenderMesh{ cube_p, cube_n, kCubeVertices, 33 };       // a light blue box on the other side
+        items[2].model = Mat4::trs(Vec3(-4.5f, 1.0f, 0), Quat::axis_angle(Vec3(0, 1, 0), 0), Vec3(0.5f, 1.0f, 1.0f));
+        items[2].color = Vec3(0.1f, 0.2f, 0.9f);
+        sun.type = LightType::Directional;
+        sun.direction = normalize(Vec3(0.8f, -0.6f, 0.1f));     // travels towards +x: lights the faces that look at -x
+        sun.intensity = 2.0f;
+        in.items = items;
+        in.item_count = 3;
+        in.lights = &sun;
+        in.light_count = 1;
+        in.sky_color = Vec3(0.3f, 0.4f, 0.6f);
+        in.ground_color = Vec3(0.1f, 0.1f, 0.1f);
+        in.camera = Vec3(0, 1.5f, 0);
+    }
+};
+
+void test_gi_voxels_and_probes() {
+    GiRoom room;
+    GiParams gp;
+    // voxelization: conservative and deterministic
+    GiSystem a, b;
+    a.update(room.in, gp, true);
+    b.update(room.in, gp, true);
+    CHECK(a.stats().voxels > 400 && a.stats().revoxelized);
+    CHECK_EQ(a.stats().voxels, b.stats().voxels);
+    static uint32_t ta[GiSystem::kTexW * GiSystem::kTexH], tb[GiSystem::kTexW * GiSystem::kTexH];
+    a.encode(ta);
+    b.encode(tb);
+    CHECK_MSG(memcmp(ta, tb, sizeof ta) == 0, "the same scene gives the same probes");
+    CHECK(a.occupied(Vec3(0.2f, 0.05f, 0.3f)));                    // the ground
+    CHECK(a.occupied(Vec3(4.5f, 2.0f, 0.0f)));                     // inside the wall
+    CHECK(!a.occupied(Vec3(0.0f, 3.0f, 0.0f)));                    // air
+    CHECK(!a.occupied(Vec3(2.0f, 0.8f, 2.0f)));
+    // every voxel the wall's surface passes through is marked (a thin plane tilted: no gaps along a line)
+    int gaps = 0;
+    for (int i = 0; i < 40; i++) if (!a.occupied(Vec3(-9.5f + 0.5f * (float)i, 0.1f, 1.7f))) gaps++;
+    CHECK_EQ(gaps, 0);
+
+    // colour bleeding: next to the red wall the ambient is red; away from it, not
+    Vec3 near_wall = a.ambient(Vec3(3.0f, 1.0f, 0), Vec3(1, 0, 0));
+    Vec3 far_side = a.ambient(Vec3(-2.0f, 1.0f, 0), Vec3(1, 0, 0));
+    CHECK_MSG(near_wall.x > near_wall.z * 1.5f && near_wall.x > far_side.x, "light bounced off the red wall");
+    Vec3 near_blue = a.ambient(Vec3(-3.0f, 1.0f, 0), Vec3(-1, 0, 0));
+    CHECK_MSG(near_blue.z > near_blue.x, "and off the blue box");
+    // multi-bounce: more passes only add light
+    Vec3 once = a.ambient(Vec3(1.0f, 0.5f, 0), Vec3(0, 1, 0));
+    CHECK(once.x > 0.01f && once.y > 0.01f && once.z > 0.01f);
+
+    // convergence: from a wrong state (a red sky), a fraction of the probes per frame with hysteresis settles
+    // on the answer a long run gives (multi-bounce keeps adding a little for a while)
+    GiParams slow = gp;
+    slow.update = GiUpdate::Fast;
+    slow.hysteresis = 0.8f;
+    GiInput other = room.in;
+    other.sky_color = Vec3(1.0f, 0.2f, 0.2f);
+    GiSystem d, ref;
+    d.update(other, slow, true);
+    ref.update(room.in, slow, true);
+    for (int i = 0; i < 400; i++) ref.update(room.in, slow);
+    Vec3 target = ref.ambient(Vec3(0, 1.0f, 0), Vec3(0, 1, 0));
+    Vec3 start = d.ambient(Vec3(0, 1.0f, 0), Vec3(0, 1, 0));
+    float prev_err = fabsf(start.x - target.x) + fabsf(start.y - target.y) + fabsf(start.z - target.z);
+    float first_err = prev_err;
+    int decreasing = 0;
+    for (int i = 0; i < 240; i++) {
+        d.update(room.in, slow);
+        if (i % 24 == 23) {
+            Vec3 v = d.ambient(Vec3(0, 1.0f, 0), Vec3(0, 1, 0));
+            float err = fabsf(v.x - target.x) + fabsf(v.y - target.y) + fabsf(v.z - target.z);
+            if (err < prev_err) decreasing++;
+            prev_err = err;
+        }
+    }
+    CHECK_MSG(first_err > 0.2f && decreasing >= 8 && prev_err < 0.06f * (target.x + target.y + target.z), "probes converge");
+    CHECK(d.stats().probes_updated <= GiSystem::kProbeCount / 8 * 2 + 1);
+
+    // an open sky with no geometry: the probes reproduce the hemisphere (L1 is exact for a linear gradient)
+    GiInput empty = room.in;
+    empty.item_count = 0;
+    GiSystem e;
+    e.update(empty, gp, true);
+    Vec3 up = e.ambient(Vec3(0, 1.5f, 0), Vec3(0, 1, 0)), down = e.ambient(Vec3(0, 1.5f, 0), Vec3(0, -1, 0));
+    // the probes hold diffuse irradiance: (s + g) / 2 +- (s - g) / 3 for a linear gradient
+    CHECK(fabsf(up.z - 0.5167f) < 0.05f && fabsf(down.z - 0.1833f) < 0.05f);
+
+    // a probe inside a closed box sees back faces: it is invalid and falls back to the hemisphere, not black
+    Vec3 inside_p[kCubeVertices], inside_n[kCubeVertices];
+    make_cube(inside_p, inside_n, 1.0f);
+    DrawItem box;
+    box.mesh = RenderMesh{ inside_p, inside_n, kCubeVertices, 34 };
+    box.model = Mat4::trs(Vec3(0, 1.5f, 0), Quat::axis_angle(Vec3(0, 1, 0), 0), Vec3(3.0f, 3.0f, 3.0f));
+    GiInput boxed = empty;
+    boxed.items = &box;
+    boxed.item_count = 1;
+    boxed.camera = Vec3(0, 1.5f, 0);
+    GiSystem f;
+    f.update(boxed, gp, true);
+    CHECK_MSG(f.stats().probes_invalid > 0, "probes inside geometry are invalidated");
+    Vec3 in_box = f.ambient(Vec3(0, 1.5f, 0), Vec3(0, 1, 0));
+    CHECK(in_box.x + in_box.y + in_box.z > 0.1f);
+
+    // cost: a forced full update and a steady frame
+    GiSystem g;
+    g.update(room.in, gp, true);
+    double full = g.stats().ms;
+    double steady = 0;
+    for (int i = 0; i < 20; i++) { g.update(room.in, gp); steady += g.stats().ms; }
+    steady /= 20;
+    printf("gi: first frame %.1f ms, steady %.2f ms/frame, %d surface voxels\n", full, steady, g.stats().voxels);
+    CHECK_MSG(steady < 12.0, "steady GI update stays within a few core-ms");
+}
+
+void test_gi_render() {
+    // The probes feed the shaders: the ground beside a red wall turns red, in the base tier and the GPU tier;
+    // the hemisphere option stays as it was.
+    GiRoom room;
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    r.set_settings(g);
+    CHECK(r.init(W, H));
+    RenderScene scene;
+    scene.items = room.items;
+    scene.item_count = 3;
+    scene.lights = &room.sun;
+    scene.light_count = 1;
+    scene.sky.mode = SkyMode::Color;
+    scene.sky.zenith = Vec3(0.2f, 0.3f, 0.5f);
+    scene.sky_light.sky_color = Vec3(0.3f, 0.4f, 0.6f);
+    scene.sky_light.ground_color = Vec3(0.1f, 0.1f, 0.1f);
+    scene.sky_light.intensity = 1.0f;
+    scene.post.tonemap = Tonemap::None;
+    scene.post.vignette = 0;
+    scene.delta_time = 0.016f;
+    scene.camera.position = Vec3(0, 3.0f, 9.0f);
+    scene.camera.view = Mat4::look_at(scene.camera.position, Vec3(0, 0.5f, 0), Vec3(0, 1, 0));
+    scene.camera.proj = Mat4::perspective(radians(50.0f), (float)W / H, 0.1f, 100.0f);
+    auto ground_px = [&](Vec3 p) {
+        Vec3 v = transform_point(scene.camera.view, p);
+        float nx = scene.camera.proj.m[0] * v.x / -v.z, ny = scene.camera.proj.m[5] * v.y / -v.z;
+        return px(r, (int)((nx * 0.5f + 0.5f) * (float)W), (int)((0.5f - ny * 0.5f) * (float)H));
+    };
+    // hemisphere
+    if (!render_ok(r, scene)) return;
+    Px hemi_near = ground_px(Vec3(3.4f, 0.0f, 1.0f)), hemi_far = ground_px(Vec3(-1.0f, 0.0f, 1.0f));
+    CHECK_EQ(r.stats().gi_ms > 0.0 ? 1 : 0, 0);
+    CHECK(!r.features().gi);
+    // probes (base tier): the first frame converges all probes
+    g.gi_mode = GiMode::Probes;
+    r.set_settings(g);
+    for (int i = 0; i < 3; i++) if (!render_ok(r, scene)) return;
+    CHECK(r.features().gi && !r.features().gpu_tier && r.stats().gi_ms >= 0.0);
+    Px gi_near = ground_px(Vec3(3.4f, 0.0f, 1.0f)), gi_far = ground_px(Vec3(-1.0f, 0.0f, 1.0f));
+    CHECK_MSG(gi_near.r - gi_near.b > hemi_near.r - hemi_near.b + 6, "red bounce next to the wall (base tier)");
+    CHECK_MSG(abs((gi_far.r - gi_far.b) - (hemi_far.r - hemi_far.b)) < 40, "the far side is not painted red");
+    // the GPU tier (PBR shading) reads the same probes
+    g.allow_gpu_effects_on_cpu = true;
+    g.shadows = false; g.ambient_occlusion = false; g.bloom = false; g.antialiasing = false;
+    g.pbr = true;
+    g.gi_mode = GiMode::Hemisphere;
+    r.set_settings(g);
+    CHECK(render_ok(r, scene));
+    Px t_hemi = ground_px(Vec3(3.4f, 0.0f, 1.0f));
+    g.gi_mode = GiMode::Probes;
+    r.set_settings(g);
+    for (int i = 0; i < 2; i++) if (!render_ok(r, scene)) return;
+    CHECK(r.features().gpu_tier && r.features().gi);
+    Px t_gi = ground_px(Vec3(3.4f, 0.0f, 1.0f));
+    CHECK_MSG(t_gi.r - t_gi.b > t_hemi.r - t_hemi.b + 6, "red bounce in the GPU tier");
+    // switching back is the old image, bit for bit
+    g.gi_mode = GiMode::Hemisphere;
+    r.set_settings(g);
+    CHECK(render_ok(r, scene));
+    Px back = ground_px(Vec3(3.4f, 0.0f, 1.0f));
+    CHECK(near_px(back, t_hemi, 0));
+}
+
 }  // namespace
 
 int main() {
@@ -707,5 +902,7 @@ int main() {
     test_cascades();
     test_settings_text();
     test_bloom_modes();
+    test_gi_voxels_and_probes();
+    test_gi_render();
     return finish_tests("gfx_stack_tests");
 }

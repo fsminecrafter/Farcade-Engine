@@ -4,6 +4,7 @@
 #include "gfx/renderer.h"
 #include "core/vfs.h"
 #include "platform/platform.h"
+#include "graphics_text.h"
 #include "play_session.h"
 #include "project.h"
 #include "render_bridge.h"
@@ -171,6 +172,15 @@ int run(const Options& opt, Result* result) {
     static gfx::Renderer fgl;
     static RenderBridge bridge;
     gfx::GraphicsSettings graphics;
+    // Graphics settings exported with the game (graphics.cfg), applied before the first frame.
+    {
+        size_t gn = 0;
+        char* g = (char*)vfs::read("graphics.cfg", &gn);
+        if (g) {
+            if (graphics_settings_from_text(g, gn, &graphics) && !opt.quiet) printf("FE PLAYER graphics settings from graphics.cfg (preset %d)\n", (int)graphics.preset);
+            free(g);
+        }
+    }
     int div = opt.render_div < 1 ? 1 : opt.render_div;
     bool fixed = opt.frames > 0;
     double last = platform::time_seconds();

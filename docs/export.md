@@ -26,6 +26,17 @@ window_height 720
 icon "icon.bmp"
 ```
 
+`graphics true` (the default) exports the graphics settings with the game:
+saving the project settings or exporting writes the editor's current
+Settings > Graphics to `graphics.cfg` in the project folder (text, one
+`name value` per line, `editor/src/graphics_text.h`), the export packs it as
+`graphics.cfg`, and the player applies it before the first frame (it prints
+`FE PLAYER graphics settings from graphics.cfg`). Turn the box "Use these
+graphics settings for the exported game" off to ship the defaults. The
+parse/print functions in `graphics_text.cpp` are the single hook: when
+`engine/gfx/graphics_settings` gets `to_text` / `from_text`, call them from
+`graphics_settings_to_text` / `graphics_settings_from_text`.
+
 `window_width` and `window_height` are the size of the window when MOSdesk
 owns the screen (full screen uses the whole screen). The icon is a project
 relative `.bmp`; the exporter writes it next to the game and bundles it into

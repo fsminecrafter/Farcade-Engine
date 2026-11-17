@@ -7,6 +7,7 @@
 #include "core/pak.h"
 #include "core/vfs.h"
 #include "export.h"
+#include "graphics_text.h"
 #include "platform/platform.h"
 #include "project.h"
 #include "scene.h"
@@ -165,6 +166,22 @@ static void test_vfs() {
     free(image);
 }
 
+static void test_graphics_text() {
+    gfx::GraphicsSettings g;
+    g.apply_preset(gfx::GraphicsPreset::Ultra);
+    g.render_scale = 0.5f;
+    size_t n = 0;
+    char* t = graphics_settings_to_text(g, &n);
+    gfx::GraphicsSettings h;
+    CHECK(t && graphics_settings_from_text(t, n, &h));
+    CHECK(h.preset == gfx::GraphicsPreset::Ultra && h.render_scale == 0.5f && h.shadow_resolution == 4096 && h.local_shadow_lights == 4);
+    free(t);
+    const char* odd = "future_field 3\nbloom false\nshadow_resolution 99999\n";
+    gfx::GraphicsSettings k;
+    CHECK(graphics_settings_from_text(odd, strlen(odd), &k) && !k.bloom && k.shadow_resolution == 4096);
+    CHECK(!graphics_settings_from_text("nothing known", 13, &k));
+}
+
 static void test_project() {
     ProjectSettings p;
     snprintf(p.name, sizeof p.name, "My \"Great\" Game");
@@ -223,6 +240,7 @@ static void build_demo_project() {
     }
     put_str("audio/beep.wav", "not really a wav");
     put_str("icon.bmp", "BM-not-a-bitmap");
+    put_str("graphics.cfg", "preset 0\nshadows false\nbloom false\n");
     put_str("unused/readme.txt", "never referenced");
 
     Scene s;
@@ -299,7 +317,7 @@ static void test_export_and_run() {
         src.close = platform::close_file;
         CHECK(r.open(src));
         const char* want[] = { "project.fe", "scenes/main.fscene", "scenes/second.fscene", "scripts/spin.lua", "scripts/other.lua",
-                               "models/cube.mof", "textures/stone.bmp", "audio/beep.wav", "icon.bmp" };
+                               "models/cube.mof", "textures/stone.bmp", "audio/beep.wav", "icon.bmp", "graphics.cfg" };
         for (const char* w : want) {
             PakEntryInfo e;
             bool found = r.find(w, &e);
@@ -359,6 +377,7 @@ static void test_export_and_run() {
         CHECK(strstr(run20, "FE GAME spin 15") != nullptr);                    // on_update ran 15 times
         CHECK(strstr(run20, "FE PLAYER DONE frames=20") != nullptr);
         CHECK(strstr(run20, "scripts=1") != nullptr);
+        CHECK(strstr(run20, "graphics settings from graphics.cfg (preset 0)") != nullptr);   // applied at start
         CHECK(strstr(run20, "FE GAME other") == nullptr);                      // the second scene is not the entry scene
         if (!strstr(run20, "FE PLAYER DONE")) fprintf(stderr, "%s\n", run20);
     }
@@ -414,6 +433,7 @@ int main() {
     test_pak();
     test_vfs();
     test_project();
+    test_graphics_text();
     test_export_and_run();
     printf("export_tests: %d checks, %d failures\n", g_checks, g_failures);
     if (!g_failures && !getenv("FE_KEEP_TEST_DIR")) {

@@ -342,6 +342,16 @@ bool export_game(const ExportOptions& opt, ExportReport* report) {
         if (!icon) say(c, 1, "icon %s not found", ps.icon);
     }
 
+    // graphics.cfg: the graphics settings the player applies at start.
+    if (ps.graphics) {
+        char full[1100];
+        full_path(c, "graphics.cfg", full, sizeof full);
+        size_t gn = 0;
+        void* g = platform::read_file(full, &gn);
+        if (g) { c.pak.add("graphics.cfg", g, gn); free(g); }
+        else say(c, 0, "no graphics.cfg: the game uses the default graphics settings");
+    }
+
     // project.fe as exported.
     {
         size_t n = 0;

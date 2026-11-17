@@ -2,6 +2,7 @@
 // project.h and export.h.
 #include "editor.h"
 #include "export.h"
+#include "graphics_text.h"
 #include "platform/platform.h"
 
 #include "imgui/imgui.h"
@@ -48,7 +49,19 @@ bool Editor::load_project() {
     return true;
 }
 
+// graphics.cfg in the project: the editor's current Settings > Graphics.
+static void write_graphics_cfg(Editor& ed) {
+    size_t gn = 0;
+    char* g = graphics_settings_to_text(ed.settings.graphics, &gn);
+    if (!g) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s/graphics.cfg", ed.project_dir);
+    platform::write_file(path, g, gn);
+    free(g);
+}
+
 bool Editor::save_project() {
+    if (project.graphics) write_graphics_cfg(*this);
     size_t n = 0;
     char* text = project_text(project, &n);
     if (!text) return false;
@@ -111,6 +124,9 @@ void Editor::project_settings_popup() {
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##ps_icon", project.icon, sizeof project.icon);
     track("project:icon");
+    ImGui::Checkbox("Use these graphics settings for the exported game", &project.graphics);
+    track("project:graphics");
+    ImGui::TextDisabled("Settings > Graphics as they are when you save or export.");
     ImGui::Spacing();
     bool save = ImGui::Button("Save");
     track("project:save");

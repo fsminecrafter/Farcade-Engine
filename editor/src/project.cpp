@@ -69,6 +69,7 @@ bool project_parse(const char* text, size_t size, ProjectSettings* out) {
         if (strcmp(key, "name") == 0) copy(p.name, sizeof p.name, value);
         else if (strcmp(key, "version") == 0) copy(p.version, sizeof p.version, value);
         else if (strcmp(key, "entry_scene") == 0) copy(p.entry_scene, sizeof p.entry_scene, value);
+        else if (strcmp(key, "graphics") == 0) p.graphics = !strcmp(value, "true") || !strcmp(value, "1");
         else if (strcmp(key, "icon") == 0) copy(p.icon, sizeof p.icon, value);
         else if (strcmp(key, "window_width") == 0) { int v = atoi(value); if (v >= 64 && v <= 8192) p.window_width = v; }
         else if (strcmp(key, "window_height") == 0) { int v = atoi(value); if (v >= 64 && v <= 8192) p.window_height = v; }
@@ -88,6 +89,7 @@ char* project_text(const ProjectSettings& p, size_t* size) {
     put_str(out, cap, &n, "version", p.version);
     put_str(out, cap, &n, "entry_scene", p.entry_scene);
     n += (size_t)snprintf(out + n, cap - n, "window_width %d\nwindow_height %d\n", p.window_width, p.window_height);
+    n += (size_t)snprintf(out + n, cap - n, "graphics %s\n", p.graphics ? "true" : "false");
     if (p.icon[0]) put_str(out, cap, &n, "icon", p.icon);
     if (size) *size = n;
     return out;

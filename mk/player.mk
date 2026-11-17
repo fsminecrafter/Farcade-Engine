@@ -11,12 +11,12 @@
 .SECONDEXPANSION:
 
 PAK_SRC     := engine/core/pak.cpp engine/core/vfs.cpp
-EDITOR_SRC  += $(PAK_SRC) editor/src/project.cpp editor/src/play_session.cpp editor/src/export.cpp editor/src/export_ui.cpp
+EDITOR_SRC  += $(PAK_SRC) editor/src/project.cpp editor/src/play_session.cpp editor/src/export.cpp editor/src/export_ui.cpp editor/src/graphics_text.cpp
 
 # What the player needs of the editor's sources: scene, scene files, project
 # settings, the play session (shared with editor Play), the render bridge.
 PLAYER_SHARED := editor/src/scene.cpp editor/src/scene_io.cpp editor/src/project.cpp editor/src/play_session.cpp \
-                 editor/src/render_bridge.cpp $(PAK_SRC)
+                 editor/src/render_bridge.cpp editor/src/graphics_text.cpp $(PAK_SRC)
 PLAYER_SRC    := player/player.cpp $(PLAYER_SHARED)
 
 $(BUILD)/host/player/%.o $(BUILD)/host/tools/export/%.o $(BUILD)/host/tests/host/export_tests.cpp.o: HOST_EXTRA_FLAGS += $(EDITOR_INC)

@@ -7,6 +7,12 @@
 //   window_width 1280
 //   window_height 720
 //   icon "icon.bmp"
+//   graphics true
+//
+// `graphics true`: the exported game uses the graphics settings in
+// graphics.cfg (graphics_text.h) at the project's root; the editor writes that
+// file from Settings > Graphics. The export packs it as graphics.cfg and the
+// player applies it before the first frame.
 //
 // Unknown keys are kept out of the way (skipped), missing ones keep their
 // defaults, so older and newer files read in both directions.
@@ -24,6 +30,7 @@ struct ProjectSettings {
     char entry_scene[256] = "scenes/main.fscene";
     int window_width = 1280;            // window size when the game runs in a window (full screen uses the screen)
     int window_height = 720;
+    bool graphics = true;               // pack graphics.cfg and let the player apply it
     char icon[256] = {};                // project relative image (BMP is what MOSdesk shows); "" = none
 };
 

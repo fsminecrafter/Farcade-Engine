@@ -36,6 +36,13 @@ struct GraphicsSettings {
     bool shadows = true;                    // directional sun shadows from a shadow map
     int shadow_resolution = 2048;           // 512..4096
     float shadow_distance = 40.0f;          // meters from the camera that get shadows
+    // The sun shadow is split into cascades by view distance (1..3): near ones are sharp, far ones cover
+    // more. They share one map of shadow_resolution (an atlas: 2 x 2 tiles of half the size when there is
+    // more than one), are stable (texel snapped) and are redrawn only when something in them changed.
+    int shadow_cascades = 3;
+    // Far cascades keep their fit for 2 / 4 frames while the camera stays inside it (less redrawing,
+    // moving shadow casters in them lag by up to 3 frames).
+    bool cascade_cache = true;
     bool soft_shadows = true;               // PCF filtering (also for point and spot shadows)
     // Point and spot light shadows: a shadow atlas of 4 x 4 tiles. A spot
     // light takes one tile, a point light six (a cube). The lights with
@@ -78,17 +85,17 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             local_shadows = false;
             break;
         case GraphicsPreset::Medium:
-            shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30;
+            shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30; shadow_cascades = 2;
             ambient_occlusion = false; bloom = true; antialiasing = true; pbr = true;
             local_shadows = false;
             break;
         case GraphicsPreset::High:
-            shadows = true; shadow_resolution = 2048; soft_shadows = true; shadow_distance = 40;
+            shadows = true; shadow_resolution = 2048; soft_shadows = true; shadow_distance = 40; shadow_cascades = 3;
             ambient_occlusion = true; ao_radius = 0.5f; ao_strength = 1.0f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 2; local_shadow_resolution = 1024;
             break;
         case GraphicsPreset::Ultra:
-            shadows = true; shadow_resolution = 4096; soft_shadows = true; shadow_distance = 80;
+            shadows = true; shadow_resolution = 4096; soft_shadows = true; shadow_distance = 80; shadow_cascades = 3;
             ambient_occlusion = true; ao_radius = 0.7f; ao_strength = 1.2f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 4; local_shadow_resolution = 2048;
             break;

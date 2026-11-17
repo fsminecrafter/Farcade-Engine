@@ -18,6 +18,16 @@
 namespace fe::gfx::shaders {
 
 constexpr size_t kHqSourceBytes = 28 * 1024;
+constexpr int kMaxCascades = 3;                     // cascaded sun shadow maps
+// The frame data buffer (storage buffer 0) of the lit shaders, in vec4s:
+//   [4] direction to the sun, [7] light camera right, [8] up, [9] point / spot atlas info,
+//   [kCascadeBase + 6 c ..] cascade c: 4 vec4 light matrix (columns), then
+//       (tile offset x, y, tile scale, normal offset) and
+//       (PCF radius in cascade uv, meters per uv / range, relative depth bias, 0),
+//   [kFrameHeader ..] the lights (3 vec4 each), then the point / spot shadow records.
+constexpr int kCascadeBase = 10;
+constexpr int kCascadeStride = 6;
+constexpr int kFrameHeader = kCascadeBase + kCascadeStride * kMaxCascades;
 constexpr int kAoSamples = 12;                      // spiral samples of the SSAO shader
 constexpr float kHdrMax = 8.0f;                     // brightest linear value an HDR target keeps
 
@@ -26,6 +36,7 @@ struct HqLitKey {
     int nd = 0, np = 0, ns = 0;                     // directional, point, spot lights
     bool pbr = false;                               // GGX shading, else Blinn-Phong
     int shadow = 0;                                 // 0 none, 1 hard, 2 soft (PCF)
+    int cascades = 1;                               // sun shadow cascades in the map (1..kMaxCascades)
     int shadow_light = 0;                           // packed light index the shadow map belongs to
     bool ao = false;                                // multiplies by the AO texture
     bool fog = false;
@@ -36,7 +47,7 @@ struct HqLitKey {
     bool local_soft = false;                        // 4 taps, else 1
     PostKey post;                                   // tonemap, grading, grain (shaders_post.h)
     bool operator==(const HqLitKey& o) const {
-        return post == o.post && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return post == o.post && cascades == o.cascades && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }
@@ -46,7 +57,7 @@ struct HqLitKey {
 //   lit:    u_mat (rgb sRGB albedo, w roughness), u_pbr (x metallic), u_cam, u_sky, u_gnd,
 //           u_fog (rgb fog color, w density), binding 0 storage buffer for lights and shadow data;
 //           shadow map: sampler u_shadow; ao: sampler u_ao; post as in shaders.h.
-void hq_lit_vertex(char* out, size_t cap, bool shadow);
+void hq_lit_vertex(char* out, size_t cap, int cascades);   // cascades 0: no sun shadow
 void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k);
 void hq_unlit_vertex(char* out, size_t cap);
 void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr, const PostKey& post);
@@ -56,6 +67,7 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post);     
 // linear depth for SSAO (u_pp.x = 1 / far).
 void hq_shadow_vertex(char* out, size_t cap);
 void hq_shadow_fragment(char* out, size_t cap);
+void pp_white_fragment(char* out, size_t cap);                 // fills with white (clears a shadow tile)
 // Point and spot shadow casters into the atlas: radial distance to the light
 // (u_lp: xyz light position, w 1 / range), packed in 24 bits.
 void hq_local_shadow_vertex(char* out, size_t cap);

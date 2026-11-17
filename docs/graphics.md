@@ -112,6 +112,21 @@ It uses the measured frame time (render, readback and upscale). Bands (`render_r
 full size. Screenshots: `gfx-agx.png`, `gfx-graded.png`, `gfx-autoexposure.png`, `gfx-post-high.png`
 (`fe-gfx-shot --tonemap agx --grade warm --auto-exposure --scale 0.5 ...`).
 
+## Cascaded sun shadows
+
+`shadow_cascades` (1..3) splits the sun shadow by view distance (ends at 14% / 38% / 100% of the shadow
+range for 3, 30% / 100% for 2). All cascades share one map of `shadow_resolution`: one cascade uses all of
+it, two or three use an atlas of 2 x 2 tiles of half the size. Each cascade is a texel snapped sphere fit of
+its slice (the radius in 2^(1/4) steps, the centre on whole texels and the depth in coarse steps, so a
+rotating or drifting camera does not make shadows swim). A tile is redrawn only when its fit or the casters
+that reach it changed (a far object moving does not redraw the near cascade). With `cascade_cache` the far
+cascades also keep their fit for 2 / 4 frames while the camera stays inside it (moving casters in them lag up
+to 3 frames). The lit shader picks the finest cascade that contains the pixel (|ndc xy| < 0.97, z < 0.97)
+and reads that tile with its own bias, PCF radius and normal offset (`kCascadeBase` in shaders_hq.h lists the
+frame data layout). `GpuTierStats` reports `cascades`, `cascades_drawn`, `cascades_reused` and
+`cascade_texel` (meters per texel). The point / spot atlas is unchanged. There is no scissor yet, so a tile is
+cleared by a full screen triangle under its viewport (depth: whole surface, it is scratch).
+
 ## Materials
 
 Each mesh object has a material in the Inspector's Look section: color, Roughness, Metal, Unlit and Shadows. The editor passes these to `DrawItem` (`color`, `roughness`, `metallic`, `unlit`, `cast_shadows`).

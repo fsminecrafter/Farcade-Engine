@@ -26,9 +26,10 @@ namespace fe::gfx {
 namespace {
 
 constexpr int kBloomLevels = 5;
+constexpr int kMaxCascades = shaders::kMaxCascades;
 constexpr int kMaxLitVariants = 8;
 constexpr int kBoundsCache = 128;
-constexpr uint32_t kFrameVec4Count = 10u + 3u * shaders::kMaxLights + kMaxLocalShadows;
+constexpr uint32_t kFrameVec4Count = (uint32_t)shaders::kFrameHeader + 3u * shaders::kMaxLights + kMaxLocalShadows;
 
 double now_ms() {
     timespec ts;
@@ -93,6 +94,28 @@ struct ShadowFit {
     Mat4 view, proj, viewproj;
     Vec3 right, up, to_light;
     float meters_per_uv = 1, inv_range = 1, bias = 0, normal_offset = 0, radius_uv = 0;
+    Vec3 center;                            // the snapped centre of the fitted sphere
+    float radius = 0;                       // its (quantized) radius
+};
+
+// The sun's cascades of a frame: one map (an atlas of grid x grid tiles), a fit for each cascade.
+struct CascadeSet {
+    int count = 0;                          // 0: no sun shadow this frame
+    int grid = 1, tile = 0;                 // tiles per side, tile size in texels
+    ShadowFit fit[kMaxCascades];
+    Vec3 to_light, right, up;
+    bool any() const { return count > 0; }
+};
+
+// What a cascade's tile holds: the fit it was drawn with and what it depended on. Far cascades keep their
+// fit for a few frames (see GraphicsSettings::cascade_cache) so they are not redrawn while the camera drifts.
+struct CascadeState {
+    bool valid = false;
+    ShadowFit held;
+    uint64_t fit_key = 0;                   // everything but the camera position the fit depends on
+    uint64_t hash = 0;                      // the fit and the casters the tile was drawn with (0: not cacheable)
+    uint64_t fitted_frame = 0;
+    Vec3 fitted_at;                         // the camera position of the fit
 };
 
 uint64_t fnv(uint64_t h, const void* data, size_t bytes) {
@@ -134,13 +157,14 @@ struct GpuTier::Impl {
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
+    CascadeState cstate[kMaxCascades];
+    FGLShader* white_p = nullptr;           // fills a tile with white (the far end of the packed depth)
     Target atlas;
     uint64_t atlas_hash = 0;
     LocalShadow locals[kMaxLocalShadows];
     int local_count = 0;
     Target bl_down[kBloomLevels], bl_up[kBloomLevels - 1];
     int bl_levels = 0;                      // levels used this frame
-    uint64_t shadow_hash = 0;
     MeshBounds bounds_cache[kBoundsCache];
     int bounds_next = 0;
     // the main targets of the context while a pass has its own bound
@@ -198,17 +222,26 @@ struct GpuTier::Impl {
         return true;
     }
 
-    bool upload_frame_data(const PackedLights& ls, const ShadowFit& fit, bool use_shadow) {
+    bool upload_frame_data(const PackedLights& ls, const CascadeSet& cs) {
         float data[kFrameVec4Count][4] = {};
         int total = ls.nd + ls.np + ls.ns;
-        if (use_shadow) {
-            memcpy(data[0], fit.viewproj.m, sizeof fit.viewproj.m);
-            data[4][0] = fit.to_light.x; data[4][1] = fit.to_light.y; data[4][2] = fit.to_light.z;
-            data[5][0] = 1.0f / (float)shadow.w;
-            data[5][1] = fit.meters_per_uv; data[5][2] = fit.inv_range; data[5][3] = fit.bias;
-            data[6][0] = fit.radius_uv; data[6][1] = fit.normal_offset;
-            data[7][0] = fit.right.x; data[7][1] = fit.right.y; data[7][2] = fit.right.z;
-            data[8][0] = fit.up.x; data[8][1] = fit.up.y; data[8][2] = fit.up.z;
+        if (cs.any()) {
+            data[4][0] = cs.to_light.x; data[4][1] = cs.to_light.y; data[4][2] = cs.to_light.z;
+            data[7][0] = cs.right.x; data[7][1] = cs.right.y; data[7][2] = cs.right.z;
+            data[8][0] = cs.up.x; data[8][1] = cs.up.y; data[8][2] = cs.up.z;
+            float inv_grid = 1.0f / (float)cs.grid;
+            for (int c = 0; c < cs.count; c++) {
+                const ShadowFit& f = cs.fit[c];
+                int base = shaders::kCascadeBase + c * shaders::kCascadeStride;
+                memcpy(data[base], f.viewproj.m, sizeof f.viewproj.m);
+                data[base + 4][0] = (float)(c % cs.grid) * inv_grid;
+                data[base + 4][1] = (float)(c / cs.grid) * inv_grid;
+                data[base + 4][2] = inv_grid;
+                data[base + 4][3] = f.normal_offset;
+                data[base + 5][0] = f.radius_uv;
+                data[base + 5][1] = f.meters_per_uv * f.inv_range;
+                data[base + 5][2] = f.bias;
+            }
         }
         if (ls.nps + ls.nss > 0) {
             int tiles = kAtlasTiles;
@@ -217,12 +250,13 @@ struct GpuTier::Impl {
             data[9][1] = 1.0f / (float)tiles;
             data[9][2] = 1.5f / (float)tile_size;
         }
+        const int H = shaders::kFrameHeader;
         for (int i = 0; i < total; i++) {
-            memcpy(data[10 + i * 3], ls.l0 + i * 4, 4 * sizeof(float));
-            memcpy(data[11 + i * 3], ls.l1 + i * 4, 4 * sizeof(float));
-            memcpy(data[12 + i * 3], ls.l2 + i * 4, 4 * sizeof(float));
+            memcpy(data[H + i * 3], ls.l0 + i * 4, 4 * sizeof(float));
+            memcpy(data[H + 1 + i * 3], ls.l1 + i * 4, 4 * sizeof(float));
+            memcpy(data[H + 2 + i * 3], ls.l2 + i * 4, 4 * sizeof(float));
         }
-        int shadow_base = 10 + total * 3;
+        int shadow_base = H + total * 3;
         for (int i = 0; i < ls.nps + ls.nss; i++) {
             const LocalShadow& o = locals[i];
             data[shadow_base + i][0] = (float)o.tile;
@@ -408,30 +442,38 @@ struct GpuTier::Impl {
     // bounding sphere replaces it. The radius is quantized to steps of 2^(1/4)
     // and the center snapped to whole shadow texels in light space, so the map
     // does not shimmer while the camera moves.
-    ShadowFit fit_shadow(const RenderScene& s, const Bounds& receivers, const Bounds& casters, Vec3 travel, int size,
-                         float distance, bool soft) {
-        ShadowFit out;
-        if (!receivers.any || !casters.any) return out;
-        Vec3 dir = normalize(travel);
-        if (!(length(dir) > 0.5f)) return out;
-        Cam c = read_camera(s.camera);
+    // The farthest view depth that gets a shadow: the camera's far plane, the shadow distance, and the
+    // farthest receiver, whichever is nearest.
+    float shadow_far(const Cam& c, const Bounds& receivers, float distance) {
         float far_fit = fminf_(c.f, distance);
         float maxd = c.n;
         for (int i = 0; i < 8; i++) maxd = fmaxf_(maxd, dot(receivers.corner(i) - c.pos, c.fwd));
         far_fit = fminf_(far_fit, fmaxf_(maxd, c.n + 0.1f));
         if (!(far_fit > c.n)) far_fit = c.n + 0.1f;
+        return far_fit;
+    }
+
+    // `slice_near` .. `far_fit`: the view depth range this fit covers (a cascade).
+    ShadowFit fit_shadow(const RenderScene& s, const Bounds& receivers, const Bounds& casters, Vec3 travel, int size,
+                         float slice_near, float far_fit, bool soft) {
+        ShadowFit out;
+        if (!receivers.any || !casters.any) return out;
+        Vec3 dir = normalize(travel);
+        if (!(length(dir) > 0.5f)) return out;
+        Cam c = read_camera(s.camera);
+        const float n = slice_near;
 
         float zc, radius;
         if (c.ortho) {
-            zc = (c.n + far_fit) * 0.5f;
-            float hd = (far_fit - c.n) * 0.5f;
+            zc = (n + far_fit) * 0.5f;
+            float hd = (far_fit - n) * 0.5f;
             radius = fsqrt(hd * hd + c.tx * c.tx + c.ty * c.ty);
         } else {
             float t2 = c.tx * c.tx + c.ty * c.ty;
-            zc = (far_fit + c.n) * (1.0f + t2) * 0.5f;
+            zc = (far_fit + n) * (1.0f + t2) * 0.5f;
             if (zc > far_fit) zc = far_fit;
             float rf = fsqrt((far_fit - zc) * (far_fit - zc) + far_fit * far_fit * t2);
-            float rn = fsqrt((zc - c.n) * (zc - c.n) + c.n * c.n * t2);
+            float rn = fsqrt((zc - n) * (zc - n) + n * n * t2);
             radius = fmaxf_(rf, rn);
         }
         Vec3 center = c.pos + c.fwd * zc;
@@ -450,6 +492,9 @@ struct GpuTier::Impl {
         float cx = dot(center, right), cy = dot(center, up), cz = dot(center, dir);
         cx = floorf_(cx / texel + 0.5f) * texel;
         cy = floorf_(cy / texel + 0.5f) * texel;
+        // the depth along the light is snapped too (coarsely): the matrix only changes when the fit really moves
+        const float zstep = 0.125f * radius;
+        cz = floorf_(cz / zstep + 0.5f) * zstep;
         Vec3 snapped = right * cx + up * cy + dir * cz;
 
         // casters between the light and the sphere set how far back the light starts
@@ -468,6 +513,8 @@ struct GpuTier::Impl {
         out.viewproj = out.proj * out.view;
         out.right = right;
         out.up = up;
+        out.center = snapped;
+        out.radius = radius;
         out.to_light = dir * -1.0f;
         out.meters_per_uv = 2.0f * radius;
         out.inv_range = 1.0f / range;
@@ -497,7 +544,7 @@ struct GpuTier::Impl {
         char* vs = (char*)malloc(shaders::kHqSourceBytes);
         char* fs = (char*)malloc(shaders::kHqSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); fail("out of memory"); return nullptr; }
-        shaders::hq_lit_vertex(vs, shaders::kHqSourceBytes, key.shadow != 0);
+        shaders::hq_lit_vertex(vs, shaders::kHqSourceBytes, key.shadow != 0 ? key.cascades : 0);
         shaders::hq_lit_fragment(fs, shaders::kHqSourceBytes, key);
         FGLShader* sh = nullptr;
         bool ok = compile(&sh, vs, fs, "lit");
@@ -514,33 +561,150 @@ struct GpuTier::Impl {
 
     // ---- the frame
 
-    bool draw_casters(const RenderScene& s, const PassHost& host) {
-        bool failed = false;
-        for (int i = 0; i < s.item_count && !failed; i++) {
-            const DrawItem& it = s.items[i];
-            if (!it.cast_shadows) continue;
-            host.draw_mesh(host.user, it, false, &failed);
-        }
-        return !failed;
+    // Does a world space box touch the sun's view volume of this fit (a box around the sphere, along the light)?
+    static bool in_cascade(const Bounds& b, const ShadowFit& f) {
+        if (!b.any) return false;
+        Vec3 c = (b.lo + b.hi) * 0.5f;
+        float hr = length(b.hi - b.lo) * 0.5f;
+        Vec3 d = c - f.center;
+        return fabsf_(dot(d, f.right)) <= f.radius + hr && fabsf_(dot(d, f.up)) <= f.radius + hr;
     }
 
-    bool shadow_pass(const RenderScene& s, const PassHost& host, const ShadowFit& fit, int size, uint64_t hash) {
-        bool fresh = false;
-        if (!ensure(shadow, size, size, true, &fresh)) return false;
-        if (fresh) shadow_hash = 0;
-        if (hash && hash == shadow_hash) { stats.shadow_reused = true; return true; }
-        double t0 = now_ms();
-        if (!make(&shadow_p, shaders::hq_shadow_vertex, shaders::hq_shadow_fragment, "shadow")) return false;
-        set_target(shadow.color, shadow.depth);
-        fglClearColor(gl, 1, 1, 1);
-        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+    // The casters that reach cascade `f`, with a hash of them (0 when one has no mesh key: not cacheable).
+    uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int* count) {
+        uint64_t hash = 1469598103934665603ull;
+        bool cacheable = true;
+        int n = 0;
+        for (int i = 0; i < s.item_count; i++) {
+            const DrawItem& it = s.items[i];
+            if (!it.cast_shadows || !in_cascade(item_bounds(it), f)) continue;
+            hash = fnv(hash, it.model.m, sizeof it.model.m);
+            hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
+            hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
+            if (!it.mesh.key) cacheable = false;
+            n++;
+        }
+        *count = n;
+        return cacheable ? hash : 0;
+    }
+
+    // Redraws one cascade's tile: depth is cleared (the whole surface; it is scratch), the tile is filled
+    // white by a full screen triangle under its viewport, and the casters are drawn into it.
+    bool draw_cascade(const RenderScene& s, const PassHost& host, const ShadowFit& fit, const CascadeSet& cs, int c) {
+        const int T = cs.tile;
+        host.set_viewport(host.user, (c % cs.grid) * T, (c / cs.grid) * T, T, T);
+        fglClear(gl, FGL_DEPTH_BUFFER_BIT);
+        fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        fglUseShader(gl, white_p);
+        fglSetModel(gl, to_fgl(Mat4::identity()));
+        fglDraw(gl, tri, 0, 3);
         fglSetProjection(gl, to_fgl(fit.proj));
         fglSetView(gl, to_fgl(fit.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         fglUseShader(gl, shadow_p);
-        bool ok = draw_casters(s, host);
-        if (!end_pass(t0, &stats.shadow_ms) || !ok) return false;
-        shadow_hash = hash;
+        bool failed = false;
+        for (int i = 0; i < s.item_count && !failed; i++) {
+            const DrawItem& it = s.items[i];
+            if (!it.cast_shadows || !in_cascade(item_bounds(it), fit)) continue;
+            host.draw_mesh(host.user, it, false, &failed);
+        }
+        host.set_viewport(host.user, 0, 0, 0, 0);
+        return !failed;
+    }
+
+    // The fraction of the shadow range each cascade ends at.
+    static void cascade_splits(int n, float out[kMaxCascades]) {
+        static const float s1[1] = { 1.0f }, s2[2] = { 0.3f, 1.0f }, s3[3] = { 0.14f, 0.38f, 1.0f };
+        const float* p = n >= 3 ? s3 : (n == 2 ? s2 : s1);
+        for (int i = 0; i < n; i++) out[i] = p[i];
+    }
+
+    // Fits and draws the sun's cascades (stable, texel snapped fits; a cascade is skipped while its tile is still
+    // valid; far cascades hold their fit for 2 / 4 frames while the camera stays inside it). Fills `cs`.
+    bool cascades_pass(const RenderScene& s, const PassHost& host, const GraphicsSettings& gs, bool hw, const Bounds& recv,
+                       const Bounds& cast, Vec3 travel, CascadeSet* cs) {
+        *cs = CascadeSet();
+        int nc = gs.shadow_cascades < 1 ? 1 : (gs.shadow_cascades > kMaxCascades ? kMaxCascades : gs.shadow_cascades);
+        int size = gs.shadow_resolution;
+        if (size < 256) size = 256;
+        if (size > 4096) size = 4096;
+        if (!hw && size > 1024) size = 1024;     // clears and fills cost too much on the CPU backend
+        int grid = nc > 1 ? 2 : 1;
+        int tile = size / grid;
+        bool fresh = false;
+        if (!ensure(shadow, size, size, true, &fresh)) return false;
+        if (!make(&shadow_p, shaders::hq_shadow_vertex, shaders::hq_shadow_fragment, "shadow")) return false;
+        if (!make(&white_p, shaders::pp_vertex, shaders::pp_white_fragment, "white")) return false;
+        if (fresh) {
+            // never drawn: white = the far end everywhere (a tile that is not used stays lit)
+            double t0 = now_ms();
+            set_target(shadow.color, shadow.depth);
+            fglClearColor(gl, 1, 1, 1);
+            fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+            if (!end_pass(t0, &stats.shadow_ms)) return false;
+            for (CascadeState& st : cstate) st = CascadeState();
+        }
+        Cam c = read_camera(s.camera);
+        float far_total = shadow_far(c, recv, fclamp(gs.shadow_distance, 1.0f, 2000.0f));
+        Vec3 dir = normalize(travel);
+        float splits[kMaxCascades];
+        cascade_splits(nc, splits);
+        cs->count = nc;
+        cs->grid = grid;
+        cs->tile = tile;
+        stats.cascades = nc;
+        int drawn = 0, reused = 0;
+        double t0 = now_ms();
+        bool began = false;
+        for (int k = 0; k < nc; k++) {
+            CascadeState& st = cstate[k];
+            float slice_near = k == 0 ? c.n : fmaxf_(c.n, far_total * splits[k - 1]);
+            float slice_far = far_total * splits[k];
+            if (!(slice_far > slice_near)) slice_far = slice_near + 0.1f;
+            uint64_t fit_key = 1469598103934665603ull;
+            fit_key = fnv(fit_key, &dir, sizeof dir);
+            fit_key = fnv(fit_key, &tile, sizeof tile);
+            fit_key = fnv(fit_key, &nc, sizeof nc);
+            fit_key = fnv(fit_key, &slice_near, sizeof slice_near);
+            fit_key = fnv(fit_key, &slice_far, sizeof slice_far);
+            fit_key = fnv(fit_key, &gs.soft_shadows, sizeof gs.soft_shadows);
+            // a far cascade may keep its fit while the camera stays well inside it
+            bool keep = false;
+            if (gs.cascade_cache && k > 0 && st.valid && st.fit_key == fit_key) {
+                float moved = length(c.pos - st.fitted_at);
+                bool due = (frame - st.fitted_frame) >= (uint64_t)(1u << k);
+                keep = !due && moved < 0.2f * st.held.radius;
+            }
+            ShadowFit fit;
+            if (keep) {
+                fit = st.held;
+            } else {
+                fit = fit_shadow(s, recv, cast, travel, tile, slice_near, slice_far, gs.soft_shadows);
+                if (!fit.valid) { *cs = CascadeSet(); return true; }
+                st.held = fit;
+                st.fit_key = fit_key;
+                st.fitted_frame = frame;
+                st.fitted_at = c.pos;
+            }
+            cs->fit[k] = fit;
+            stats.cascade_texel[k] = fit.meters_per_uv / (float)tile;
+            int n_casters = 0;
+            uint64_t hash = cascade_casters(s, fit, &n_casters);
+            if (hash) { hash = fnv(hash, fit.viewproj.m, sizeof fit.viewproj.m); hash = fnv(hash, &tile, sizeof tile); }
+            st.valid = true;
+            if (hash && hash == st.hash) { reused++; continue; }
+            if (!began) { set_target(shadow.color, shadow.depth); began = true; }
+            if (!draw_cascade(s, host, fit, *cs, k)) return false;
+            st.hash = hash;
+            drawn++;
+        }
+        cs->to_light = cs->fit[0].to_light;
+        cs->right = cs->fit[0].right;
+        cs->up = cs->fit[0].up;
+        stats.cascades_drawn = drawn;
+        stats.cascades_reused = reused;
+        stats.shadow_reused = drawn == 0;
+        if (began) return end_pass(t0, &stats.shadow_ms);
         return true;
     }
 
@@ -775,11 +939,11 @@ struct GpuTier::Impl {
     }
 
     bool lit_pass(const RenderScene& s, const PackedLights& ls, const GpuPlan& plan, const PassHost& host,
-                  const GraphicsSettings& gs, const ShadowFit& fit, int shadow_light, const Target& dst, bool hdr) {
+                  const GraphicsSettings& gs, const CascadeSet& cs, int shadow_light, const Target& dst, bool hdr) {
         int w = gl->desc.width, h = gl->desc.height;
         bool any_lit = false;
         for (int i = 0; i < s.item_count; i++) if (!s.items[i].unlit) { any_lit = true; break; }
-        bool use_shadow = fit.valid;
+        bool use_shadow = cs.any();
         bool use_ao = plan.ao;
         double t0 = now_ms();
 
@@ -795,6 +959,7 @@ struct GpuTier::Impl {
             key.pbr = plan.pbr;
             key.shadow = use_shadow ? (gs.soft_shadows ? 2 : 1) : 0;
             key.shadow_light = shadow_light;
+            key.cascades = use_shadow ? cs.count : 1;
             key.ao = use_ao;
             key.fog = plan.fog;
             key.hdr = hdr;
@@ -829,7 +994,7 @@ struct GpuTier::Impl {
             u4(sh, "u_sky", sl.sky_color.x * sl.intensity, sl.sky_color.y * sl.intensity, sl.sky_color.z * sl.intensity, 0);
             u4(sh, "u_gnd", sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
             u4(sh, "u_fog", fogc.x, fogc.y, fogc.z, density);
-            if (!upload_frame_data(ls, fit, use_shadow)) return false;
+            if (!upload_frame_data(ls, cs)) return false;
         }
 
         set_target(dst.color, main_depth);
@@ -986,11 +1151,10 @@ struct GpuTier::Impl {
              const PassHost& host, int w, int h) {
         if (!make_tri()) return false;
 
-        // shadow
-        ShadowFit fit;
+        // shadow: the strongest directional light with shadows, found again in the packed lights
+        CascadeSet cs;
         int shadow_light = 0;
         if (plan.shadows && ls.nd > 0) {
-            // the strongest directional light with shadows, found again in the packed lights
             const RenderLight* best = nullptr;
             float best_power = 0;
             for (int i = 0; i < s.light_count; i++) {
@@ -1008,31 +1172,13 @@ struct GpuTier::Impl {
                         fabsf_(c[0] - col.x) + fabsf_(c[1] - col.y) + fabsf_(c[2] - col.z) < 1e-3f) {
                         shadow_light = i;
                         Bounds recv, cast;
-                        uint64_t hash = 1469598103934665603ull;
-                        bool cacheable = true;
                         for (int j = 0; j < s.item_count; j++) {
                             const DrawItem& it = s.items[j];
                             Bounds b = item_bounds(it);
                             recv.add(b);
-                            if (it.cast_shadows) {
-                                cast.add(b);
-                                hash = fnv(hash, it.model.m, sizeof it.model.m);
-                                hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
-                                hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
-                                if (!it.mesh.key) cacheable = false;
-                            }
+                            if (it.cast_shadows) cast.add(b);
                         }
-                        int size = gs.shadow_resolution;
-                        if (size < 256) size = 256;
-                        if (size > 4096) size = 4096;
-                        if (!plan.hw && size > 1024) size = 1024;     // clears and fills cost too much on the CPU backend
-                        fit = fit_shadow(s, recv, cast, best->direction, size, fclamp(gs.shadow_distance, 1.0f, 2000.0f),
-                                         gs.soft_shadows);
-                        if (fit.valid) {
-                            hash = fnv(hash, fit.viewproj.m, sizeof fit.viewproj.m);
-                            hash = fnv(hash, &size, sizeof size);
-                            if (!shadow_pass(s, host, fit, size, cacheable ? hash : 0)) return false;
-                        }
+                        if (!cascades_pass(s, host, gs, plan.hw, recv, cast, best->direction, &cs)) return false;
                         break;
                     }
                 }
@@ -1055,7 +1201,7 @@ struct GpuTier::Impl {
         main_t.color = main_color;
         main_t.w = w;
         main_t.h = h;
-        if (!lit_pass(s, ls, plan, host, gs, fit, shadow_light, (bloom || aa) ? scene : main_t, bloom)) return false;
+        if (!lit_pass(s, ls, plan, host, gs, cs, shadow_light, (bloom || aa) ? scene : main_t, bloom)) return false;
 
         if (bloom) {
             if (!bloom_passes(s, s.post, scene)) return false;
@@ -1069,7 +1215,7 @@ struct GpuTier::Impl {
 
     void release_all() {
         if (!gl) return;
-        drop(&shadow_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
+        drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
         drop(&up_p); for (FGLShader*& c : comp_p) drop(&c); drop(&fxaa_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
@@ -1082,7 +1228,7 @@ struct GpuTier::Impl {
         if (frame_data) fglDestroyBuffer(gl, frame_data);
         tri = 0;
         frame_data = 0;
-        shadow_hash = 0;
+        for (CascadeState& st : cstate) st = CascadeState();
         atlas_hash = 0;
         gl = nullptr;
     }

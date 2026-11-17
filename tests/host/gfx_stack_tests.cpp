@@ -434,6 +434,142 @@ void test_bloom_and_lens() {
     CHECK_MSG(near_px(mid, px(r, 160, 60), 1), "no fringe at the centre");
 }
 
+// ---------------------------------------------------------------- cascaded shadows
+
+struct SunRig {
+    Vec3 cube_p[kCubeVertices], cube_n[kCubeVertices], plane_p[kPlaneVertices], plane_n[kPlaneVertices];
+    DrawItem items[4];
+    RenderLight sun;
+    RenderScene scene;
+    SunRig() {
+        make_cube(cube_p, cube_n, 1.0f);
+        make_plane(plane_p, plane_n, 90.0f, 0.0f);
+        items[0].mesh = RenderMesh{ plane_p, plane_n, kPlaneVertices, 21 };
+        items[0].model = Mat4::identity();
+        items[0].color = Vec3(0.7f, 0.7f, 0.7f);
+        for (int i = 1; i < 4; i++) {
+            items[i].mesh = RenderMesh{ cube_p, cube_n, kCubeVertices, 22 };
+            items[i].color = Vec3(0.8f, 0.3f, 0.3f);
+        }
+        set_cube_z(-6.0f, -28.0f, -46.0f);
+        sun.type = LightType::Directional;
+        sun.direction = normalize(Vec3(0.7f, -1.0f, 0.1f));
+        sun.intensity = 2.0f;
+        scene.items = items;
+        scene.item_count = 4;
+        scene.lights = &sun;
+        scene.light_count = 1;
+        scene.sky.mode = SkyMode::Color;
+        scene.sky.zenith = Vec3(0.2f, 0.2f, 0.2f);
+        scene.sky_light.intensity = 0.3f;
+        scene.post.tonemap = Tonemap::None;
+        scene.post.vignette = 0;
+        scene.delta_time = 0.016f;
+        camera(Vec3(0, 4, 0));
+    }
+    void set_cube_z(float a, float b, float c) {
+        const float z[3] = { a, b, c };
+        for (int i = 0; i < 3; i++) items[1 + i].model = Mat4::translation(Vec3(0, 1.0f, z[i]));
+    }
+    void camera(Vec3 eye) {
+        scene.camera.position = eye;
+        scene.camera.view = Mat4::look_at(eye, eye + Vec3(0, -0.12f, -1), Vec3(0, 1, 0));
+        scene.camera.proj = Mat4::perspective(radians(60.0f), (float)W / H, 0.1f, 200.0f);
+    }
+    // the pixel a world point lands on
+    bool project(Vec3 p, int* x, int* y) const {
+        Vec3 v = transform_point(scene.camera.view, p);
+        if (v.z >= -0.01f) return false;
+        float nx = scene.camera.proj.m[0] * v.x / -v.z, ny = scene.camera.proj.m[5] * v.y / -v.z;
+        *x = (int)((nx * 0.5f + 0.5f) * (float)W);
+        *y = (int)((0.5f - ny * 0.5f) * (float)H);
+        return *x >= 0 && *x < W && *y >= 0 && *y < H;
+    }
+};
+
+GraphicsSettings sun_only(int cascades) {
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    g.allow_gpu_effects_on_cpu = true;
+    g.shadows = true;
+    g.shadow_resolution = 1024;
+    g.soft_shadows = false;
+    g.shadow_distance = 60.0f;
+    g.shadow_cascades = cascades;
+    g.pbr = false;
+    return g;
+}
+
+void test_cascades() {
+    Renderer r;
+    r.set_settings(sun_only(3));
+    CHECK(r.init(W * 2, H * 2));
+    SunRig rig;
+    // frame sizes: render at 2x so the far shadows have a few pixels
+    auto lum_at = [&](Vec3 p) {
+        int x, y;
+        if (!rig.project(p, &x, &y)) return -1;
+        Px c = px(r, x * 2 + 1, y * 2 + 1);
+        return lum(c);
+    };
+    if (!render_ok(r, rig.scene)) return;
+    const GpuTierStats st = r.gpu_tier_stats();
+    CHECK_EQ(st.cascades, 3);
+    CHECK_EQ(st.cascades_drawn, 3);
+    CHECK(st.cascade_texel[0] > 0 && st.cascade_texel[0] < st.cascade_texel[1] && st.cascade_texel[1] < st.cascade_texel[2]);
+    // a shadow beside every cube, near, middle and far: dark next to the lit ground
+    float zs[3] = { -6.0f, -28.0f, -46.0f };
+    for (int i = 0; i < 3; i++) {
+        int shadow = lum_at(Vec3(1.8f, 0.0f, zs[i])), lit = lum_at(Vec3(-3.5f, 0.0f, zs[i]));
+        CHECK_MSG(shadow >= 0 && lit > 0 && shadow < lit * 0.75f, "a cube's shadow reaches the ground at every distance");
+    }
+    // the same frame again: nothing is redrawn
+    CHECK(render_ok(r, rig.scene));
+    CHECK_EQ(r.gpu_tier_stats().cascades_drawn, 0);
+    CHECK_EQ(r.gpu_tier_stats().cascades_reused, 3);
+    CHECK(r.gpu_tier_stats().shadow_reused);
+    // a tiny camera move stays inside the same texel snapped fit; a far cube moving does not touch the near cascade
+    rig.camera(Vec3(0.0001f, 4, 0));
+    CHECK(render_ok(r, rig.scene));
+    CHECK_MSG(r.gpu_tier_stats().cascades_drawn == 0, "texel snapping: a tiny move redraws nothing");
+    rig.set_cube_z(-6.0f, -28.0f, -47.0f);
+    CHECK(render_ok(r, rig.scene));
+    CHECK_MSG(r.gpu_tier_stats().cascades_drawn >= 1 && r.gpu_tier_stats().cascades_drawn < 3,
+              "moving a far caster leaves the near cascades alone");
+    rig.set_cube_z(-6.0f, -28.0f, -46.0f);
+    CHECK(render_ok(r, rig.scene));
+
+    // one cascade is the old single map: its texel is bigger than the near cascade's
+    GraphicsSettings g1 = sun_only(1);
+    r.set_settings(g1);
+    CHECK(render_ok(r, rig.scene));
+    CHECK_EQ(r.gpu_tier_stats().cascades, 1);
+    float single = r.gpu_tier_stats().cascade_texel[0];
+    CHECK_MSG(single > st.cascade_texel[0] * 1.5f, "the near cascade is sharper than a single map");
+    int s1 = lum_at(Vec3(1.8f, 0.0f, -6.0f)), l1 = lum_at(Vec3(-3.5f, 0.0f, -6.0f));
+    CHECK(s1 < l1 * 0.75f);
+
+    // far cascades keep their fit while the camera drifts: fewer redraws than with the cache off
+    int drawn[2] = {};
+    for (int cache = 0; cache < 2; cache++) {
+        GraphicsSettings g = sun_only(3);
+        g.cascade_cache = cache != 0;
+        r.set_settings(g);
+        rig.camera(Vec3(0, 4, 0));
+        CHECK(render_ok(r, rig.scene));
+        for (int f = 0; f < 8; f++) {
+            rig.camera(Vec3(0.4f * (float)(f + 1), 4, 0));
+            if (!render_ok(r, rig.scene)) break;
+            drawn[cache] += r.gpu_tier_stats().cascades_drawn;
+        }
+        // and the shadows are still right while cached
+        int sh = lum_at(Vec3(1.8f, 0.0f, -28.0f)), lt = lum_at(Vec3(-3.5f, 0.0f, -28.0f));
+        CHECK_MSG(sh >= 0 && sh < lt * 0.75f, "a cached far cascade still shadows");
+    }
+    CHECK_MSG(drawn[1] < drawn[0], "the cache redraws the far cascades less often");
+    CHECK(drawn[0] <= 8 * 3);
+}
+
 }  // namespace
 
 int main() {
@@ -444,5 +580,6 @@ int main() {
     test_auto_exposure_render();
     test_dynamic_resolution();
     test_bloom_and_lens();
+    test_cascades();
     return finish_tests("gfx_stack_tests");
 }

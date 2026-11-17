@@ -135,12 +135,21 @@ void emit_atlas_lookup(Text& t, const char* comp, bool soft) {
     }
 }
 
+// The light accessors of the lit shader (the lights start after the frame header).
+void light_accessors(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("vec4 light0(float i) { return u_frame[");
+    t.num(kFrameHeader); t.add(".0 + i * 3.0]; }\nvec4 light1(float i) { return u_frame[");
+    t.num(kFrameHeader + 1); t.add(".0 + i * 3.0]; }\nvec4 light2(float i) { return u_frame[");
+    t.num(kFrameHeader + 2); t.add(".0 + i * 3.0]; }\n");
+}
+
 // Vogel disk offsets of the soft shadow filter, rotated per pixel.
 constexpr int kShadowTaps = 10;
 
 }  // namespace
 
-void hq_lit_vertex(char* out, size_t cap, bool shadow) {
+void hq_lit_vertex(char* out, size_t cap, int cascades) {
     Text t(out, cap);
     t.add("uniform mat4 fgl_ModelViewProjection;\n"
           "uniform mat4 fgl_Model;\n"
@@ -151,19 +160,27 @@ void hq_lit_vertex(char* out, size_t cap, bool shadow) {
           "varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
-    if (shadow) t.add("layout(binding = 0) buffer vec4 u_frame[];\nvarying vec3 v_sh;\n");
+    if (cascades > 0) {
+        t.add("layout(binding = 0) buffer vec4 u_frame[];\n");
+        for (int c = 0; c < cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
+    }
     t.add(kSrgb2Lin);
     t.add("void main() {\n"
           "    v_pos = (fgl_Model * vec4(position, 1.0)).xyz;\n"
           "    v_nrm = (fgl_NormalMatrix * vec4(normal, 0.0)).xyz;\n"
           "    v_alb = srgb2lin(u_mat.rgb);\n");
-    if (shadow) {
+    if (cascades > 0) {
         // The receiver is moved along its normal by up to a few shadow texels where the
-        // surface turns away from the light (normal offset bias).
+        // surface turns away from the light (normal offset bias); each cascade has its own texel size.
         t.add("    vec3 wn = normalize(v_nrm);\n"
-              "    float sdl = clamp(dot(wn, u_frame[4].xyz), 0.0, 1.0);\n"
-              "    mat4 shm = mat4(u_frame[0], u_frame[1], u_frame[2], u_frame[3]);\n"
-              "    v_sh = (shm * vec4(v_pos + wn * (u_frame[6].y * (1.0 - sdl)), 1.0)).xyz;\n");
+              "    float sdl = clamp(dot(wn, u_frame[4].xyz), 0.0, 1.0);\n");
+        for (int c = 0; c < cascades; c++) {
+            int base = kCascadeBase + c * kCascadeStride;
+            t.add("    {\n        mat4 shm = mat4(u_frame[");
+            t.num(base); t.add("], u_frame["); t.num(base + 1); t.add("], u_frame["); t.num(base + 2); t.add("], u_frame["); t.num(base + 3);
+            t.add("]);\n        v_sh"); t.num(c); t.add(" = (shm * vec4(v_pos + wn * (u_frame[");
+            t.num(base + 4); t.add("].w * (1.0 - sdl)), 1.0)).xyz;\n    }\n");
+        }
     }
     t.add("    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
           "}\n");
@@ -183,21 +200,21 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add("layout(binding = 0) buffer vec4 u_frame[];\n");
     }
     if (total > 0) {
-        t.add("vec4 light0(float i) { return u_frame[10.0 + i * 3.0]; }\n"
-              "vec4 light1(float i) { return u_frame[11.0 + i * 3.0]; }\n"
-              "vec4 light2(float i) { return u_frame[12.0 + i * 3.0]; }\n");
+        char hdr[256];
+        light_accessors(hdr, sizeof hdr);
+        t.add(hdr);
     }
     if (local) {
         t.add("vec4 local_shadow(float i) { return u_frame[");
-        t.num(10 + total * 3);
+        t.num(kFrameHeader + total * 3);
         t.add(".0 + i]; }\n");
     }
     t.add("varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
     if (k.shadow) {
-        t.add("uniform sampler2D u_shadow;\n"
-              "varying vec3 v_sh;\n");
+        t.add("uniform sampler2D u_shadow;\n");
+        for (int c = 0; c < k.cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
     }
     if (k.ao) t.add("uniform sampler2D u_ao;\n");
     if (local) {
@@ -219,18 +236,49 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
               );
     }
     if (k.shadow) {
+        // The cascade is picked by where the pixel lands: the first (finest) whose volume contains it
+        // (|ndc xy| < 0.97, ndc z < 0.97), the last one otherwise. Its tile, texel scale and bias come from the frame data.
         t.add("float shadow_tap(vec2 uv, float dref) {\n"
-              "    return step(dref - u_frame[5].w, unpack24(texture(u_shadow, uv).rgb));\n"
+              "    return step(dref, unpack24(texture(u_shadow, uv).rgb));\n"
               "}\n"
               "float shadow_factor(vec3 N, vec3 sdir) {\n"
-              "    vec2 uv = vec2(v_sh.x * 0.5 + 0.5, 0.5 - v_sh.y * 0.5);\n"
-              "    float d0 = v_sh.z * 0.5 + 0.5;\n"
-              "    float nz = max(dot(N, sdir), 0.2);\n"
-              "    vec2 g = vec2(dot(N, u_frame[7].xyz), dot(N, u_frame[8].xyz)) * (u_frame[5].y * u_frame[5].z / nz);\n"
-              "    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * step(d0, 1.0);\n");
+              "    vec4 q = vec4(v_sh0, 0.0);\n");           // xyz: ndc in the chosen cascade, w: its index
+        if (k.cascades > 1) {
+            t.add("    {\n"
+                  "        float rem = 1.0 - step(abs(q.x), 0.97) * step(abs(q.y), 0.97) * step(q.z, 0.97);\n");
+            for (int c = 1; c < k.cascades; c++) {
+                t.add("        {\n            vec3 sc = v_sh"); t.num(c); t.add(";\n");
+                if (c < k.cascades - 1) {
+                    t.add("            float fit = step(abs(sc.x), 0.97) * step(abs(sc.y), 0.97) * step(sc.z, 0.97);\n"
+                          "            q = mix(q, vec4(sc, ");
+                    t.flt((float)c);
+                    t.add("), rem * fit);\n"
+                          "            rem = rem * (1.0 - fit);\n");
+                } else {
+                    t.add("            q = mix(q, vec4(sc, ");
+                    t.flt((float)c);
+                    t.add("), rem);\n");
+                }
+                t.add("        }\n");
+            }
+            t.add("    }\n");
+        }
+        t.add("    vec4 pa = u_frame[");
+        t.num(kCascadeBase + 4); t.add(".0 + q.w * "); t.flt((float)kCascadeStride);
+        t.add("];\n"
+              "    vec4 pb = u_frame["); t.num(kCascadeBase + 5); t.add(".0 + q.w * "); t.flt((float)kCascadeStride);
+        t.add("];\n"
+              "    vec2 g = vec2(dot(N, u_frame[7].xyz), dot(N, u_frame[8].xyz)) * (pb.y / max(dot(N, sdir), 0.2));\n"
+              // q = (uv in the tile, biased reference depth, inside)
+              "    q = vec4(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5, q.z * 0.5 + 0.5 - pb.z, 0.0);\n"
+              "    q.w = step(0.0, q.x) * step(q.x, 1.0) * step(0.0, q.y) * step(q.y, 1.0) * step(q.z, 1.0);\n"
+              "    q.xy = q.xy * pa.z + pa.xy;\n");
         if (k.shadow >= 2) {
-            t.add("    float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
-                  "    vec2 cs = vec2(cos(ang), sin(ang));\n"
+            t.add("    vec2 cs = vec2(0.0);\n"
+                  "    {\n"
+                  "        float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
+                  "        cs = vec2(cos(ang), sin(ang));\n"
+                  "    }\n"
                   "    float sum = 0.0;\n");
             for (int i = 0; i < kShadowTaps; i++) {
                 // Vogel disk: radius sqrt((i + 0.5) / n), golden angle steps.
@@ -239,16 +287,16 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
                 float ox = fcos(an) * r, oy = fsin(an) * r;
                 t.add("    {\n        vec2 o = vec2(cs.x * ");
                 t.flt(ox); t.add(" - cs.y * "); t.flt(oy); t.add(", cs.y * "); t.flt(ox); t.add(" + cs.x * "); t.flt(oy);
-                t.add(") * u_frame[6].x;\n"
-                      "        sum += shadow_tap(uv + o, d0 + g.x * o.x - g.y * o.y);\n    }\n");
+                t.add(") * pb.x;\n"
+                      "        sum += shadow_tap(q.xy + o * pa.z, q.z + g.x * o.x - g.y * o.y);\n    }\n");
             }
             t.add("    float lit = sum * ");
             t.flt(1.0f / (float)kShadowTaps);
             t.add(";\n");
         } else {
-            t.add("    float lit = shadow_tap(uv, d0);\n");
+            t.add("    float lit = shadow_tap(q.xy, q.z);\n");
         }
-        t.add("    return mix(1.0, lit, inside);\n"
+        t.add("    return mix(1.0, lit, q.w);\n"
               "}\n");
     }
     t.add("void main() {\n"
@@ -471,6 +519,13 @@ void hq_shadow_fragment(char* out, size_t cap) {
     t.add(kPack);
     t.add("void main() {\n"
           "    gl_FragColor = vec4(pack24(v_d), 1.0);\n"
+          "}\n");
+}
+
+void pp_white_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("void main() {\n"
+          "    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);\n"
           "}\n");
 }
 

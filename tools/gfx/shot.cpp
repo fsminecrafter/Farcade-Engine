@@ -9,6 +9,7 @@
 //
 // Post stack options (engine/gfx/post_stack.h):
 // --tonemap none|reinhard|aces|agx   --exposure EV   --auto-exposure   --grade warm|cool|bleach
+// --cascades N (1..3 sun shadow cascades)   --no-cascade-cache
 // --grain A   --ca A   --bloom-radius R   --scale S (internal resolution)   --frames N (frames to settle, default 2)
 #include "gfx/renderer.h"
 #include "gfx/meshgen.h"
@@ -29,8 +30,11 @@ int main(int argc, char** argv) {
     const char *tonemap = nullptr, *grade = nullptr;
     float exposure = 0, grain = 0, ca = 0, bloom_radius = -1, scale = 1;
     bool auto_exposure = false;
-    int frames = 2;
+    int frames = 2, cascades = 0;
+    bool cascade_cache = true;
     for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--cascades") && i + 1 < argc) { cascades = atoi(argv[++i]); continue; }
+        if (!strcmp(argv[i], "--no-cascade-cache")) { cascade_cache = false; continue; }
         if (!strcmp(argv[i], "--tonemap") && i + 1 < argc) tonemap = argv[++i];
         else if (!strcmp(argv[i], "--exposure") && i + 1 < argc) exposure = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--auto-exposure")) auto_exposure = true;
@@ -60,6 +64,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     gs.render_scale = scale;
+    if (cascades) gs.shadow_cascades = cascades;
+    gs.cascade_cache = cascade_cache;
     fe::gfx::Renderer r;
     r.set_settings(gs);
     if (!r.init(w, h)) { fprintf(stderr, "init: %s\n", r.error()); return 1; }

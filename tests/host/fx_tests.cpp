@@ -7,6 +7,7 @@
 #include "fx/fx.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 using namespace fe;
@@ -415,6 +416,102 @@ static void spawner_tests() {
     w.shutdown();
 }
 
+static const char* kAnim =
+    "fanim 1\n# a test file\n"
+    "clip move 2.0\n"
+    "  track . position\n    key 0 0 0 0\n    key 2 4 0 0\n"
+    "  track arm rotation\n    key 0 0 0 0\n    key 2 0 90 0\n"
+    "clip up\n"
+    "  track . position\n    key 0 0 0 0\n    key 1 0 10 0\n";
+
+static void* anim_read(const char* path, size_t* size, void*) {
+    if (strcmp(path, "hero.fanim") != 0 && strcmp(path, "anims/test.fanim") != 0) return nullptr;
+    size_t n = strlen(kAnim);
+    char* b = (char*)malloc(n + 1);
+    memcpy(b, kAnim, n + 1);
+    *size = n;
+    return b;
+}
+
+static void animator_tests() {
+    // ---- the file format
+    FanimFile f;
+    char err[96];
+    CHECK(fanim_parse(kAnim, strlen(kAnim), &f, err, sizeof err) && f.clip_count == 2, "parses (%s)", err);
+    CHECK(f.clips[0].track_count == 2 && f.clips[0].duration == 2.0f && f.clips[1].duration == 1.0f, "tracks, a length, and a length taken from the last key");
+    CHECK(absf(fanim_sample(f.clips[0].tracks[0], 1.0f).x - 2.0f) < 1e-4f && fanim_sample(f.clips[0].tracks[0], 5.0f).x == 4.0f, "linear, clamped at the ends");
+    fanim_free(&f);
+    FanimFile bad;
+    CHECK(!fanim_parse("nope", 4, &bad, err, sizeof err), "not a .fanim file");
+    CHECK(!fanim_parse("fanim 1\nclip a 1\ntrack . position\nkey 1 0 0 0\nkey 0 0 0 0\n", 58, &bad, err, sizeof err) && strstr(err, "backwards"), "times must not go backwards (%s)", err);
+    CHECK(!fanim_parse("fanim 1\nkey 0 0 0 0\n", 20, &bad, err, sizeof err), "a key outside a track");
+
+    // ---- the system
+    World w;
+    w.init();
+    FxWorld fx;
+    FxHost host;
+    host.user = nullptr;
+    host.read_file = anim_read;
+    CHECK(fx.init(&w, host), "fx init");
+    Entity hero = w.create("Hero");
+    Entity arm = w.create("arm", hero);
+    w.add(hero, ModuleKind::Animator);
+    Animator* m = (Animator*)w.get_mut(hero, ModuleKind::Animator);
+    snprintf(m->source, sizeof m->source, "hero.fanim");
+    auto A = [&]() { return (Animator*)w.get_mut(hero, ModuleKind::Animator); };
+    auto run = [&](float secs) { for (float t = 0; t < secs - 1e-6f; t += 1.0f / 60.0f) w.progress(1.0f / 60.0f); };
+    run(1.0f);
+    CHECK(absf(w.transform(hero)->position.x - 2.0f) < 0.1f, "play on start: halfway along the track (%.2f)", w.transform(hero)->position.x);
+    CHECK(A()->playing && absf(A()->time - 1.0f) < 0.05f && A()->duration == 2.0f, "time %.2f, duration %.1f", A()->time, A()->duration);
+    Quat q = w.transform(arm)->rotation;
+    CHECK(absf(q.y - 0.3827f) < 0.02f, "the child's rotation: 45 degrees about Y (qy %.3f)", q.y);
+    run(1.5f);
+    CHECK(A()->playing && w.transform(hero)->position.x < 3.0f, "loops (x %.2f)", w.transform(hero)->position.x);
+    // speed
+    A()->speed = 2.0f;
+    A()->time = 0.0f;
+    run(0.5f);
+    CHECK(absf(w.transform(hero)->position.x - 2.0f) < 0.15f, "setting time seeks, speed 2 runs twice as fast (%.2f)", w.transform(hero)->position.x);
+    // once
+    A()->speed = 1.0f;
+    A()->loop = false;
+    A()->time = 1.5f;
+    run(1.0f);
+    CHECK(!A()->playing && absf(w.transform(hero)->position.x - 4.0f) < 0.01f, "without loop it stops on the last key (playing %d, x %.2f)", (int)A()->playing, w.transform(hero)->position.x);
+    // play(name, fade) crossfades: halfway through a 1 s fade from x=4 towards "up" the position is a blend
+    FxWorld* F = &fx;
+    A()->loop = true;
+    CHECK(F->animator.play(hero, "move", 0), "play(move)");
+    run(1.0f);
+    CHECK(F->animator.play(hero, "up", 1.0f), "play(up, 1)");
+    // 'up' starts at 0: the first frames blend from the old pose
+    run(0.5f);
+    float x = w.transform(hero)->position.x, y = w.transform(hero)->position.y;
+    CHECK(x > 0.5f && y > 0.5f, "mid-fade is a blend of both clips (x %.2f y %.2f)", x, y);
+    run(1.0f);
+    CHECK(absf(w.transform(hero)->position.x) < 0.01f, "after the fade only the new clip (x %.2f)", w.transform(hero)->position.x);
+    CHECK(strcmp(A()->clip, "up") == 0, "the clip field follows");
+    // unknown clip
+    CHECK(!F->animator.play(hero, "nope", 0), "an unknown clip is refused");
+    CHECK(F->animator.stop(hero) && !A()->playing, "stop()");
+    // the clip field switches clips
+    A()->loop = true;
+    snprintf(A()->clip, sizeof A()->clip, "move");
+    A()->playing = true;
+    run(0.2f);
+    CHECK(A()->playing && strcmp(A()->clip, "move") == 0, "setting clip and playing starts it");
+    // the default file: the model path with .fanim
+    Entity hero2 = w.create("Hero2");
+    Renderable* r = w.add_renderable(hero2);
+    snprintf(r->model_path, sizeof r->model_path, "anims/test.mof");
+    w.add(hero2, ModuleKind::Animator);
+    run(0.5f);
+    CHECK(((const Animator*)w.get(hero2, ModuleKind::Animator))->playing, "no file named: <model>.fanim next to the model");
+    fx.shutdown();
+    w.shutdown();
+}
+
 static void quality_tests() {
     Mat4 id = Mat4::identity();
     ParticleEmitter e;
@@ -439,6 +536,7 @@ int main() {
     raster_tests();
     system_tests();
     quality_tests();
+    animator_tests();
     spawner_tests();
     printf("fx_tests: %d checks, %d failures\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

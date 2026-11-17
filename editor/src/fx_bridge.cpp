@@ -285,6 +285,8 @@ void FxBridge::start(Editor& ed) {
     FxHost host;
     host.user = &ed;
     host.physics = ed.play_physics();
+    host.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
+    host.log = [](void* u, const char* what, const char* path) { ((Editor*)u)->log(LogLevel::Warning, "%s: %s", path, what); };
     host.spawn = [](void* u, Entity src, const Mat4& m) { return ed_spawn((Editor*)u, src, m); };
     if (!fx_->init(w, host)) { delete fx_; fx_ = nullptr; return; }
     if (ed.play_scripts()) fx_->bind_script(ed.play_scripts());

@@ -1540,6 +1540,23 @@ int main() {
         CHECK(ed.scene.count() == objects_before, "Stop puts the scene back");
         ed.scene.remove(ball);
         ed.scene.remove(sp);
+        // Animator: a clip file in the project moves the object in Play; Lua picks clips.
+        const char* anim = "fanim 1\nclip slide 2\n track . position\n  key 0 0 1 0\n  key 2 6 1 0\nclip rise 1\n track . position\n  key 0 0 1 0\n  key 1 0 5 0\n";
+        platform::write_file("build/host/test-project/box.fanim", anim, strlen(anim));
+        ObjectId mv = ed.create_object("Mover", MeshKind::Cube, Vec3(0, 1, 0));
+        ed.scene.add_module(mv, ModuleKind::Animator);
+        snprintf(ed.scene.get(mv)->modules.animator.source, kPathMax, "box.fanim");
+        snprintf(ed.scene.get(mv)->modules.animator.clip, kPathMax, "slide");
+        ed.play();
+        frames(60);
+        CHECK(ed.scene.get(mv)->position.x > 2.0f && ed.scene.get(mv)->modules.animator.playing, "an Animator plays its clip in Play (x %.2f)", ed.scene.get(mv)->position.x);
+        ed.play_scripts()->run("local m = fe.find('Mover'); m.animator:play('rise', 0); m.animator.speed = 1");
+        frames(30);
+        CHECK(absf_(ed.scene.get(mv)->position.y - 3.0f) < 0.5f && !strcmp(ed.scene.get(mv)->modules.animator.clip, "rise"), "Lua: animator:play('rise') (y %.2f)", ed.scene.get(mv)->position.y);
+        ed.stop();
+        frames(2);
+        CHECK(ed.scene.get(mv)->position.x == 0.0f, "Stop puts it back");
+        ed.scene.remove(mv);
         ed.play();
         frames(2);
         ed.stop();

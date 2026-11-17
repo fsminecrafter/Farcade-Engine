@@ -9,13 +9,14 @@ bool FxWorld::init(World* world, const FxHost& host) {
     if (!world || !world->valid()) return false;
     world_ = world;
     host_ = host;
-    if (!particles.init(world) || !spawner.init(world, &host_)) { shutdown(); return false; }
+    if (!particles.init(world) || !spawner.init(world, &host_) || !animator.init(world, &host_)) { shutdown(); return false; }
     return true;
 }
 
 void FxWorld::shutdown() {
     particles.shutdown();
     spawner.shutdown();
+    animator.shutdown();
     world_ = nullptr;
 }
 
@@ -27,6 +28,11 @@ void FxWorld::bind_script(ScriptRuntime* rt) {
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "play", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.play(e); }, this);
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "stop", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.stop(e); }, this);
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "clear", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.clear(e); }, this);
+    // obj.animator:play(name, fade) / stop()
+    rt->add_module_method_ex(ModuleKind::Animator, "play", [](Entity e, const Call& c, Res* r, void* u) {
+        r->b = ((FxWorld*)u)->animator.play(e, c.argc > 0 ? c.str[0] : nullptr, c.argc > 1 ? (float)c.num[1] : -1.0f);
+    }, this);
+    rt->add_module_method_ex(ModuleKind::Animator, "stop", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->animator.stop(e); }, this);
     // obj.spawner:spawn() / clear()
     rt->add_module_method_ex(ModuleKind::Spawner, "spawn", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->spawner.spawn(e); }, this);
     rt->add_module_method_ex(ModuleKind::Spawner, "clear", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->spawner.clear(e); }, this);

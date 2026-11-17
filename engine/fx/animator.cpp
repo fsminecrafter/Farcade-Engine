@@ -406,6 +406,8 @@ void AnimatorSystem::system(World& w, float dt, void* user) {
                     if (fc->tracks[k].channel == c.tracks[t].channel && st->from_targets[k] == target) { from = &fc->tracks[k]; break; }
             apply_track(&w, target, c.tracks[t], st->time, from, st->from_time, mix);
         }
+        if (S->host_ && S->host_->animator_pose)       // the model animation hook (fx.h)
+            S->host_->animator_pose(S->host_->user, e, c.name, st->time, fc ? fc->name : nullptr, st->from_time, fc ? mix : 0.0f);
         m->playing = st->playing;
         m->time = st->time;
         m->duration = c.duration;

@@ -32,6 +32,14 @@ struct FxHost {
     Entity (*spawn)(void* user, Entity source, const Mat4& world) = nullptr;
     // A project file's bytes (malloc'd, the caller frees), or null: animation files.
     void* (*read_file)(const char* path, size_t* size, void* user) = nullptr;
+    // HOOK for skinned / model animation (not used by the editor yet): called
+    // every frame for each Animator that has a clip, after the transform tracks
+    // were applied, with the clip name, its time (seconds) and the crossfade
+    // weight of the clip being faded out (0 = none) with its own clip and time.
+    // A host that loads a .mof model with a skeleton samples its pose from
+    // this and hands the posed vertices to the renderer; the Animator owns the
+    // state (clip, time, speed, loop, fade), the host only reads it.
+    void (*animator_pose)(void* user, Entity e, const char* clip, float time, const char* from_clip, float from_time, float fade_mix) = nullptr;
     // Problems worth showing the user (a broken animation file).
     void (*log)(void* user, const char* what, const char* path) = nullptr;
 };

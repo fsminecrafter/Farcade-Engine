@@ -897,10 +897,29 @@ void Editor::settings_graphics() {
         }
         ImGui::BeginDisabled(!active);
         bool changed = false;
-        prop_label("Shadows");
-        changed |= toggle_switch("##shadows", &g.shadows);
-        track("gfx:shadows");
+        // A combo over the named choices of a graphics property (graphics_settings.h); the older, cheaper
+        // technique stays in the list next to the newer ones.
+        auto choice = [&](const char* label, const char* id, const char* prop, const char* const* shown) {
+            using namespace gfx;
+            int pi = graphics_property_find(prop);
+            const GraphicsProperty& gp = graphics_property(pi);
+            char cur[40];
+            graphics_get_text(g, prop, cur, sizeof cur);
+            int ci = 0, n = 0;
+            for (; gp.choices[n]; n++) if (!strcmp(gp.choices[n], cur)) ci = n;
+            prop_label(label);
+            if (ImGui::Combo(id, &ci, shown, n)) { graphics_set_text(&g, prop, gp.choices[ci]); changed = true; }
+            track(id);
+        };
+        static const char* shadow_modes[] = { "Off", "Single map", "Cascades" };
+        choice("Shadows", "##shadowmode", "shadows", shadow_modes);
         if (g.shadows) {
+            if (g.shadow_cascades >= 2) {
+                prop_label("  Cascades");
+                changed |= ImGui::SliderInt("##casc", &g.shadow_cascades, 2, 3);
+                prop_label("  Cache far");
+                changed |= toggle_switch("##casccache", &g.cascade_cache);
+            }
             static const int sizes[] = { 512, 1024, 2048, 4096 };
             static const char* size_names[] = { "512", "1024", "2048", "4096" };
             int si = 0;
@@ -927,21 +946,18 @@ void Editor::settings_graphics() {
             if (ImGui::Combo("##lsres", &ai, asize_names, 4)) { g.local_shadow_resolution = asizes[ai]; changed = true; }
             faint("A spot light takes one of 16 atlas tiles, a point light six.");
         }
-        prop_label("Ambient occlusion");
-        changed |= toggle_switch("##ao", &g.ambient_occlusion);
-        track("gfx:ao");
+        static const char* ao_modes[] = { "Off", "SSAO" };
+        choice("Ambient occlusion", "##aomode", "ao", ao_modes);
         if (g.ambient_occlusion) {
             prop_label("  Radius");
             changed |= ImGui::SliderFloat("##aor", &g.ao_radius, 0.1f, 2.0f, "%.2f m");
             prop_label("  Strength");
             changed |= ImGui::SliderFloat("##aos", &g.ao_strength, 0.0f, 2.0f, "%.2f");
         }
-        prop_label("Bloom");
-        changed |= toggle_switch("##bloom", &g.bloom);
-        track("gfx:bloom");
-        prop_label("Antialiasing");
-        changed |= toggle_switch("##aa", &g.antialiasing);
-        track("gfx:aa");
+        static const char* bloom_modes[] = { "Off", "Simple", "Chain" };
+        choice("Bloom", "##bloommode", "bloom", bloom_modes);
+        static const char* aa_modes[] = { "Off", "FXAA" };
+        choice("Antialiasing", "##aamode", "aa", aa_modes);
         prop_label("PBR shading");
         changed |= toggle_switch("##pbr", &g.pbr);
         track("gfx:pbr");

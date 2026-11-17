@@ -659,6 +659,8 @@ void Editor::build_world() {
     };
     script_count_ = 0;
     if (scripts_->init(world_, host)) {
+        play_gfx_backup_ = settings.graphics;      // fe.graphics changes the live settings; Stop restores them
+        scripts_->set_graphics_settings(&settings.graphics, &gfx_script_changed_);
         for (int i = 0; i < world_count_; i++) {
             Object* o = scene.get(world_objects_[i]);
             if (!o) continue;
@@ -805,6 +807,7 @@ void Editor::stop() {
     if (!playing()) return;
     ObjectId next = scene.next_id();
     free_world();
+    settings.graphics = play_gfx_backup_;
     scene.copy_from(*play_backup_);
     scene.keep_ids_above(next);         // objects made while playing keep their ids retired
     delete play_backup_;

@@ -85,8 +85,8 @@ void pp_vertex(char* out, size_t cap);
 void pp_skymask_fragment(char* out, size_t cap);               // sampler u_depth: discards geometry pixels
 void pp_ssao_fragment(char* out, size_t cap);                  // samplers u_depth, u_normal
 void pp_blur_fragment(char* out, size_t cap);                  // u_dir: xy texel step
-void pp_bright_fragment(char* out, size_t cap);                // u_q.x threshold
-void pp_down_fragment(char* out, size_t cap);
+void pp_bright_fragment(char* out, size_t cap, bool karis);    // u_q.x threshold; karis: weighted by 1 / (1 + luma)
+void pp_down_fragment(char* out, size_t cap, bool wide);       // wide: 13 taps, else a 4x4 box
 void pp_up_fragment(char* out, size_t cap);                    // sampler u_fine, u_coarse
 void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic);
                                                                // sampler u_scene, u_bloom; u_q.x strength; u_ca.x fringe (chromatic)

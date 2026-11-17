@@ -709,7 +709,7 @@ void pp_blur_fragment(char* out, size_t cap) {
 // The bright pass: 4 bilinear taps = a 4x4 box of the scene, each tap thresholded with a soft knee.
 // The taps are weighted by 1 / (1 + luma) (Karis average), so a few very bright pixels do not make
 // the glow flicker.
-void pp_bright_fragment(char* out, size_t cap) {
+void pp_bright_fragment(char* out, size_t cap, bool karis) {
     Text t(out, cap);
     t.add("uniform sampler2D u_src;\n"
           "uniform vec4 u_p;\n"
@@ -729,18 +729,34 @@ void pp_bright_fragment(char* out, size_t cap) {
           "    vec3 a = bright(texture(u_src, uv + vec2(-o.x, -o.y)).rgb);\n"
           "    vec3 b = bright(texture(u_src, uv + vec2(o.x, -o.y)).rgb);\n"
           "    vec3 c = bright(texture(u_src, uv + vec2(-o.x, o.y)).rgb);\n"
-          "    vec3 d = bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n"
-          "    vec4 w = 1.0 / (1.0 + vec4(dot(a, vec3(0.2126, 0.7152, 0.0722)), dot(b, vec3(0.2126, 0.7152, 0.0722)),\n"
-          "                               dot(c, vec3(0.2126, 0.7152, 0.0722)), dot(d, vec3(0.2126, 0.7152, 0.0722))));\n"
-          "    vec3 s = (a * w.x + b * w.y + c * w.z + d * w.w) / (w.x + w.y + w.z + w.w);\n"
-          "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
+          "    vec3 d = bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n");
+    if (karis)
+        t.add("    vec4 w = 1.0 / (1.0 + vec4(dot(a, vec3(0.2126, 0.7152, 0.0722)), dot(b, vec3(0.2126, 0.7152, 0.0722)),\n"
+              "                               dot(c, vec3(0.2126, 0.7152, 0.0722)), dot(d, vec3(0.2126, 0.7152, 0.0722))));\n"
+              "    vec3 s = (a * w.x + b * w.y + c * w.z + d * w.w) / (w.x + w.y + w.z + w.w);\n");
+    else
+        t.add("    vec3 s = (a + b + c + d) * 0.25;\n");
+    t.add(          "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
           "}\n");
 }
 
 // The downsample of the chain: 13 bilinear taps over a 6x6 source area (the filter of the call of duty
 // "Next generation post processing" talk): 4 inner boxes, 4 outer edges, 4 corners, the centre.
-void pp_down_fragment(char* out, size_t cap) {
+void pp_down_fragment(char* out, size_t cap, bool wide) {
     Text t(out, cap);
+    if (!wide) {
+        // the simple chain: 4 bilinear taps, a 4x4 box
+        t.add("uniform sampler2D u_src;\n"
+              "uniform vec4 u_p;\n"
+              "void main() {\n"
+              "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+              "    vec2 o = u_p.zw;\n"
+              "    vec3 c = texture(u_src, uv + vec2(-o.x, -o.y)).rgb + texture(u_src, uv + vec2(o.x, -o.y)).rgb\n"
+              "           + texture(u_src, uv + vec2(-o.x, o.y)).rgb + texture(u_src, uv + vec2(o.x, o.y)).rgb;\n"
+              "    gl_FragColor = vec4(c * 0.25, 1.0);\n"
+              "}\n");
+        return;
+    }
     t.add("uniform sampler2D u_src;\n"
           "uniform vec4 u_p;\n"
           "vec3 tap(vec2 uv, float x, float y) {\n"

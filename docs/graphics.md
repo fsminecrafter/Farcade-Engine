@@ -112,6 +112,71 @@ It uses the measured frame time (render, readback and upscale). Bands (`render_r
 full size. Screenshots: `gfx-agx.png`, `gfx-graded.png`, `gfx-autoexposure.png`, `gfx-post-high.png`
 (`fe-gfx-shot --tonemap agx --grade warm --auto-exposure --scale 0.5 ...`).
 
+## Graphics settings in games
+
+The graphics settings are part of the game, not only of the editor. `fe::gfx::GraphicsSettings`
+(engine/gfx/graphics_settings.h) is one plain struct, and `graphics_settings.cpp` stores it as text, by
+field name, in the style of `.fscene`:
+
+```
+farcade-graphics 1
+preset high
+aa fxaa
+shadows cascades
+shadow_cascades 3
+render_scale 0.75
+...
+```
+
+```cpp
+char text[2048];
+size_t n = graphics_settings_to_text(settings, text, sizeof text);      // save: put `text` into project.fe
+GraphicsSettings g;
+int ignored = graphics_settings_from_text(&g, text, strlen(text));      // load at startup, then
+renderer.set_settings(g);                                               // apply (cheap; every frame is fine)
+```
+
+`from_text` starts from the defaults, so a missing name keeps its default; unknown names and invalid
+values are ignored (the return value counts them); a `preset` line names the preset when nothing differs
+from it, else the settings read back as `custom`. A null text returns -1. Every option is an explicit choice
+and the older, cheaper technique stays selectable next to the newer one; Low is the cheap base tier of
+before. Names and allowed values:
+
+| Name | Values |
+|---|---|
+| `preset` | low, medium, high, ultra, custom (setting it applies the preset) |
+| `feature_level` | auto, fl0, fl1, gpu |
+| `render_scale` | 0.25 to 1; `dynamic_resolution` bool; `target_frame_ms` 8 to 100; `min_render_scale` 0.25 to 1 |
+| `shadows` | off, single (one map), cascades; `shadow_cascades` 2 or 3 (with cascades) |
+| `shadow_resolution` | 512, 1024, 2048, 4096; `shadow_distance` 1 to 2000 m; `soft_shadows`, `cascade_cache` bool |
+| `local_shadows` | bool; `local_shadow_lights` 1 to 4; `local_shadow_resolution` 512 to 4096 |
+| `ao` | off, ssao; `ao_radius` 0.05 to 5; `ao_strength` 0 to 2 |
+| `aa` | off, fxaa |
+| `bloom` | off, simple (4 levels, the first version), chain (5 levels, radius) |
+| `pbr` | bool (GGX, else Blinn-Phong) |
+| `allow_gpu_effects_on_cpu` | bool (run the GPU tier on the CPU backend, slow) |
+
+Look and style settings (tonemap operator, exposure, grading, bloom strength, grain, fog) belong to the scene's
+Post Processing and Sky objects, not to this struct. Code can also use the property API
+(`graphics_property_count / graphics_property`, `graphics_get_text`, `graphics_set_text`,
+`graphics_apply_preset_name`), which is what Settings > Graphics and the Lua binding use.
+
+**Scripts** read and change them at run time with `fe.graphics` (engine/script/lua_graphics.h):
+
+```lua
+fe.graphics.get("aa")                  -- "fxaa" (strings for choices, numbers, booleans; shadow_resolution is a number)
+fe.graphics.set("aa", "off")           -- string, number or boolean; an unknown name or invalid value is a Lua error
+fe.graphics.set("render_scale", 0.6)
+fe.graphics.preset("low")              -- low | medium | high | ultra
+for _, p in ipairs(fe.graphics.list()) do print(p.name, p.type, p.value, p.values and table.concat(p.values, "/")) end
+fe.graphics.text()                     -- the settings as text
+```
+
+A change is written to the host's `GraphicsSettings` and sets the host's `changed` flag; the host calls
+`Renderer::set_settings` before the next frame. The host connects them with
+`ScriptRuntime::set_graphics_settings(&settings, &changed)` (the editor does it for Play and restores the settings at
+Stop); without it `fe.graphics` raises "the graphics settings are not available here".
+
 ## Cascaded sun shadows
 
 `shadow_cascades` (1..3) splits the sun shadow by view distance (ends at 14% / 38% / 100% of the shadow

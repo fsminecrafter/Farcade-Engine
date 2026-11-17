@@ -290,6 +290,8 @@ private:
     void window_settings();
     void shortcuts();
     Scene* play_backup_ = nullptr;
+    gfx::GraphicsSettings play_gfx_backup_;     // the graphics settings before Play: scripts may change them (fe.graphics)
+    bool gfx_script_changed_ = false;
     bool want_save_as_ = false;
     void save_as_popup();
     // history

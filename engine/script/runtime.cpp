@@ -7,6 +7,7 @@
 #include "script/runtime.h"
 #include "script/internal.h"
 #include "script/lua_api.h"
+#include "script/lua_graphics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +82,8 @@ struct ScriptRuntime::Impl {
 
     Entity* pending = nullptr;          // destroy requests
     int npending = 0, cap_pending = 0;
+
+    ScriptGraphics graphics;            // fe.graphics (lua_graphics.h)
 
     int depth = 0;                      // running callbacks / entry points
     ScriptStats stats;
@@ -1033,6 +1036,8 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     set_funcs_with_upvalue(L, "error", f_print, (int)ScriptLogLevel::Error);
     lua_pushnumber(L, 0);
     lua_setfield(L, -2, "dt");
+    script_push_graphics_table(L, &I->graphics);
+    lua_setfield(L, -2, "graphics");
     lua_pushvalue(L, -1);
     I->fe_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_getfield(L, -1, "vec3");
@@ -1296,6 +1301,12 @@ bool ScriptRuntime::add_module_method(ModuleKind kind, const char* name, ModuleM
     m.fn = fn;
     m.user = user;
     return true;
+}
+
+void ScriptRuntime::set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed) {
+    if (!impl_) return;
+    impl_->graphics.settings = settings;
+    impl_->graphics.changed = changed;
 }
 
 bool ScriptRuntime::run(const char* code) {

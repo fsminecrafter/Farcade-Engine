@@ -5,6 +5,7 @@
 #include "gfx/feature_level.h"
 #include "gfx/meshgen.h"
 #include "gfx/post_stack.h"
+#include "gfx/graphics_settings.h"
 #include "gfx/host/farcadegl_host.h"
 #include "mof_check.h"
 
@@ -386,6 +387,7 @@ void test_bloom_and_lens() {
     g.allow_gpu_effects_on_cpu = true;
     g.shadows = false; g.ambient_occlusion = false; g.antialiasing = false;
     g.bloom = true;
+    g.bloom_mode = BloomMode::Chain;
     r.set_settings(g);
     CHECK(r.init(320, 240));
     Vec3 cp[kCubeVertices], cn[kCubeVertices];
@@ -570,6 +572,128 @@ void test_cascades() {
     CHECK(drawn[0] <= 8 * 3);
 }
 
+// ---------------------------------------------------------------- settings as text and choices
+
+void test_settings_text() {
+    // every property reads back what was set, by name
+    GraphicsSettings g;
+    char v[64], err[160];
+    CHECK(graphics_set_text(&g, "aa", "off", err, sizeof err));
+    CHECK(graphics_get_text(g, "aa", v, sizeof v) && !strcmp(v, "off") && !g.antialiasing);
+    CHECK(g.preset == GraphicsPreset::Custom);
+    CHECK(graphics_set_text(&g, "aa", "fxaa"));
+    CHECK(g.antialiasing);
+    CHECK(graphics_set_text(&g, "shadows", "single"));
+    CHECK(g.shadows && g.shadow_cascades == 1);
+    CHECK(graphics_set_text(&g, "shadows", "cascades") && g.shadows && g.shadow_cascades >= 2);
+    CHECK(graphics_set_text(&g, "shadow_cascades", "2") && g.shadow_cascades == 2);
+    CHECK(graphics_set_text(&g, "shadows", "off") && !g.shadows);
+    CHECK(graphics_set_text(&g, "bloom", "simple") && g.bloom && g.bloom_mode == BloomMode::Simple);
+    CHECK(graphics_set_text(&g, "bloom", "chain") && g.bloom_mode == BloomMode::Chain);
+    CHECK(graphics_set_text(&g, "bloom", "off") && !g.bloom);
+    CHECK(graphics_set_text(&g, "shadow_resolution", "4096") && g.shadow_resolution == 4096);
+    CHECK(graphics_set_text(&g, "render_scale", "0.5") && g.render_scale == 0.5f);
+    CHECK(graphics_set_text(&g, "dynamic_resolution", "on") && g.dynamic_resolution);
+    // invalid names and values are refused with a reason, and change nothing
+    GraphicsSettings before = g;
+    CHECK(!graphics_set_text(&g, "no_such_thing", "1", err, sizeof err) && strstr(err, "unknown graphics setting"));
+    CHECK(!graphics_set_text(&g, "aa", "taa", err, sizeof err) && strstr(err, "allowed: off, fxaa"));
+    CHECK(!graphics_set_text(&g, "render_scale", "7", err, sizeof err) && strstr(err, "0.25 to 1"));
+    CHECK(!graphics_set_text(&g, "render_scale", "abc"));
+    CHECK(!graphics_set_text(&g, "shadow_cascades", "2.5"));
+    CHECK(!graphics_set_text(&g, "pbr", "maybe"));
+    CHECK(memcmp(&before, &g, sizeof g) == 0);
+    // presets by name; Low is the cheap base tier
+    CHECK(graphics_apply_preset_name(&g, "low") && g.preset == GraphicsPreset::Low);
+    CHECK(!g.shadows && !g.bloom && !g.antialiasing && !g.ambient_occlusion && !g.pbr);
+    CHECK(!graphics_apply_preset_name(&g, "nope"));
+    // all properties have help and a sane range
+    for (int i = 0; i < graphics_property_count(); i++) {
+        const GraphicsProperty& p = graphics_property(i);
+        CHECK(p.name && p.help && graphics_property_find(p.name) == i);
+        if (p.kind == GraphicsPropKind::Choice) CHECK(p.choices && p.choices[0] && p.choices[1]);
+    }
+
+    // text round trip for every preset and for custom values
+    char t1[2048], t2[2048];
+    const GraphicsPreset presets[] = { GraphicsPreset::Low, GraphicsPreset::Medium, GraphicsPreset::High, GraphicsPreset::Ultra };
+    for (GraphicsPreset pr : presets) {
+        GraphicsSettings a;
+        a.apply_preset(pr);
+        a.render_scale = 0.75f;                     // not part of a preset
+        size_t n = graphics_settings_to_text(a, t1, sizeof t1);
+        CHECK(n > 100 && n < sizeof t1 && !strncmp(t1, "farcade-graphics 1\n", 19));
+        GraphicsSettings b;
+        CHECK_EQ(graphics_settings_from_text(&b, t1, n), 0);
+        graphics_settings_to_text(b, t2, sizeof t2);
+        CHECK_STR(t1, t2);
+        CHECK(b.preset == pr);
+    }
+    // a changed value under a preset label makes it Custom, and survives the round trip
+    {
+        GraphicsSettings a;
+        a.apply_preset(GraphicsPreset::High);
+        a.shadow_distance = 63.5f;
+        size_t n = graphics_settings_to_text(a, t1, sizeof t1);
+        GraphicsSettings b;
+        CHECK_EQ(graphics_settings_from_text(&b, t1, n), 0);
+        CHECK(b.preset == GraphicsPreset::Custom && b.shadow_distance == 63.5f);
+    }
+    // unknown fields are ignored, missing ones keep the defaults, bad values are counted
+    const char* partial = "farcade-graphics 1\n# a comment\nfuture_feature 12\naa off\nrender_scale 0.6\nbloom wobbly\nshadow_resolution 1024\n\nlonely\n";
+    GraphicsSettings d;
+    int ignored = graphics_settings_from_text(&d, partial, strlen(partial));
+    CHECK_EQ(ignored, 3);                           // future_feature, bloom wobbly, lonely
+    CHECK(!d.antialiasing && d.render_scale == 0.6f && d.shadow_resolution == 1024);
+    GraphicsSettings def;
+    CHECK(d.bloom == def.bloom && d.pbr == def.pbr && d.shadow_cascades == def.shadow_cascades && d.local_shadows == def.local_shadows);
+    CHECK(d.preset == GraphicsPreset::Custom);
+    CHECK_EQ(graphics_settings_from_text(&d, "", 0), 0);
+    CHECK(d.preset == def.preset);
+    CHECK_EQ(graphics_settings_from_text(&d, nullptr, 0), -1);
+    // truncation is safe and reported
+    char tiny[16];
+    size_t need = graphics_settings_to_text(def, tiny, sizeof tiny);
+    CHECK(need >= sizeof tiny && tiny[15] == 0);
+}
+
+void test_bloom_modes() {
+    // Simple ignores the radius (the first bloom); Chain uses it; both are selectable after the chain exists.
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    g.allow_gpu_effects_on_cpu = true;
+    g.shadows = false; g.ambient_occlusion = false; g.antialiasing = false;
+    g.bloom = true;
+    r.set_settings(g);
+    CHECK(r.init(160, 120));
+    Vec3 cp[kCubeVertices], cn[kCubeVertices];
+    make_cube(cp, cn, 0.4f);
+    DrawItem it;
+    it.mesh = RenderMesh{ cp, cn, kCubeVertices, 8 };
+    it.model = Mat4::translation(Vec3(-1.0f, 0, 0));
+    it.unlit = true;
+    it.color = Vec3(3, 3, 3);
+    FlatScene f(Vec3(0.01f, 0.01f, 0.01f));
+    f.scene.camera.view = Mat4::look_at(Vec3(0, 0, 4), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    f.scene.items = &it;
+    f.scene.item_count = 1;
+    f.scene.post.bloom = 1.0f;
+    f.scene.post.bloom_threshold = 0.5f;
+    uint32_t img[3][160 * 120];
+    int k = 0;
+    const BloomMode modes[3] = { BloomMode::Simple, BloomMode::Simple, BloomMode::Chain };
+    for (BloomMode m : modes) {
+        g.bloom_mode = m;
+        r.set_settings(g);
+        f.scene.post.bloom_radius = k == 0 ? 0.0f : 1.0f;
+        if (render_ok(r, f.scene)) memcpy(img[k], r.pixels(), sizeof img[k]);
+        k++;
+    }
+    CHECK_MSG(memcmp(img[0], img[1], sizeof img[0]) == 0, "simple bloom ignores the radius");
+    CHECK_MSG(memcmp(img[1], img[2], sizeof img[1]) != 0, "the chain differs from the simple bloom");
+}
+
 }  // namespace
 
 int main() {
@@ -581,5 +705,7 @@ int main() {
     test_dynamic_resolution();
     test_bloom_and_lens();
     test_cascades();
+    test_settings_text();
+    test_bloom_modes();
     return finish_tests("gfx_stack_tests");
 }

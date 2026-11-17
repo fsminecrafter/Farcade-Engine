@@ -28,6 +28,8 @@
 #include "script/props.h"
 #include <stdint.h>
 
+namespace fe::gfx { struct GraphicsSettings; }
+
 namespace fe {
 
 enum class ScriptLogLevel : uint8_t { Info, Warning, Error };
@@ -86,6 +88,11 @@ public:
     // back as a boolean. Up to 32 methods; the same name again replaces it.
     typedef int (*ModuleMethod)(Entity e, void* user);
     bool add_module_method(ModuleKind kind, const char* name, ModuleMethod fn, void* user);
+
+    // The graphics settings scripts see as fe.graphics (lua_graphics.h): `settings` is the host's live struct,
+    // `changed` is set to true whenever a script changes it (the host then calls Renderer::set_settings
+    // before the next frame). Null settings: fe.graphics raises errors.
+    void set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed);
 
     // Runs a line of Lua in the shared environment (a console / REPL; tests).
     bool run(const char* code);

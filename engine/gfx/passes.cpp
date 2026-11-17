@@ -145,8 +145,8 @@ struct GpuTier::Impl {
     FGLShader* fxaa_mask_p = nullptr;
     FGLShader* ssao_p = nullptr;
     FGLShader* blur_p = nullptr;
-    FGLShader* bright_p = nullptr;
-    FGLShader* down_p = nullptr;
+    FGLShader* bright_p[2] = {};            // [karis]
+    FGLShader* down_p[2] = {};              // [wide]
     FGLShader* up_p = nullptr;
     FGLShader* comp_p[4] = {};              // [chromatic * 2 + bloom]
     shaders::PostKey comp_key[4], unlit_key[4], sky_key[2];
@@ -1031,20 +1031,24 @@ struct GpuTier::Impl {
         return ok && !failed;
     }
 
-    bool bloom_passes(const RenderScene& s, const PostProcess& post, const Target& hdr) {
+    bool bloom_passes(const RenderScene& s, const PostProcess& post, const Target& hdr, bool chain) {
         int w = gl->desc.width, h = gl->desc.height;
         // Levels stop where a side would be under 4 texels (a small image gets fewer, so the glow of a
         // thumbnail is not a haze over the whole picture); bl_levels is at least 2.
         int levels = 2;
-        while (levels < kBloomLevels && (w >> (2 + levels)) >= 4 && (h >> (2 + levels)) >= 4) levels++;
+        if (!chain) levels = 4;                  // the simple bloom: always 4 levels
+        while (chain && levels < kBloomLevels && (w >> (2 + levels)) >= 4 && (h >> (2 + levels)) >= 4) levels++;
         bl_levels = levels;
         for (int i = 0; i < levels; i++) {
             if (!ensure(bl_down[i], w >> (2 + i), h >> (2 + i), false)) return false;
             if (i < levels - 1 && !ensure(bl_up[i], w >> (2 + i), h >> (2 + i), false)) return false;
         }
         double t0 = now_ms();
-        if (!make(&bright_p, shaders::pp_vertex, shaders::pp_bright_fragment, "bloom bright")) return false;
-        if (!make(&down_p, shaders::pp_vertex, shaders::pp_down_fragment, "bloom down")) return false;
+        const int ci = chain ? 1 : 0;
+        FGLShader*& bright_p = this->bright_p[ci];
+        FGLShader*& down_p = this->down_p[ci];
+        if (!make(&bright_p, shaders::pp_vertex, [chain](char* o, size_t c) { shaders::pp_bright_fragment(o, c, chain); }, "bloom bright")) return false;
+        if (!make(&down_p, shaders::pp_vertex, [chain](char* o, size_t c) { shaders::pp_down_fragment(o, c, chain); }, "bloom down")) return false;
         if (!make(&up_p, shaders::pp_vertex, shaders::pp_up_fragment, "bloom up")) return false;
         (void)s;
         // bright pass: full size -> 1/4 (each output texel is a 4x4 box of the scene)
@@ -1070,7 +1074,7 @@ struct GpuTier::Impl {
             const Target& coarse = i == levels - 2 ? bl_down[levels - 1] : bl_up[i + 1];
             fs_begin(d);
             u4(up_p, "u_p", 1.0f / (float)d.w, 1.0f / (float)d.h, 1.0f / (float)coarse.w, 1.0f / (float)coarse.h);
-            u4(up_p, "u_q", 2.0f * pf->bloom_radius, 0, 0, 0);
+            u4(up_p, "u_q", chain ? 2.0f * pf->bloom_radius : 1.0f, 0, 0, 0);
             bind_tex(up_p, "u_fine", fine, FGL_TEXTURE_CLAMP);
             bind_tex(up_p, "u_coarse", coarse, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             fs_draw(up_p);
@@ -1204,7 +1208,7 @@ struct GpuTier::Impl {
         if (!lit_pass(s, ls, plan, host, gs, cs, shadow_light, (bloom || aa) ? scene : main_t, bloom)) return false;
 
         if (bloom) {
-            if (!bloom_passes(s, s.post, scene)) return false;
+            if (!bloom_passes(s, s.post, scene, gs.bloom_mode == BloomMode::Chain)) return false;
             if (!composite(s, scene, true, aa ? ldr.color : main_color)) return false;
         }
         if (aa) {
@@ -1215,7 +1219,7 @@ struct GpuTier::Impl {
 
     void release_all() {
         if (!gl) return;
-        drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); drop(&bright_p); drop(&down_p);
+        drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); for (FGLShader*& b : bright_p) drop(&b); for (FGLShader*& d : down_p) drop(&d);
         drop(&up_p); for (FGLShader*& c : comp_p) drop(&c); drop(&fxaa_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);

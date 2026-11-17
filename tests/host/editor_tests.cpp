@@ -1365,6 +1365,42 @@ int main() {
         frames(2);
     }
 
+    // ---- project settings and export
+    {
+        ed.project = ProjectSettings();
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Project settings..."), "Project settings... opens a dialog");
+        frames(2);
+        snprintf(ed.project.name, sizeof ed.project.name, "Test Game");
+        snprintf(ed.project.entry_scene, sizeof ed.project.entry_scene, "scenes/level2.fscene");
+        ed.project.window_width = 800;
+        frames(1);
+        CHECK(click_ui("project:save"), "the dialog's Save button");
+        frames(2);
+        CHECK(platform::file_exists("build/host/test-project/project.fe"), "project.fe is written");
+        ProjectSettings back = ed.project;
+        ed.project = ProjectSettings();
+        CHECK(ed.load_project() && !strcmp(ed.project.name, "Test Game") && ed.project.window_width == 800 &&
+                  !strcmp(ed.project.entry_scene, "scenes/level2.fscene") && !strcmp(back.name, "Test Game"),
+              "project.fe reads back (%s)", ed.project.name);
+        // File > Export game...
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Export game..."), "Export game... opens a dialog");
+        frames(2);
+        CHECK(!strcmp(ed.export_name, "Test Game") && !strcmp(ed.export_scene, "scenes/level2.fscene"), "the dialog starts from the project settings");
+        snprintf(ed.export_out, sizeof ed.export_out, "build/host/test-export");
+        frames(1);
+        CHECK(click_ui("export:go"), "the dialog's Export button");
+        frames(2);
+        CHECK(!strncmp(ed.export_status, "Exported", 8), "export succeeded (%s)", ed.export_status);
+        CHECK(platform::file_exists("build/host/test-export/Test_Game.fepak") && platform::file_exists("build/host/test-export/Test_Game"),
+              "the package and the player are in the output folder");
+        CHECK(click_ui("export:close"), "Close");
+        frames(2);
+    }
+
     // ---- undo and redo
     {
         ed.new_scene();

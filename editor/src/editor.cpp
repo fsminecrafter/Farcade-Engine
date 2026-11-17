@@ -274,6 +274,7 @@ bool Editor::init(int width, int height) {
 
     snprintf(project_dir, sizeof(project_dir), "%s", platform::default_project_root());
     snprintf(files_dir, sizeof(files_dir), "%s", project_dir);
+    load_project();
     history_reset();
     log(LogLevel::Info, "Farcade Editor started (%dx%d)", platform::width(), platform::height());
     return true;
@@ -1050,6 +1051,8 @@ void Editor::build_ui() {
     main_menu();
     save_as_popup();
     unsaved_popup();
+    project_settings_popup();
+    export_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -1111,7 +1114,8 @@ void Editor::main_menu() {
             want_save_as_ = true;
         }
         ImGui::Separator();
-        menu_item("Export game...", nullptr, false, false);
+        if (menu_item("Project settings...", nullptr, false, !playing())) request_project_settings();
+        if (menu_item("Export game...", nullptr, false, !playing())) request_export();
         ImGui::Separator();
         if (menu_item("Quit")) request_quit();
         ImGui::EndMenu();

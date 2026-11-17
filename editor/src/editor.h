@@ -5,6 +5,7 @@
 
 #include "scene.h"
 #include "play_session.h"
+#include "project.h"
 #include "widgets.h"
 #include "gfx/renderer.h"
 #include "swraster.h"
@@ -133,6 +134,19 @@ public:
     bool can_redo() const { return redo_count_ > 0; }
     void history_capture();                     // records the scene when it changed since the last snapshot
     void history_reset();                       // forgets undo/redo; the scene now counts as saved
+
+    // ---- project settings (project.fe, project.h) and export (export.h)
+    ProjectSettings project;                    // read from project_dir/project.fe at start (defaults when there is none)
+    bool load_project();                        // false when there is no project.fe (the defaults stay)
+    bool save_project();
+    void request_project_settings() { want_project_settings_ = true; }
+    void request_export();                      // File > Export game...
+    char export_name[64] = {};                  // the dialog's fields
+    char export_scene[256] = {};
+    char export_out[256] = {};
+    char export_status[256] = {};               // the last export's result line
+    char export_run_path[512] = {};             // program and package of the last export, for "Run"
+    char export_pak_path[512] = {};
 
     // `path` made full: relative paths are joined to the project.
     void project_path(const char* path, char* out, size_t cap) const;
@@ -286,6 +300,9 @@ private:
     Scene* play_backup_ = nullptr;
     bool want_save_as_ = false;
     void save_as_popup();
+    bool want_project_settings_ = false, want_export_ = false;
+    void project_settings_popup();
+    void export_popup();
     // history
     char* undo_[kMaxUndo] = {};
     char* redo_[kMaxUndo] = {};

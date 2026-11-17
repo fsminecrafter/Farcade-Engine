@@ -11,7 +11,7 @@
 .SECONDEXPANSION:
 
 PAK_SRC     := engine/core/pak.cpp engine/core/vfs.cpp
-EDITOR_SRC  += $(PAK_SRC) editor/src/project.cpp editor/src/play_session.cpp editor/src/export.cpp
+EDITOR_SRC  += $(PAK_SRC) editor/src/project.cpp editor/src/play_session.cpp editor/src/export.cpp editor/src/export_ui.cpp
 
 # What the player needs of the editor's sources: scene, scene files, project
 # settings, the play session (shared with editor Play), the render bridge.
@@ -49,3 +49,6 @@ PLAYER_OS_SRC = $(PLAYER_SRC) $(CORE_SRC) $(ECS_SRC) $(FLECS_SRC) $(GFX_SRC) $(P
                 editor/platform/platform_minimalos.cpp player/main.cpp
 OS_OBJS_feplayer = $(call os_objs,$(PLAYER_OS_SRC))
 OS_PROGRAMS += $(BUILD)/os/bin/feplayer.run
+
+# editor_tests exports a game and copies the player.
+$(BUILD)/host/bin/editor_tests: | $(BUILD)/host/bin/feplayer

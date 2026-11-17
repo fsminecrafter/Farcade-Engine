@@ -128,6 +128,22 @@ end
 
 What a script stores in `self` stays there.
 
+### Input
+
+Keyboard and mouse, in the editor's Play (over the viewport) and in the player:
+
+| | |
+| --- | --- |
+| `fe.key_down(name)` | true while the key is held |
+| `fe.key_pressed(name)`, `fe.key_released(name)` | true during the update after the key went down / up |
+| `fe.mouse_x()`, `fe.mouse_y()` | the pointer, in pixels of the game's view |
+| `fe.mouse_down(b)`, `fe.mouse_pressed(b)` | button 0 left, 1 right, 2 middle |
+| `fe.mouse_wheel()` | scroll since the last update |
+
+Key names: `"a"` to `"z"`, `"0"` to `"9"`, `"space"`, `"enter"`, `"escape"`, `"tab"`,
+`"backspace"`, `"left"`, `"right"`, `"up"`, `"down"`, `"shift"`, `"ctrl"`, `"alt"`, `"f1"` to
+`"f12"`, `"pageup"`, `"pagedown"`, `"home"`, `"end"`, `"insert"`, `"delete"`.
+
 ### Objects
 
 `self.object`, `other` in the collision callbacks, `fe.find`, `obj.parent`

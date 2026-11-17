@@ -1,0 +1,98 @@
+farcade-scene 1
+next_id 7
+
+object 1
+  name "Spinner"
+  kind mesh
+  position 0 0 0
+  rotation 0 0 0 1
+  scale 1 1 1
+  mesh cube
+  color 0.9 0.4 0.2
+  roughness 0.6
+  metallic 0
+  unlit false
+  cast_shadows true
+  script "spin.lua"
+  end
+end
+
+object 2
+  name "Ground"
+  kind mesh
+  position 0 -1 0
+  rotation 0 0 0 1
+  scale 6 1 6
+  mesh plane
+  color 0.5 0.55 0.6
+  roughness 0.6
+  metallic 0
+  unlit false
+  cast_shadows true
+end
+
+object 3
+  name "Statue"
+  kind mesh
+  position 2.5 0 0
+  rotation 0 0 0 1
+  scale 1 1 1
+  mesh model
+  model "cube.mof"
+  color 0.8 0.8 0.8
+  roughness 0.6
+  metallic 0
+  unlit false
+  cast_shadows true
+end
+
+object 4
+  name "Camera"
+  kind camera
+  position 0 1.5 6
+  rotation 0 0 0 1
+  scale 1 1 1
+  module camera
+    current true
+    projection Perspective
+    fov 60
+    ortho_size 5
+    near_plane 0.1
+    far_plane 500
+  end
+end
+
+object 5
+  name "Sun"
+  kind empty
+  position 0 0 0
+  rotation -0.408217907 0.234569743 0.109381676 0.875426114
+  scale 1 1 1
+  module light
+    type Directional
+    color 1 1 1
+    intensity 1
+    range 10
+    spot_angle 45
+    spot_blend 0.15
+    shadows true
+  end
+end
+
+object 6
+  name "Sky"
+  kind sky
+  position 0 0 0
+  rotation 0 0 0 1
+  scale 1 1 1
+  module sky
+    current true
+    mode Gradient
+    zenith 0.2 0.42 0.78
+    horizon 0.72 0.8 0.9
+    ground 0.3 0.28 0.26
+    sun_size 1.5
+    intensity 1
+    fog 0
+  end
+end

@@ -461,6 +461,7 @@ int export_cli(int argc, char** argv, int i) {
         const char* args[6] = { rep.run_path, rep.pak_path, nullptr, nullptr, nullptr, nullptr };
         if (run_frames > 0) { args[2] = "--frames"; args[3] = frames; }
         printf("FE EXPORT running %s\n", rep.run_path);
+        fflush(stdout);
         int rc = platform::run_program(rep.run_path, args, true);
         printf("FE EXPORT game exited %d\n", rc);
         return rc == 0 ? 0 : 1;

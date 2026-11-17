@@ -18,12 +18,16 @@
 // prints "FE BENCH <phase> ..." lines (the first 5 frames of a phase are not
 // measured), then "FE BENCH DONE". --scales adds orbit phases with FarcadeGL at
 // 1/2 and 1/4 of the viewport size.
+// --export <project-or-scene> <outdir> [--name N] [--scene S] [--player P] [--run [FRAMES]]
+// exports a game without opening the editor (docs/export.md) and prints
+// "FE EXPORT OK ..." or "FE EXPORT FAIL: ...".
 // --scene-test saves the demo scene to <project>/scenes/os-test.fscene,
 // opens it again and prints "FE SCENE PASS <objects> <bytes>" when saving
 // the opened scene gives the same file (else "FE SCENE FAIL ...").
 #include "bench.h"
 #include "scene_io.h"
 #include "editor.h"
+#include "export.h"
 #include "platform/platform.h"
 
 #include "imgui/imgui.h"
@@ -35,6 +39,8 @@
 using namespace fe;
 
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "--export") == 0) return export_cli(argc, argv, i);
     long max_frames = 0;
     Bench bench;
     bool farcadegl = false, play = false, profile = false, adaptive = true, scene_test = false;

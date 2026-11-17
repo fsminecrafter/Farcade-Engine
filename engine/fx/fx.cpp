@@ -9,12 +9,13 @@ bool FxWorld::init(World* world, const FxHost& host) {
     if (!world || !world->valid()) return false;
     world_ = world;
     host_ = host;
-    if (!particles.init(world)) { shutdown(); return false; }
+    if (!particles.init(world) || !spawner.init(world, &host_)) { shutdown(); return false; }
     return true;
 }
 
 void FxWorld::shutdown() {
     particles.shutdown();
+    spawner.shutdown();
     world_ = nullptr;
 }
 
@@ -26,6 +27,9 @@ void FxWorld::bind_script(ScriptRuntime* rt) {
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "play", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.play(e); }, this);
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "stop", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.stop(e); }, this);
     rt->add_module_method_ex(ModuleKind::ParticleEmitter, "clear", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->particles.clear(e); }, this);
+    // obj.spawner:spawn() / clear()
+    rt->add_module_method_ex(ModuleKind::Spawner, "spawn", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->spawner.spawn(e); }, this);
+    rt->add_module_method_ex(ModuleKind::Spawner, "clear", [](Entity e, const Call&, Res* r, void* u) { r->b = ((FxWorld*)u)->spawner.clear(e); }, this);
     // obj.joint3d:snap() (break is a Lua keyword; break_joint is the same)
     auto snap = [](Entity e, const Call&, Res* r, void* u) {
         FxWorld* f = (FxWorld*)u;

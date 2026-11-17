@@ -4,6 +4,7 @@
 #include "fx/particles.h"
 #include "fx/forcefield.h"
 #include "gfx/particles.h"
+#include "fx/fx.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -330,6 +331,90 @@ static void system_tests() {
     w.shutdown();
 }
 
+static int g_spawns;
+static Entity g_last[64];
+static Entity mock_spawn(void* user, Entity src, const Mat4& m) {
+    World* w = (World*)user;
+    Entity e = w->create(nullptr);
+    Vec3 t, sc;
+    Quat r;
+    decompose(m, &t, &r, &sc);
+    w->transform(e)->position = t;
+    w->add(e, ModuleKind::RigidBody3D);
+    RigidBody3D* rb = (RigidBody3D*)w->get_mut(e, ModuleKind::RigidBody3D);
+    const RigidBody3D* srb = (const RigidBody3D*)w->get(src, ModuleKind::RigidBody3D);
+    if (srb) rb->velocity = srb->velocity;
+    g_last[g_spawns % 64] = e;
+    g_spawns++;
+    return e;
+}
+
+static void spawner_tests() {
+    World w;
+    w.init();
+    FxWorld fx;
+    FxHost host;
+    host.user = &w;
+    host.spawn = mock_spawn;
+    CHECK(fx.init(&w, host), "fx init");
+    Entity tmpl = w.create("Template");
+    w.add(tmpl, ModuleKind::RigidBody3D);
+    w.bind_link(5, tmpl);
+    Entity sp = w.create("Spawner");
+    w.transform(sp)->position = Vec3(10, 0, 0);
+    w.add(sp, ModuleKind::Spawner);
+    auto M = [&]() { return (Spawner*)w.get_mut(sp, ModuleKind::Spawner); };
+    auto run = [&](float secs) { for (float t = 0; t < secs - 1e-6f; t += 1.0f / 60.0f) { w.progress(1.0f / 60.0f); fx.post_frame(1.0f / 60.0f); } };
+    M()->source = 5; M()->interval = 0.5f; M()->max_alive = 3;
+    run(3.01f);
+    CHECK(M()->spawned == 6 && M()->alive == 3, "every 0.5 s for 3 s: 6 made, the newest 3 alive (%d, %d)", M()->spawned, M()->alive);
+    Entity first_left = 0;
+    (void)first_left;
+    // total
+    fx.spawner.clear(sp);
+    CHECK(M()->alive == 0, "clear() destroys the copies");
+    M()->total = 8; M()->max_alive = 50;
+    run(5.0f);
+    CHECK(M()->spawned == 8, "total 8 stops the spawner (%d)", M()->spawned);
+    // lifetime
+    fx.spawner.clear(sp);
+    M()->total = 0; M()->lifetime = 0.8f; M()->interval = 0.2f; M()->spawned = 0;
+    run(3.0f);
+    CHECK(M()->alive >= 3 && M()->alive <= 5, "lifetime 0.8 s at 5/s: about 4 alive (%d)", M()->alive);
+    // position, offset, velocity, inherit
+    fx.spawner.clear(sp);
+    M()->auto_spawn = false;
+    M()->offset = Vec3(2, 0, 0); M()->velocity = Vec3(0, 3, 0); M()->lifetime = 0;
+    int before = g_spawns;
+    for (int i = 0; i < 20; i++) fx.spawner.spawn(sp);
+    CHECK(g_spawns == before + 20 && M()->alive == 20, "spawn() makes one now (%d)", M()->alive);
+    // (positions: found through the children-less roots)
+    float minx = 99, maxx = -99, vy = 0;
+    int found = 0;
+    Entity all[64];
+    (void)all;
+    // The copies are the entities with a rigidbody that are not the template.
+    // Walk ids from the last created downwards.
+    for (int i = 0; i < 20; i++) {
+        Entity e = g_last[(g_spawns - 1 - i) % 64];
+        if (!w.alive(e)) continue;
+        Vec3 p = w.transform(e)->position;
+        found++;
+        if (p.x < minx) minx = p.x;
+        if (p.x > maxx) maxx = p.x;
+        vy = ((const RigidBody3D*)w.get(e, ModuleKind::RigidBody3D))->velocity.y;
+    }
+    CHECK(found == 20 && minx >= 7.99f && maxx <= 12.01f && maxx - minx > 1.5f, "copies appear at the spawner within the random offset (x %.2f..%.2f, %d)", minx, maxx, found);
+    CHECK(absf(vy - 3.0f) < 0.01f, "with the added velocity (%.2f)", vy);
+    // no template: nothing
+    M()->source = 0;
+    int c = M()->spawned;
+    CHECK(!fx.spawner.spawn(sp) && M()->spawned == c, "no template, no copy");
+    // determinism: the same seed gives the same offsets
+    fx.shutdown();
+    w.shutdown();
+}
+
 static void quality_tests() {
     Mat4 id = Mat4::identity();
     ParticleEmitter e;
@@ -354,6 +439,7 @@ int main() {
     raster_tests();
     system_tests();
     quality_tests();
+    spawner_tests();
     printf("fx_tests: %d checks, %d failures\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

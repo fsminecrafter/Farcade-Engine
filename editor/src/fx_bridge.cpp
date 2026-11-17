@@ -4,9 +4,11 @@
 #include "fx/fx.h"
 #include "fx/particles.h"
 #include "script/runtime.h"
+#include "physics/physics.h"
 
 #include "imgui/imgui.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 namespace fe {
@@ -191,6 +193,84 @@ void draw_gizmos(ImDrawList* dl, const Proj& P, Editor& ed, const Object& o, con
 
 }  // namespace
 
+// The Spawner's copy: duplicates the template's object tree in the play scene
+// and builds its entities, physics and scripts like Editor::build_world does.
+Entity FxBridge::spawn_copy(Editor& ed, Entity source, const Mat4& world_m) {
+    Scene& sc = ed.scene;
+    World* w = ed.world_;
+    ObjectId src = ed.object_of(source);
+    if (!w || !src || !sc.get(src)) return 0;
+    struct Rec { static Entity make(Editor& ed, ObjectId from, Entity parent_e, ObjectId parent_o, const Mat4* root, int depth) {
+        Scene& sc = ed.scene;
+        World* w = ed.world_;
+        Object* so = sc.get(from);
+        if (!so || depth > 8) return 0;
+        ObjectId id = sc.create(so->name, so->mesh);
+        Object* o = sc.get(id);
+        so = sc.get(from);
+        char name[64];
+        memcpy(name, o->name, sizeof name);
+        *o = *so;
+        o->id = id;
+        o->parent = parent_o;
+        for (int k = 0; k < kModuleKindCount; k++)
+            if (o->modules.has((ModuleKind)k)) set_current_flag(module_info((ModuleKind)k), o->modules.data((ModuleKind)k), false);
+        if (root) decompose(*root, &o->position, &o->rotation, &o->scale);
+        Entity e = w->create(nullptr);
+        if (!e) { sc.remove(id); return 0; }
+        w->bind_link(id, e);
+        Transform* t = w->transform(e);
+        t->position = o->position; t->rotation = o->rotation; t->scale = o->scale;
+        w->load(e, o->modules);
+        if (o->kind == ObjectKind::Mesh) {
+            Renderable* r = w->add_renderable(e);
+            r->mesh = (uint8_t)o->mesh;
+            memcpy(r->model_path, o->model_path, sizeof r->model_path);
+            memcpy(r->texture_path, o->texture_path, sizeof r->texture_path);
+            memcpy(r->shader_path, o->shader_path, sizeof r->shader_path);
+            r->color = o->color; r->visible = o->visible; r->roughness = o->roughness; r->metallic = o->metallic;
+            r->unlit = o->unlit; r->cast_shadows = o->cast_shadows;
+        }
+        int n = ed.world_count_;
+        ed.world_objects_ = (ObjectId*)realloc(ed.world_objects_, sizeof(ObjectId) * (size_t)(n + 1));
+        ed.world_entities_ = (uint64_t*)realloc(ed.world_entities_, sizeof(uint64_t) * (size_t)(n + 1));
+        ed.world_objects_[n] = id;
+        ed.world_entities_[n] = e;
+        ed.world_count_ = n + 1;
+        if (parent_e) w->set_parent(e, parent_e);
+        if (ed.physics_) {
+            ed.physics_->add(e);
+            if (o->kind == ObjectKind::Mesh && o->modules.has(ModuleKind::Collider3D) && o->modules.collider3d.shape == ColliderShape::Mesh) {
+                const MeshData& md = Scene::mesh_for(*o);
+                ed.physics_->set_mesh(e, md.positions, (int)md.vertex_count);
+            }
+        }
+        if (ed.scripts_) {
+            for (int s = 0; s < o->script_count; s++) {
+                ScriptSlot& sl = o->scripts[s];
+                size_t size = 0;
+                char* text = ed.read_script_text(sl.path, &size);
+                if (!text) continue;
+                Entity links[kMaxProps] = {};
+                for (int k = 0; k < sl.prop_count; k++)
+                    if (sl.props[k].type == PropType::Object) links[k] = ed.entity_of(sl.props[k].object);
+                ed.scripts_->add_instance(e, sl.path, text, (uint32_t)size, sl.props, sl.prop_count, links);
+                free(text);
+            }
+        }
+        ObjectId kids[64];
+        int nk = 0;
+        for (int i = 0; i < sc.count() && nk < 64; i++) if (sc.at(i).parent == from) kids[nk++] = sc.at(i).id;
+        for (int k = 0; k < nk; k++) make(ed, kids[k], e, id, nullptr, depth + 1);
+        return e;
+    } };
+    Entity e = Rec::make(ed, src, 0, kNoObject, &world_m, 0);
+    if (e) w->update_transforms();
+    return e;
+}
+
+Entity ed_spawn(Editor* ed, Entity src, const Mat4& m) { return FxBridge::spawn_copy(*ed, src, m); }
+
 FxBridge::FxBridge() {}
 FxBridge::~FxBridge() {
     stop();
@@ -205,6 +285,7 @@ void FxBridge::start(Editor& ed) {
     FxHost host;
     host.user = &ed;
     host.physics = ed.play_physics();
+    host.spawn = [](void* u, Entity src, const Mat4& m) { return ed_spawn((Editor*)u, src, m); };
     if (!fx_->init(w, host)) { delete fx_; fx_ = nullptr; return; }
     if (ed.play_scripts()) fx_->bind_script(ed.play_scripts());
     delete preview_;

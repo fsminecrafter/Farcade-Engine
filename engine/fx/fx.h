@@ -14,6 +14,7 @@
 
 #include "ecs/ecs.h"
 #include "fx/particles.h"
+#include "fx/spawner.h"
 
 namespace fe {
 
@@ -24,6 +25,9 @@ class PhysicsWorld;
 struct FxHost {
     void* user = nullptr;
     PhysicsWorld* physics = nullptr;    // for Joint 3D's snap()
+    // Makes a copy of `source` (and its children) at the given world matrix and
+    // returns the copy's root entity (0 = could not). The Spawner uses it.
+    Entity (*spawn)(void* user, Entity source, const Mat4& world) = nullptr;
 };
 
 class FxWorld {
@@ -36,10 +40,15 @@ public:
     bool init(World* world, const FxHost& host);
     void shutdown();
     // Adds the Lua methods of the modules: particles (play, stop, clear, emit),
-    // joints (snap). Call after the script runtime started.
+    // joints (snap), spawners (spawn, clear). Call after the script runtime started.
     void bind_script(ScriptRuntime* scripts);
 
+    // Call after World::progress(dt) each frame: the work that makes and
+    // destroys entities (spawners).
+    void post_frame(float dt) { spawner.update(dt); }
+
     ParticleSystem particles;
+    SpawnerSystem spawner;
 
 private:
     World* world_ = nullptr;

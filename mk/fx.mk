@@ -13,7 +13,7 @@
 
 .SECONDEXPANSION:
 
-FX_SRC = engine/fx/fx.cpp engine/fx/particles.cpp engine/fx/scan.cpp
+FX_SRC = engine/fx/fx.cpp engine/fx/particles.cpp engine/fx/spawner.cpp engine/fx/scan.cpp
 
 # scan.cpp lists entities through flecs: flecs.h as a system header with the
 # ECS defines, like engine/audio does.

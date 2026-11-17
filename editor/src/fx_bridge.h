@@ -6,6 +6,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "ecs/ecs.h"
 #include "scene.h"
 
 struct ImDrawList;
@@ -36,6 +37,9 @@ public:
     // objects' module gizmos. view/proj as drawn, `pos`/`size` the viewport
     // rectangle on screen, `eye` the camera position.
     void draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const Mat4& proj, float x, float y, float w, float h, const Vec3& eye);
+
+    // The Spawner's copy of `source` (FxHost::spawn).
+    static Entity spawn_copy(Editor& ed, Entity source, const Mat4& world);
 
     // Counts of what the last overlay drew (tests).
     int last_particles = 0;

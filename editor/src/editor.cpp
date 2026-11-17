@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "fx_bridge.h"
+#include "fx/fx.h"
 #include "icons.h"
 #include "swraster.h"
 #include "platform/platform.h"
@@ -630,6 +631,7 @@ void Editor::build_world() {
             r->unlit = o.unlit;
             r->cast_shadows = o.cast_shadows;
         }
+        world_->bind_link(o.id, e);         // object links in modules (Joint 3D, Spawner) find their entity
         world_objects_[world_count_] = o.id;
         world_entities_[world_count_] = e;
         world_count_++;
@@ -762,6 +764,16 @@ uint64_t Editor::entity_of(ObjectId id) const {
 void Editor::step_world(float dt) {
     if (!world_) return;
     world_->progress(dt);
+    if (fx_bridge_ && fx_bridge_->world()) fx_bridge_->world()->post_frame(dt);     // spawners
+    // Objects whose entity was destroyed (a script's destroy(), a spawner's lifetime) leave the scene.
+    for (int i = 0; i < world_count_;) {
+        if (world_->alive(world_entities_[i])) { i++; continue; }
+        ObjectId dead = world_objects_[i];
+        world_objects_[i] = world_objects_[world_count_ - 1];
+        world_entities_[i] = world_entities_[world_count_ - 1];
+        world_count_--;
+        scene.remove(dead);
+    }
     // Transforms and current flags back into the scene, for the viewport
     // and the Inspector.
     for (int i = 0; i < world_count_; i++) {

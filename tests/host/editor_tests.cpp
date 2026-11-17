@@ -1513,6 +1513,35 @@ int main() {
         ed.play_scripts()->run("fe.find('Hang').joint3d:snap()");
         frames(60);
         CHECK(ed.scene.get(hang)->modules.joint3d.broken && ed.scene.get(hang)->position.y < 4.0f, "Lua: joint3d:snap() lets it fall (%.2f)", ed.scene.get(hang)->position.y);
+        // Spawner: copies of a ball with a body, a lifetime, Lua spawn() and clear().
+        ed.stop();
+        frames(2);
+        ObjectId ball = ed.create_object("Ball", MeshKind::Sphere, Vec3(0, 20, 0));
+        ed.scene.add_module(ball, ModuleKind::RigidBody3D);
+        ObjectId sp = ed.create_object("Fountain", MeshKind::Cube, Vec3(0, 3, 0));
+        ed.scene.add_module(sp, ModuleKind::Spawner);
+        {
+            Spawner& m = ed.scene.get(sp)->modules.spawner;
+            m.source = ball; m.interval = 0.25f; m.max_alive = 5; m.lifetime = 0; m.velocity = Vec3(0, 4, 0);
+        }
+        int objects_before = ed.scene.count();
+        ed.play();
+        frames(150);
+        CHECK(ed.scene.count() > objects_before && ed.scene.count() <= objects_before + 5, "a spawner adds copies to the play scene, at most max_alive (%d -> %d)", objects_before, ed.scene.count());
+        CHECK(ed.scene.get(sp)->modules.spawner.spawned >= 8 && ed.scene.get(sp)->modules.spawner.alive == 5, "spawned %d, alive %d", ed.scene.get(sp)->modules.spawner.spawned, ed.scene.get(sp)->modules.spawner.alive);
+        ed.play_scripts()->run("local s = fe.find('Fountain'); s.spawner.auto_spawn = false; s.spawner.interval = 1; s.spawner:clear()");
+        frames(2);
+        CHECK(ed.scene.count() == objects_before, "clear() removes the copies from the scene too (%d)", ed.scene.count());
+        ed.play_scripts()->run("local s = fe.find('Fountain'); s.spawner:spawn(); s.spawner:spawn()");
+        frames(2);
+        CHECK(ed.scene.get(sp)->modules.spawner.alive == 2 && ed.scene.count() == objects_before + 2, "Lua spawn() x2 (%d)", ed.scene.count());
+        ed.stop();
+        frames(2);
+        CHECK(ed.scene.count() == objects_before, "Stop puts the scene back");
+        ed.scene.remove(ball);
+        ed.scene.remove(sp);
+        ed.play();
+        frames(2);
         ed.stop();
         frames(2);
         CHECK(ed.fx()->world() == nullptr && ed.scene.get(em)->modules.particles.particle_count == 0, "Stop puts the scene back");

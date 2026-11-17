@@ -41,6 +41,13 @@ struct Event {
     int width = 0, height = 0;  // Resize
 };
 
+// Title and size of the window that init() opens when a desktop owns the
+// screen (the editor's defaults when never called: no title change, 0 =
+// default size). A full screen program ignores it; the player calls it with
+// the project's name and window size before init(0, 0). Headless: the size
+// of the surface.
+void set_window_options(const char* title, int width, int height);
+
 // Opens the screen (or a headless surface) of the given size; 0x0 = the
 // whole screen. False when the screen cannot be taken.
 bool init(int width, int height);
@@ -88,6 +95,11 @@ void* read_file(const char* path, size_t* size);
 bool write_file(const char* path, const void* data, size_t size);
 bool copy_file(const char* from, const char* to);
 bool make_dir(const char* path);
+// Random access reading (game packages are not read whole). open_read
+// returns a handle (null on error) and the file's size.
+void* open_read(const char* path, uint64_t* size);
+bool read_at(void* handle, uint64_t offset, void* dst, size_t n);
+void close_file(void* handle);
 
 // The directory projects start in ("0:/projects" on Minimal-OS).
 const char* default_project_root();
@@ -97,6 +109,10 @@ const char* default_project_root();
 // Starts `program` with `file` as its argument. False when it could not
 // be started.
 bool open_with(const char* program, const char* file);
+// Runs `program` with argv (argv[0] included, null terminated). With `wait`
+// returns its exit code, else its process id; negative when it could not be
+// started.
+int run_program(const char* program, const char* const* argv, bool wait);
 // Shows `path` in the system's file manager. False when the system has no
 // way to do that yet.
 bool reveal_in_file_manager(const char* path);

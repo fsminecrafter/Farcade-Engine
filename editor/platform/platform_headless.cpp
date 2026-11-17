@@ -5,6 +5,8 @@
 #include "swraster.h"
 
 #include <dirent.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +29,14 @@ char g_last_open[512];
 char g_last_reveal[512];
 }  // namespace
 
+namespace {
+int g_opt_w, g_opt_h;
+}
+void set_window_options(const char*, int width, int height) { g_opt_w = width; g_opt_h = height; }
+
 bool init(int width, int height) {
-    if (width <= 0) width = 1280;
-    if (height <= 0) height = 800;
+    if (width <= 0) width = g_opt_w > 0 ? g_opt_w : 1280;
+    if (height <= 0) height = g_opt_h > 0 ? g_opt_h : 800;
     g_pixels = (uint32_t*)calloc((size_t)width * height, 4);
     if (!g_pixels) return false;
     g_fb.pixels = g_pixels;
@@ -124,11 +131,42 @@ bool copy_file(const char* from, const char* to) {
 
 bool make_dir(const char* path) { return mkdir(path, 0755) == 0 || file_exists(path); }
 
+void* open_read(const char* path, uint64_t* size) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return nullptr;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    if (n < 0) { fclose(f); return nullptr; }
+    if (size) *size = (uint64_t)n;
+    return f;
+}
+
+bool read_at(void* handle, uint64_t offset, void* dst, size_t n) {
+    FILE* f = (FILE*)handle;
+    if (fseek(f, (long)offset, SEEK_SET) != 0) return false;
+    return n == 0 || fread(dst, 1, n, f) == n;
+}
+
+void close_file(void* handle) { fclose((FILE*)handle); }
+
 const char* default_project_root() { return "."; }
 
 bool open_with(const char* program, const char* file) {
     snprintf(g_last_open, sizeof(g_last_open), "%s %s", program, file);
     return true;
+}
+
+int run_program(const char* program, const char* const* argv, bool wait) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execv(program, (char* const*)argv);
+        _exit(127);
+    }
+    if (!wait) return (int)pid;
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 bool reveal_in_file_manager(const char* path) {

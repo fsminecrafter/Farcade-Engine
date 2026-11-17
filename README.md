@@ -39,8 +39,9 @@ renders the editor headless on the PC, and from `tools/ci/run_os.sh` with
 
 | Directory | What |
 |---|---|
-| `engine/` | the engine libraries: core, `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`), Lua scripts (`script/`), physics (`physics/`) |
-| `editor/` | the editor (Dear ImGui, drawn by a software rasterizer) |
+| `engine/` | the engine libraries: core (math, `.fepak` packages, VFS), `.mof` models, scene modules (`scene/`), the entity system on flecs (`ecs/`), the FarcadeGL renderer (`gfx/`), Lua scripts (`script/`), physics (`physics/`) |
+| `editor/` | the editor (Dear ImGui, drawn by a software rasterizer); also the scene, play session, project settings and exporter code the player shares (`editor/src`) |
+| `player/` | `feplayer`: runs an exported game (package or project folder), full screen or in a MOSdesk window; headless on the PC |
 | `runtime/minimalos/` | the small C/C++ runtime the engine needs on Minimal-OS |
 | `tools/` | PC tools (model converter, CI scripts) |
 | `tests/` | tests |
@@ -76,6 +77,17 @@ ARGS=--play tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames
 ARGS=--farcadegl tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR frames 121'
 ```
 
+## Exporting a game
+
+`File > Project settings...` edits `project.fe` (name, version, entry scene, window size, icon); `File > Export game...` writes `<Name>.fepak` (every scene and the scripts, models, textures and sounds they use, `docs/pak-format.md`) and a copy of the prebuilt player `feplayer` as `<Name>.run`, by default into `0:/games/<Name>/`. The player runs the scene like the editor's Play (same `PlaySession`: Lua, physics, audio, the current camera, FarcadeGL), full screen or as a MOSdesk window; Esc quits. Scripts read the keyboard and mouse with `fe.key_down("w")`, `fe.mouse_x()` ... (`docs/scripting.md`). Details in `docs/export.md`.
+
+```sh
+build/host/bin/fe-export MyProject out/                        # the editor's export on the PC, no screen
+build/host/bin/feplayer out/MyGame.fepak --frames 60 --png shot.png   # headless run: checksum and PNG
+run 0:/programs/farcade-editor.run --export 0:/projects/MyGame 0:/games/MyGame   # on Minimal-OS
+tools/ci/export_os_test.sh                                     # QEMU: export from the editor, run the result
+```
+
 ## Models: `.mof`
 
 `.mof` is the engine's model file: meshes (positions, normals, tangents,
@@ -95,7 +107,9 @@ make test-mof-asan                             # the .mof tests under ASan/UBSan
 ## On Minimal-OS
 
 `make os` builds `build/os/bin/farcade-editor.run` (the editor, full
-screen) and `build/os/bin/imgui_smoke.run` (a self-test), linked with the
+screen), `build/os/bin/feplayer.run` (the game player: install it next to
+the editor as `0:/programs/feplayer.run`, the editor's export copies it) and
+`build/os/bin/imgui_smoke.run` (a self-test), linked with the
 engine's own C/C++ runtime (`runtime/minimalos`, see `docs/runtime.md`).
 `tools/ci/run_os.sh` puts a program into a Minimal-OS boot image, runs it in
 QEMU and waits for a line on the serial port:

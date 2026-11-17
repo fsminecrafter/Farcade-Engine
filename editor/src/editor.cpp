@@ -605,6 +605,10 @@ void Editor::build_world() {
     };
     host.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
     host.physics_event = [](const char* what, uint64_t a, uint64_t b, void* u) { ((Editor*)u)->physics_event(what, a, b); };
+    // fe.graphics changes the live settings during Play; Stop restores them.
+    play_gfx_backup_ = settings.graphics;
+    host.graphics = &settings.graphics;
+    host.graphics_changed = &gfx_script_changed_;
     session_.start(scene, host, audio_device_);
 }
 
@@ -631,6 +635,7 @@ void Editor::stop() {
     if (!playing()) return;
     ObjectId next = scene.next_id();
     free_world();
+    settings.graphics = play_gfx_backup_;
     scene.copy_from(*play_backup_);
     scene.keep_ids_above(next);         // objects made while playing keep their ids retired
     delete play_backup_;

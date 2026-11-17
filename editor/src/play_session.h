@@ -19,6 +19,7 @@ class ScriptRuntime;
 class AudioSystem;
 class AudioDevice;
 namespace platform { struct Event; }
+namespace gfx { struct GraphicsSettings; }
 
 enum class PlayLog : uint8_t { Info, Warning, Error };
 
@@ -31,6 +32,11 @@ struct PlayHost {
     // Called for physics events after the scripts have been told ("entered",
     // "left", "hit"). May be null.
     void (*physics_event)(const char* what, uint64_t a, uint64_t b, void* user) = nullptr;
+    // The host's live graphics settings, for the scripts' fe.graphics API
+    // (null: scripts cannot change them). *graphics_changed is set when a
+    // script changed them; the host applies them before the next frame.
+    gfx::GraphicsSettings* graphics = nullptr;
+    bool* graphics_changed = nullptr;
 };
 
 class PlaySession {

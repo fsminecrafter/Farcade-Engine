@@ -1,4 +1,6 @@
 #include "gfx/shaders_hq.h"
+#include "gfx/shaders.h"
+#include "gfx/shaders_post.h"
 #include "core/math.h"
 
 #include <string.h>
@@ -41,39 +43,12 @@ struct Text {
     }
 };
 
-// Post processing shared by the final-color shaders. `tone` is everything after
-// exposure and tint (tonemap, contrast, saturation, vignette, linear to sRGB),
-// `post` is the base tier's chain, `hdr_enc` / `hdr_dec` the 8 bit HDR codec
-// (exposure and tint are applied when encoding).
-const char* const kTone =
-    "uniform vec4 u_post;\n"
-    "uniform vec4 u_tint;\n"
-    "uniform vec4 u_res;\n"
-    "vec3 lin2srgb(vec3 c) {\n"
-    "    return mix(c * 12.92, 1.055 * pow(c, vec3(0.4166667)) - 0.055, step(0.0031308, c));\n"
-    "}\n"
-    "vec3 tone(vec3 c) {\n"
-    "    vec3 t = c;\n"
-    "    if (u_tint.w > 1.5) t = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);\n"
-    "    else if (u_tint.w > 0.5) t = c / (1.0 + c);\n"
-    "    t = clamp(t, 0.0, 1.0);\n"
-    "    t = clamp((t - 0.18) * u_post.y + 0.18, 0.0, 1.0);\n"
-    "    float luma = dot(t, vec3(0.2126, 0.7152, 0.0722));\n"
-    "    t = mix(vec3(luma), t, u_post.z);\n"
-    "    vec2 q = gl_FragCoord.xy / u_res.xy - 0.5;\n"
-    "    float edge = clamp(length(q) * 1.4142136, 0.0, 1.0);\n"
-    "    t = t * (1.0 - u_post.w * smoothstep(0.25, 1.0, edge));\n"
-    "    return lin2srgb(clamp(t, 0.0, 1.0));\n"
-    "}\n"
-    "vec3 post(vec3 c) {\n"
-    "    return tone(c * exp2(u_post.x) * u_tint.rgb);\n"
-    "}\n"
-    "vec3 hdr_enc(vec3 c) {\n"
-    "    return sqrt(clamp(c * exp2(u_post.x) * u_tint.rgb, 0.0, 8.0) * 0.125);\n"
-    "}\n"
-    "vec3 hdr_dec(vec3 e) {\n"
-    "    return e * e * 8.0;\n"
-    "}\n";
+// The post chain (shaders_post.h) for this shader's choices, appended to `t`.
+void add_post(Text& t, const PostKey& pk) {
+    char buf[4096];
+    emit_post_chain(buf, sizeof buf, pk);
+    t.add(buf);
+}
 
 const char* const kSrgb2Lin =
     "vec3 srgb2lin(vec3 c) {\n"
@@ -161,12 +136,21 @@ void emit_atlas_lookup(Text& t, const char* comp, bool soft) {
     }
 }
 
+// The light accessors of the lit shader (the lights start after the frame header).
+void light_accessors(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("vec4 light0(float i) { return u_frame[");
+    t.num(kFrameHeader); t.add(".0 + i * 3.0]; }\nvec4 light1(float i) { return u_frame[");
+    t.num(kFrameHeader + 1); t.add(".0 + i * 3.0]; }\nvec4 light2(float i) { return u_frame[");
+    t.num(kFrameHeader + 2); t.add(".0 + i * 3.0]; }\n");
+}
+
 // Vogel disk offsets of the soft shadow filter, rotated per pixel.
 constexpr int kShadowTaps = 10;
 
 }  // namespace
 
-void hq_lit_vertex(char* out, size_t cap, bool shadow) {
+void hq_lit_vertex(char* out, size_t cap, int cascades) {
     Text t(out, cap);
     t.add("uniform mat4 fgl_ModelViewProjection;\n"
           "uniform mat4 fgl_Model;\n"
@@ -177,19 +161,27 @@ void hq_lit_vertex(char* out, size_t cap, bool shadow) {
           "varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
-    if (shadow) t.add("layout(binding = 0) buffer vec4 u_frame[];\nvarying vec3 v_sh;\n");
+    if (cascades > 0) {
+        t.add("layout(binding = 0) buffer vec4 u_frame[];\n");
+        for (int c = 0; c < cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
+    }
     t.add(kSrgb2Lin);
     t.add("void main() {\n"
           "    v_pos = (fgl_Model * vec4(position, 1.0)).xyz;\n"
           "    v_nrm = (fgl_NormalMatrix * vec4(normal, 0.0)).xyz;\n"
           "    v_alb = srgb2lin(u_mat.rgb);\n");
-    if (shadow) {
+    if (cascades > 0) {
         // The receiver is moved along its normal by up to a few shadow texels where the
-        // surface turns away from the light (normal offset bias).
+        // surface turns away from the light (normal offset bias); each cascade has its own texel size.
         t.add("    vec3 wn = normalize(v_nrm);\n"
-              "    float sdl = clamp(dot(wn, u_frame[4].xyz), 0.0, 1.0);\n"
-              "    mat4 shm = mat4(u_frame[0], u_frame[1], u_frame[2], u_frame[3]);\n"
-              "    v_sh = (shm * vec4(v_pos + wn * (u_frame[6].y * (1.0 - sdl)), 1.0)).xyz;\n");
+              "    float sdl = clamp(dot(wn, u_frame[4].xyz), 0.0, 1.0);\n");
+        for (int c = 0; c < cascades; c++) {
+            int base = kCascadeBase + c * kCascadeStride;
+            t.add("    {\n        mat4 shm = mat4(u_frame[");
+            t.num(base); t.add("], u_frame["); t.num(base + 1); t.add("], u_frame["); t.num(base + 2); t.add("], u_frame["); t.num(base + 3);
+            t.add("]);\n        v_sh"); t.num(c); t.add(" = (shm * vec4(v_pos + wn * (u_frame[");
+            t.num(base + 4); t.add("].w * (1.0 - sdl)), 1.0)).xyz;\n    }\n");
+        }
     }
     t.add("    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
           "}\n");
@@ -209,27 +201,36 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add("layout(binding = 0) buffer vec4 u_frame[];\n");
     }
     if (total > 0) {
-        t.add("vec4 light0(float i) { return u_frame[10.0 + i * 3.0]; }\n"
-              "vec4 light1(float i) { return u_frame[11.0 + i * 3.0]; }\n"
-              "vec4 light2(float i) { return u_frame[12.0 + i * 3.0]; }\n");
+        char hdr[256];
+        light_accessors(hdr, sizeof hdr);
+        t.add(hdr);
     }
     if (local) {
         t.add("vec4 local_shadow(float i) { return u_frame[");
-        t.num(10 + total * 3);
+        t.num(kFrameHeader + total * 3);
         t.add(".0 + i]; }\n");
     }
     t.add("varying vec3 v_pos;\n"
           "varying vec3 v_nrm;\n"
           "varying vec3 v_alb;\n");
     if (k.shadow) {
-        t.add("uniform sampler2D u_shadow;\n"
-              "varying vec3 v_sh;\n");
+        t.add("uniform sampler2D u_shadow;\n");
+        for (int c = 0; c < k.cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
     }
     if (k.ao) t.add("uniform sampler2D u_ao;\n");
+    if (k.gi) {
+        char gbuf[2048];
+        emit_gi_lookup(gbuf, sizeof gbuf);
+        t.add(gbuf);
+    }
     if (local) {
         t.add("uniform sampler2D u_atlas;\n");
     }
-    t.add(kTone);
+    {
+        PostKey pk = k.post;
+        pk.hdr_codec = k.hdr;
+        add_post(t, pk);
+    }
     t.add(kPack);
     if (local) {
         // d: from the light to the (offset) surface point; s, u, f: the light
@@ -241,18 +242,49 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
               );
     }
     if (k.shadow) {
+        // The cascade is picked by where the pixel lands: the first (finest) whose volume contains it
+        // (|ndc xy| < 0.97, ndc z < 0.97), the last one otherwise. Its tile, texel scale and bias come from the frame data.
         t.add("float shadow_tap(vec2 uv, float dref) {\n"
-              "    return step(dref - u_frame[5].w, unpack24(texture(u_shadow, uv).rgb));\n"
+              "    return step(dref, unpack24(texture(u_shadow, uv).rgb));\n"
               "}\n"
               "float shadow_factor(vec3 N, vec3 sdir) {\n"
-              "    vec2 uv = vec2(v_sh.x * 0.5 + 0.5, 0.5 - v_sh.y * 0.5);\n"
-              "    float d0 = v_sh.z * 0.5 + 0.5;\n"
-              "    float nz = max(dot(N, sdir), 0.2);\n"
-              "    vec2 g = vec2(dot(N, u_frame[7].xyz), dot(N, u_frame[8].xyz)) * (u_frame[5].y * u_frame[5].z / nz);\n"
-              "    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0) * step(d0, 1.0);\n");
+              "    vec4 q = vec4(v_sh0, 0.0);\n");           // xyz: ndc in the chosen cascade, w: its index
+        if (k.cascades > 1) {
+            t.add("    {\n"
+                  "        float rem = 1.0 - step(abs(q.x), 0.97) * step(abs(q.y), 0.97) * step(q.z, 0.97);\n");
+            for (int c = 1; c < k.cascades; c++) {
+                t.add("        {\n            vec3 sc = v_sh"); t.num(c); t.add(";\n");
+                if (c < k.cascades - 1) {
+                    t.add("            float fit = step(abs(sc.x), 0.97) * step(abs(sc.y), 0.97) * step(sc.z, 0.97);\n"
+                          "            q = mix(q, vec4(sc, ");
+                    t.flt((float)c);
+                    t.add("), rem * fit);\n"
+                          "            rem = rem * (1.0 - fit);\n");
+                } else {
+                    t.add("            q = mix(q, vec4(sc, ");
+                    t.flt((float)c);
+                    t.add("), rem);\n");
+                }
+                t.add("        }\n");
+            }
+            t.add("    }\n");
+        }
+        t.add("    vec4 pa = u_frame[");
+        t.num(kCascadeBase + 4); t.add(".0 + q.w * "); t.flt((float)kCascadeStride);
+        t.add("];\n"
+              "    vec4 pb = u_frame["); t.num(kCascadeBase + 5); t.add(".0 + q.w * "); t.flt((float)kCascadeStride);
+        t.add("];\n"
+              "    vec2 g = vec2(dot(N, u_frame[7].xyz), dot(N, u_frame[8].xyz)) * (pb.y / max(dot(N, sdir), 0.2));\n"
+              // q = (uv in the tile, biased reference depth, inside)
+              "    q = vec4(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5, q.z * 0.5 + 0.5 - pb.z, 0.0);\n"
+              "    q.w = step(0.0, q.x) * step(q.x, 1.0) * step(0.0, q.y) * step(q.y, 1.0) * step(q.z, 1.0);\n"
+              "    q.xy = q.xy * pa.z + pa.xy;\n");
         if (k.shadow >= 2) {
-            t.add("    float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
-                  "    vec2 cs = vec2(cos(ang), sin(ang));\n"
+            t.add("    vec2 cs = vec2(0.0);\n"
+                  "    {\n"
+                  "        float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
+                  "        cs = vec2(cos(ang), sin(ang));\n"
+                  "    }\n"
                   "    float sum = 0.0;\n");
             for (int i = 0; i < kShadowTaps; i++) {
                 // Vogel disk: radius sqrt((i + 0.5) / n), golden angle steps.
@@ -261,22 +293,24 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
                 float ox = fcos(an) * r, oy = fsin(an) * r;
                 t.add("    {\n        vec2 o = vec2(cs.x * ");
                 t.flt(ox); t.add(" - cs.y * "); t.flt(oy); t.add(", cs.y * "); t.flt(ox); t.add(" + cs.x * "); t.flt(oy);
-                t.add(") * u_frame[6].x;\n"
-                      "        sum += shadow_tap(uv + o, d0 + g.x * o.x - g.y * o.y);\n    }\n");
+                t.add(") * pb.x;\n"
+                      "        sum += shadow_tap(q.xy + o * pa.z, q.z + g.x * o.x - g.y * o.y);\n    }\n");
             }
             t.add("    float lit = sum * ");
             t.flt(1.0f / (float)kShadowTaps);
             t.add(";\n");
         } else {
-            t.add("    float lit = shadow_tap(uv, d0);\n");
+            t.add("    float lit = shadow_tap(q.xy, q.z);\n");
         }
-        t.add("    return mix(1.0, lit, inside);\n"
+        t.add("    return mix(1.0, lit, q.w);\n"
               "}\n");
     }
     t.add("void main() {\n"
           "    vec3 col = vec3(0.0);\n"
           "    {\n"                                  // the shading in a block: its registers are free for post()
           "    vec3 N = normalize(v_nrm);\n");
+    // the probe GI too, in a block (the lookup's registers are free again afterwards)
+    if (k.gi) t.add("    vec3 giA = vec3(0.0);\n    {\n        giA = gi_amb(N, v_pos);\n    }\n");
     // the shadow first: it needs many registers, main has few live values yet
     if (k.shadow && k.nd > 0) {
         // In a block: an inlined function's temporaries live until the block ends.
@@ -388,8 +422,8 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add("    float ao = 1.0;\n    float aod = 1.0;\n");
     }
     if (k.pbr) {
-        t.add("    vec3 hemiN = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-              "    vec3 R = reflect(-V, N);\n"
+        t.add(k.gi ? "    vec3 hemiN = giA;\n" : "    vec3 hemiN = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+        t.add("    vec3 R = reflect(-V, N);\n"
               "    vec3 hemiR = mix(u_gnd.rgb, u_sky.rgb, R.y * 0.5 + 0.5);\n"
               "    vec3 env = mix(hemiR, (u_gnd.rgb + u_sky.rgb) * 0.5, rough * rough);\n"
               "    vec4 rr = rough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);\n"
@@ -399,8 +433,8 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
               "    vec3 ambient = dalb * hemiN * (1.0 - ks) + env * ks;\n"
               "    col = ambient * ao + (dalb * diff + spec) * aod;\n");
     } else {
-        t.add("    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-              "    col = v_alb * (amb * ao + diff * aod) + spec * aod;\n");
+        t.add(k.gi ? "    vec3 amb = giA;\n" : "    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+        t.add("    col = v_alb * (amb * ao + diff * aod) + spec * aod;\n");
     }
     t.add("    }\n");
     if (k.fog) {
@@ -425,20 +459,24 @@ void hq_unlit_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr) {
+void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr, const PostKey& post) {
     Text t(out, cap);
     t.add("uniform vec4 u_cam;\n"
           "uniform vec4 u_fog;\n"
           "varying vec3 v_pos;\n"
           "varying vec3 v_alb;\n");
-    t.add(kTone);
+    {
+        PostKey pk = post;
+        pk.hdr_codec = hdr;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
           "    vec3 col = v_alb;\n");
     if (fog) t.add("    col = mix(u_fog.rgb, col, exp(-u_fog.w * length(u_cam.xyz - v_pos)));\n");
     t.add(hdr ? "    gl_FragColor = vec4(hdr_enc(col), 1.0);\n}\n" : "    gl_FragColor = vec4(post(col), 1.0);\n}\n");
 }
 
-void hq_sky_fragment(char* out, size_t cap, bool hdr) {
+void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post) {
     Text t(out, cap);
     t.add("uniform vec4 u_fwd;\n"
           "uniform vec4 u_rx;\n"
@@ -449,7 +487,11 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr) {
           "uniform vec4 u_sun;\n"
           "uniform vec4 u_suncol;\n"
           "varying vec2 v_ndc;\n");
-    t.add(kTone);
+    {
+        PostKey pk = post;
+        pk.hdr_codec = hdr;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
           "    vec3 d = normalize(u_fwd.xyz + u_rx.xyz * v_ndc.x + u_ry.xyz * v_ndc.y);\n"
           "    float up = clamp(d.y, 0.0, 1.0);\n"
@@ -485,6 +527,13 @@ void hq_shadow_fragment(char* out, size_t cap) {
     t.add(kPack);
     t.add("void main() {\n"
           "    gl_FragColor = vec4(pack24(v_d), 1.0);\n"
+          "}\n");
+}
+
+void pp_white_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("void main() {\n"
+          "    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);\n"
           "}\n");
 }
 
@@ -665,7 +714,10 @@ void pp_blur_fragment(char* out, size_t cap) {
           "}\n");
 }
 
-void pp_bright_fragment(char* out, size_t cap) {
+// The bright pass: 4 bilinear taps = a 4x4 box of the scene, each tap thresholded with a soft knee.
+// The taps are weighted by 1 / (1 + luma) (Karis average), so a few very bright pixels do not make
+// the glow flicker.
+void pp_bright_fragment(char* out, size_t cap, bool karis) {
     Text t(out, cap);
     t.add("uniform sampler2D u_src;\n"
           "uniform vec4 u_p;\n"
@@ -682,51 +734,91 @@ void pp_bright_fragment(char* out, size_t cap) {
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
           "    vec2 o = u_p.zw;\n"
-          "    vec3 c = bright(texture(u_src, uv + vec2(-o.x, -o.y)).rgb) + bright(texture(u_src, uv + vec2(o.x, -o.y)).rgb)\n"
-          "           + bright(texture(u_src, uv + vec2(-o.x, o.y)).rgb) + bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n"
-          "    gl_FragColor = vec4(sqrt(clamp(c * 0.25, 0.0, 8.0) * 0.125), 1.0);\n"
+          "    vec3 a = bright(texture(u_src, uv + vec2(-o.x, -o.y)).rgb);\n"
+          "    vec3 b = bright(texture(u_src, uv + vec2(o.x, -o.y)).rgb);\n"
+          "    vec3 c = bright(texture(u_src, uv + vec2(-o.x, o.y)).rgb);\n"
+          "    vec3 d = bright(texture(u_src, uv + vec2(o.x, o.y)).rgb);\n");
+    if (karis)
+        t.add("    vec4 w = 1.0 / (1.0 + vec4(dot(a, vec3(0.2126, 0.7152, 0.0722)), dot(b, vec3(0.2126, 0.7152, 0.0722)),\n"
+              "                               dot(c, vec3(0.2126, 0.7152, 0.0722)), dot(d, vec3(0.2126, 0.7152, 0.0722))));\n"
+              "    vec3 s = (a * w.x + b * w.y + c * w.z + d * w.w) / (w.x + w.y + w.z + w.w);\n");
+    else
+        t.add("    vec3 s = (a + b + c + d) * 0.25;\n");
+    t.add(          "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
           "}\n");
 }
 
-void pp_down_fragment(char* out, size_t cap) {
+// The downsample of the chain: 13 bilinear taps over a 6x6 source area (the filter of the call of duty
+// "Next generation post processing" talk): 4 inner boxes, 4 outer edges, 4 corners, the centre.
+void pp_down_fragment(char* out, size_t cap, bool wide) {
     Text t(out, cap);
+    if (!wide) {
+        // the simple chain: 4 bilinear taps, a 4x4 box
+        t.add("uniform sampler2D u_src;\n"
+              "uniform vec4 u_p;\n"
+              "void main() {\n"
+              "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+              "    vec2 o = u_p.zw;\n"
+              "    vec3 c = texture(u_src, uv + vec2(-o.x, -o.y)).rgb + texture(u_src, uv + vec2(o.x, -o.y)).rgb\n"
+              "           + texture(u_src, uv + vec2(-o.x, o.y)).rgb + texture(u_src, uv + vec2(o.x, o.y)).rgb;\n"
+              "    gl_FragColor = vec4(c * 0.25, 1.0);\n"
+              "}\n");
+        return;
+    }
     t.add("uniform sampler2D u_src;\n"
           "uniform vec4 u_p;\n"
+          "vec3 tap(vec2 uv, float x, float y) {\n"
+          "    return texture(u_src, uv + vec2(x, y) * u_p.zw).rgb;\n"
+          "}\n"
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
-          "    vec2 o = u_p.zw;\n"
-          "    vec3 c = texture(u_src, uv + vec2(-o.x, -o.y)).rgb + texture(u_src, uv + vec2(o.x, -o.y)).rgb\n"
-          "           + texture(u_src, uv + vec2(-o.x, o.y)).rgb + texture(u_src, uv + vec2(o.x, o.y)).rgb;\n"
-          "    gl_FragColor = vec4(c * 0.25, 1.0);\n"
+          "    vec3 c = tap(uv, 0.0, 0.0) * 0.125;\n"
+          "    c += (tap(uv, -1.0, -1.0) + tap(uv, 1.0, -1.0) + tap(uv, -1.0, 1.0) + tap(uv, 1.0, 1.0)) * 0.125;\n"
+          "    c += (tap(uv, 0.0, -2.0) + tap(uv, -2.0, 0.0) + tap(uv, 2.0, 0.0) + tap(uv, 0.0, 2.0)) * 0.0625;\n"
+          "    c += (tap(uv, -2.0, -2.0) + tap(uv, 2.0, -2.0) + tap(uv, -2.0, 2.0) + tap(uv, 2.0, 2.0)) * 0.03125;\n"
+          "    gl_FragColor = vec4(c, 1.0);\n"
           "}\n");
 }
 
-// out = fine + tent(coarse); u_p.zw is the coarse texel size.
+// out = fine + k * tent(coarse); u_p.zw is the coarse texel size, u_q.x the weight k of the wider levels
+// (the glow's radius: 0 keeps only the finest level, 1 doubles the wide ones).
 void pp_up_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform sampler2D u_fine;\n"
           "uniform sampler2D u_coarse;\n"
           "uniform vec4 u_p;\n"
+          "uniform vec4 u_q;\n"
           "vec3 hdr_dec(vec3 e) { return e * e * 8.0; }\n"
           "void main() {\n"
           "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
           "    vec2 o = u_p.zw * 0.5;\n"
           "    vec3 c = texture(u_coarse, uv + vec2(-o.x, -o.y)).rgb + texture(u_coarse, uv + vec2(o.x, -o.y)).rgb\n"
           "           + texture(u_coarse, uv + vec2(-o.x, o.y)).rgb + texture(u_coarse, uv + vec2(o.x, o.y)).rgb;\n"
-          "    vec3 s = hdr_dec(texture(u_fine, uv).rgb) + hdr_dec(c * 0.25);\n"
+          "    vec3 s = hdr_dec(texture(u_fine, uv).rgb) + hdr_dec(c * 0.25) * u_q.x;\n"
           "    gl_FragColor = vec4(sqrt(clamp(s, 0.0, 8.0) * 0.125), 1.0);\n"
           "}\n");
 }
 
-void pp_composite_fragment(char* out, size_t cap, bool bloom) {
+void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic) {
     Text t(out, cap);
     t.add("uniform sampler2D u_scene;\n");
     if (bloom) t.add("uniform sampler2D u_bloom;\nuniform vec4 u_q;\n");
     t.add("uniform vec4 u_p;\n");
-    t.add(kTone);
+    if (chromatic) t.add("uniform vec4 u_ca;\n");
+    {
+        PostKey pk = post;
+        pk.hdr_codec = true;
+        add_post(t, pk);
+    }
     t.add("void main() {\n"
-          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
-          "    vec3 c = hdr_dec(texture(u_scene, uv).rgb);\n");
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n");
+    if (chromatic)
+        // colour fringes: red and blue are sampled a little further out and in along the line from the centre
+        t.add("    vec2 cd = (uv - 0.5) * u_ca.x;\n"
+              "    vec3 c = vec3(hdr_dec(texture(u_scene, uv + cd).rgb).r, hdr_dec(texture(u_scene, uv).rgb).g,\n"
+              "                  hdr_dec(texture(u_scene, uv - cd).rgb).b);\n");
+    else
+        t.add("    vec3 c = hdr_dec(texture(u_scene, uv).rgb);\n");
     if (bloom) t.add("    c += hdr_dec(texture(u_bloom, uv).rgb) * u_q.x;\n");
     t.add("    gl_FragColor = vec4(tone(c), 1.0);\n"
           "}\n");

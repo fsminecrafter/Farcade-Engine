@@ -52,7 +52,7 @@ bool Editor::load_project() {
 // graphics.cfg in the project: the editor's current Settings > Graphics.
 static void write_graphics_cfg(Editor& ed) {
     size_t gn = 0;
-    char* g = graphics_settings_to_text(ed.settings.graphics, &gn);
+    char* g = project_graphics_to_text(ed.settings.graphics, &gn);
     if (!g) return;
     char path[600];
     snprintf(path, sizeof path, "%s/graphics.cfg", ed.project_dir);

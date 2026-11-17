@@ -10,6 +10,7 @@
 // development, tests and screenshots on machines without a supported card).
 #pragma once
 
+#include "gfx/feature_level.h"
 #include <stdint.h>
 
 namespace fe::gfx {
@@ -18,6 +19,10 @@ enum class GraphicsPreset : uint8_t { Low, Medium, High, Ultra, Custom };
 
 struct GraphicsSettings {
     GraphicsPreset preset = GraphicsPreset::High;
+    // Which feature level to run (feature_level.h). Auto picks from the
+    // device caps: the GPU tier on a graphics card, else FL1-ready when the
+    // kernel has scissor + mipmaps + 16 texture units, else FL0.
+    FeatureLevelMode feature_level = FeatureLevelMode::Auto;
 
     // ---- base tier (CPU and GPU)
     float render_scale = 1.0f;              // internal resolution, 0.25..1 (upscaled when shown)
@@ -50,6 +55,10 @@ struct GraphicsSettings {
 // What the renderer actually does this frame (the settings, limited by the
 // backend).
 struct GraphicsFeatures {
+    FeatureLevel level = FeatureLevel::FL0; // the level that runs (feature_level.h)
+    bool level_forced = false;              // GpuTier on a backend without a graphics card
+    bool level_clamped = false;             // the requested level needs caps the device lacks
+    PassCaps pass_caps;                     // optional hardware features the device has
     bool gpu = false;                       // FarcadeGL runs on a graphics card
     bool gpu_tier = false;                  // the GPU tier is on (gpu, or forced)
     bool shadows = false, ambient_occlusion = false, bloom = false, antialiasing = false, pbr = false;

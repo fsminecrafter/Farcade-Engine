@@ -847,6 +847,22 @@ void Editor::settings_graphics() {
         ImGui::AlignTextToFramePadding();
         if (fgl_backend[0]) ImGui::Text("%s  (%s)", fgl_backend, gpu ? "graphics card" : "CPU");
         else ImGui::TextDisabled("not started yet: switch the viewport to FarcadeGL");
+        static const char* levels[] = { "Auto", "FL0", "FL1-ready", "GPU tier" };
+        int lm = (int)g.feature_level;
+        prop_label("Feature level");
+        if (ImGui::Combo("##flevel", &lm, levels, 4)) g.feature_level = (gfx::FeatureLevelMode)lm;
+        track("gfx:level");
+        if (fgl_backend[0]) {
+            prop_label("  Running");
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%s%s%s", gfx::feature_level_name(fgl_features.level), fgl_features.level_forced ? " (forced)" : "",
+                        fgl_features.level_clamped ? " (the device lacks what the request needs)" : "");
+            const gfx::PassCaps& pc = fgl_features.pass_caps;
+            char caps[96];
+            snprintf(caps, sizeof(caps), "Device: scissor %s, mipmaps %s, 16 texture units %s, multiple targets %s",
+                     pc.scissor ? "yes" : "no", pc.mipmaps ? "yes" : "no", pc.tex16 ? "yes" : "no", pc.mrt ? "yes" : "no");
+            faint(caps);
+        }
         ImGui::Dummy(ImVec2(0, 4));
     }
     if (section_header("Quality", Icon::Sun)) {

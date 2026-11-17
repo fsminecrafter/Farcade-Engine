@@ -20,6 +20,7 @@
 //     Bloom is not implemented.
 #include "gfx/renderer.h"
 #include "gfx/shaders.h"
+#include "gfx/feature_level.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
 #include "stb/stb_image.h"
@@ -125,6 +126,24 @@ FGLMat4 to_fgl(const Mat4& m) {
     return r;
 }
 
+GraphicsFeatures make_features(const DeviceCaps& caps, const GraphicsSettings& settings) {
+    GraphicsFeatures f;
+    FeatureLevelChoice c = pick_feature_level(caps, settings.feature_level, settings.allow_gpu_effects_on_cpu);
+    f.level = c.level;
+    f.level_forced = c.forced;
+    f.level_clamped = c.clamped;
+    f.pass_caps = pass_caps(caps);
+    f.gpu = caps.hw_3d;
+    f.gpu_tier = c.level == FeatureLevel::GpuTier;
+    f.shadows = f.gpu_tier && settings.shadows;
+    f.ambient_occlusion = f.gpu_tier && settings.ambient_occlusion;
+    f.bloom = f.gpu_tier && settings.bloom;
+    f.antialiasing = f.gpu_tier && settings.antialiasing;
+    f.pbr = f.gpu_tier && settings.pbr;
+    f.local_shadows = f.gpu_tier && settings.local_shadows;
+    return f;
+}
+
 }  // namespace
 
 struct Renderer::Impl {
@@ -146,6 +165,7 @@ struct Renderer::Impl {
     // GPU tier (graphics_settings.h, passes.h)
     GraphicsSettings settings;
     bool hw = false;                        // FGPU_CAP_HW_3D: FarcadeGL runs on a graphics card
+    DeviceCaps caps;                        // from fglGetDeviceInfo (feature_level.h)
     char backend[40] = "";
     GpuTier tier;
     bool tier_ran = false;                  // the last frame used the GPU tier
@@ -795,18 +815,8 @@ struct Renderer::Impl {
         if (w > 0) fglViewport(I->gl, x, y, w, h);
     }
 
-    GraphicsFeatures feature_set() const {
-        GraphicsFeatures f;
-        f.gpu = hw;
-        f.gpu_tier = hw || settings.allow_gpu_effects_on_cpu;
-        f.shadows = f.gpu_tier && settings.shadows;
-        f.ambient_occlusion = f.gpu_tier && settings.ambient_occlusion;
-        f.bloom = f.gpu_tier && settings.bloom;
-        f.antialiasing = f.gpu_tier && settings.antialiasing;
-        f.pbr = f.gpu_tier && settings.pbr;
-        f.local_shadows = f.gpu_tier && settings.local_shadows;
-        return f;
-    }
+    // The one place where caps + settings become what runs (feature_level.h).
+    GraphicsFeatures feature_set() const { return make_features(caps, settings); }
 
     // rows == 0: the whole image into `pixels` (as RGBA); else rows
     // [y0, y0 + rows) into dst (XRGB, width * rows words). Bands are not
@@ -964,6 +974,7 @@ bool Renderer::init(int width, int height) {
         syscall_gpu_info_t info;
         if (fglGetDeviceInfo(&info) == 0) {
             m.hw = (info.caps & FGPU_CAP_HW_3D) != 0;
+            m.caps = DeviceCaps::from_abi(info.caps, info.backend);
             snprintf(m.backend, sizeof m.backend, "%s", info.backend);
         }
     }
@@ -1052,17 +1063,14 @@ const GraphicsSettings& Renderer::settings() const { return settings_; }
 
 GraphicsFeatures Renderer::features() const {
     if (impl_) return impl_->feature_set();
-    GraphicsFeatures f;                     // before init: no backend known, the base tier
-    f.gpu_tier = settings_.allow_gpu_effects_on_cpu;
-    f.shadows = f.gpu_tier && settings_.shadows;
-    f.ambient_occlusion = f.gpu_tier && settings_.ambient_occlusion;
-    f.bloom = f.gpu_tier && settings_.bloom;
-    f.antialiasing = f.gpu_tier && settings_.antialiasing;
-    f.pbr = f.gpu_tier && settings_.pbr;
-    return f;
+    return make_features(DeviceCaps(), settings_);      // before init: no backend known
 }
 
 const char* Renderer::backend() const { return impl_ ? impl_->backend : ""; }
+const DeviceCaps& Renderer::caps() const {
+    static const DeviceCaps none;
+    return impl_ ? impl_->caps : none;
+}
 
 const GpuTierStats& Renderer::gpu_tier_stats() const {
     static const GpuTierStats none;

@@ -156,6 +156,10 @@ public:
     GraphicsFeatures features() const;
     // The FarcadeGL backend, from fglGetDeviceInfo ("cpu ...", "nvidia 3D engine").
     const char* backend() const;
+    // The device caps and the feature level that runs (feature_level.h):
+    // features().level, or ask directly.
+    const DeviceCaps& caps() const;
+    FeatureLevel feature_level() const { return features().level; }
     // Stage timings of the last frame, and the render targets and shader
     // programs the GPU tier holds right now (they are freed on resize and shutdown).
     const GpuTierStats& gpu_tier_stats() const;

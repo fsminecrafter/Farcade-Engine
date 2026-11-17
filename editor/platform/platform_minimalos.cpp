@@ -325,8 +325,19 @@ bool windowed() { return g_window != 0; }
 
 bool toggle_fullscreen() {
     if (!g_window) return true;
-    bool enabled = !g_fullscreen;
-    if (mos_window_set_fullscreen(g_window, enabled) != SYS_SUCCESS) return false;
+    syscall_window_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (mos_window_get_info(g_window, &info) != SYS_SUCCESS) return false;
+    // The window manager may have changed the mode (its title-bar buttons):
+    // toggle from what the window is now, not from what we last asked for.
+    bool enabled = !(info.flags & SYSCALL_WINDOW_FULLSCREEN);
+    // Written by hand rather than with mos_window_set_fullscreen: older SDK
+    // helpers sent the focus bit back, which the kernel refuses from a
+    // program, so F11 in the (focused) editor window always failed.
+    uint32_t flags = info.flags & ~(SYSCALL_WINDOW_FOCUSED | SYSCALL_WINDOW_FULLSCREEN | SYSCALL_WINDOW_MAXIMIZED |
+                                    SYSCALL_WINDOW_MINIMIZED);
+    if (enabled) flags |= SYSCALL_WINDOW_FULLSCREEN;
+    if (mos_window_set_flags(g_window, flags) != SYS_SUCCESS) return false;
     g_fullscreen = enabled;
     return true;
 }

@@ -63,7 +63,7 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 - **Entity system** (`engine/ecs`, `docs/ecs.md`): flecs v4 behind a small `fe::World` API. Modules are components (with flecs reflection built from the same field tables as the Inspector), the transform hierarchy is a system, and "current" is enforced there too. The editor's Play runs the scene as a world.
 - **Scripts** (`engine/script`, `docs/scripting.md`): Lua 5.4 in a sandbox, one instance per script on an object, with its editor inputs in `self`. Scripts reach other objects' scripts (`self.door:script("door"):open()`), modules (`obj.light.intensity`, `obj.camera.current = true`), the look (`obj.material.metallic = 1`), events (`obj:send`, `fe.broadcast`) and physics callbacks. They run in Play.
 - **Physics** (`engine/physics`): a built-in step for Rigidbody 3D and Collider 3D (gravity, box, sphere, capsule, cylinder and convex mesh collisions, rolling and tipping, bounce, friction, triggers), a stand-in for Jolt.
-- **Modules and scene objects**: `docs/modules.md`.
+- **Modules and scene objects**: `docs/modules.md`: besides Rigidbody, Collider, Light and the audio modules there are Particle Emitter, Joint 3D, Animator (`docs/animation.md`), Force Field, Spawner, Audio Reverb Zone, Billboard and Text 3D (`engine/fx`).
 - **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files. New scene, Open and Quit ask before unsaved changes are lost.
 - **Undo and redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z): every edit in the editor, a drag counts as one step (`docs/scenes.md`).
 

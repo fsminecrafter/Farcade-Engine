@@ -246,7 +246,7 @@ static void raster_tests() {
     gfx::ParticleBatch b;
     b.items = &p; b.count = 1; b.additive = true;
     gfx::ParticleRaster r;
-    int n = r.draw(&b, 1, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
+    int n = r.draw(&b, 1, nullptr, 0, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
     CHECK(n == 1, "one quad drawn");
     uint32_t c = px[(H / 2) * W + W / 2];
     CHECK((c & 0xFF) > 200 && ((c >> 8) & 0xFF) > 90 && ((c >> 16) & 0xFF) < 10, "additive orange at the center (%08x)", c);
@@ -255,7 +255,7 @@ static void raster_tests() {
     for (int i = 0; i < W * H; i++) px[i] = 0xFFFFFFFFu;
     p.a = 0.5f; p.r = 0; p.g = 0; p.b = 0;
     b.additive = false;
-    r.draw(&b, 1, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
+    r.draw(&b, 1, nullptr, 0, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
     c = px[(H / 2) * W + W / 2];
     CHECK((c & 0xFF) > 115 && (c & 0xFF) < 140, "alpha blend darkens white to about half (%08x)", c);
     // A wall in front hides it (depth test).
@@ -265,16 +265,16 @@ static void raster_tests() {
     static const Vec3 wall[6] = { Vec3(-3, -3, 0), Vec3(3, -3, 0), Vec3(3, 3, 0), Vec3(-3, -3, 0), Vec3(3, 3, 0), Vec3(-3, 3, 0) };
     gfx::Occluder oc;
     oc.positions = wall; oc.vertex_count = 6; oc.model = Mat4::translation(Vec3(0, 0, 2));       // between camera (z 5) and the particle (z 0)
-    r.draw(&b, 1, view, proj, &oc, 1, px, W, H, 0, H, true, nullptr, nullptr);
+    r.draw(&b, 1, nullptr, 0, view, proj, &oc, 1, px, W, H, 0, H, true, nullptr, nullptr);
     CHECK(px[(H / 2) * W + W / 2] == 0xFF000000u, "a wall in front hides the particle");
     oc.model = Mat4::translation(Vec3(0, 0, -2));                                                 // behind it
-    r.draw(&b, 1, view, proj, &oc, 1, px, W, H, 0, H, true, nullptr, nullptr);
+    r.draw(&b, 1, nullptr, 0, view, proj, &oc, 1, px, W, H, 0, H, true, nullptr, nullptr);
     CHECK((px[(H / 2) * W + W / 2] & 0xFF) > 200, "a wall behind does not");
     // Band rendering writes only its rows, in XRGB.
     uint32_t band[W * 8];
     for (int i = 0; i < W * 8; i++) band[i] = 0;
     p.size = 8;
-    r.draw(&b, 1, view, proj, nullptr, 0, band, W, H, H / 2 - 4, 8, false, nullptr, nullptr);
+    r.draw(&b, 1, nullptr, 0, view, proj, nullptr, 0, band, W, H, H / 2 - 4, 8, false, nullptr, nullptr);
     CHECK((band[4 * W + W / 2] & 0xFF) > 200 && (band[4 * W + W / 2] >> 16 & 0xFF) > 200, "band: the particle's rows are drawn (%08x)", band[4 * W + W / 2]);
 }
 
@@ -512,6 +512,83 @@ static void animator_tests() {
     w.shutdown();
 }
 
+static void sprite_tests() {
+    // ---- text labels in the raster
+    const int W = 128, H = 64;
+    static uint32_t px[128 * 64];
+    for (int i = 0; i < W * H; i++) px[i] = 0xFF000000u;
+    Mat4 view = Mat4::look_at(Vec3(0, 0, 5), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    Mat4 proj = Mat4::perspective(radians(60.0f), (float)W / H, 0.1f, 100.0f);
+    gfx::TextLabel lab;
+    lab.pos = Vec3(0, 0, 0); lab.height = 1.2f; lab.r = 1; lab.g = 1; lab.b = 1; lab.outline = false;
+    snprintf(lab.text, sizeof lab.text, "HI");
+    gfx::ParticleRaster r;
+    CHECK(r.draw(nullptr, 0, &lab, 1, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr) == 1, "a label is drawn");
+    int lit = 0, minx = W, maxx = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) if (px[y * W + x] & 0xFF) { lit++; if (x < minx) minx = x; if (x > maxx) maxx = x; }
+    CHECK(lit > 40 && minx > 20 && maxx < 108 && absf((float)(minx + maxx) * 0.5f - 64.0f) < 4, "white dots, centered (%d dots, x %d..%d)", lit, minx, maxx);
+    int lit_left = 0;
+    for (int i = 0; i < W * H; i++) px[i] = 0xFF000000u;
+    lab.align = 0;
+    r.draw(nullptr, 0, &lab, 1, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W / 2 - 2; x++) if (px[y * W + x] & 0xFF) lit_left++;
+    CHECK(lit_left == 0, "left aligned text starts at the point");
+    // a wall in front hides it
+    for (int i = 0; i < W * H; i++) px[i] = 0xFF000000u;
+    static const Vec3 wall[6] = { Vec3(-9, -9, 0), Vec3(9, -9, 0), Vec3(9, 9, 0), Vec3(-9, -9, 0), Vec3(9, 9, 0), Vec3(-9, 9, 0) };
+    gfx::Occluder oc;
+    oc.positions = wall; oc.vertex_count = 6; oc.model = Mat4::translation(Vec3(0, 0, 2));
+    lab.align = 1;
+    r.draw(nullptr, 0, &lab, 1, view, proj, &oc, 1, px, W, H, 0, H, true, nullptr, nullptr);
+    int hidden = 0;
+    for (int i = 0; i < W * H; i++) if (px[i] & 0xFF) hidden++;
+    CHECK(hidden == 0, "a wall in front hides the label (%d)", hidden);
+    // outline and a tall quad (aspect)
+    for (int i = 0; i < W * H; i++) px[i] = 0xFF000000u;
+    gfx::Particle q;
+    q.pos = Vec3(0, 0, 0); q.size = 1.0f; q.aspect = 2.0f; q.r = q.g = q.b = 1; q.a = 1;
+    gfx::ParticleBatch pb;
+    pb.items = &q; pb.count = 1; pb.additive = false;
+    r.draw(&pb, 1, nullptr, 0, view, proj, nullptr, 0, px, W, H, 0, H, true, nullptr, nullptr);
+    int ytop = H, ybot = 0, xl = W, xr = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) if ((px[y * W + x] & 0xFF) > 20) { if (y < ytop) ytop = y; if (y > ybot) ybot = y; if (x < xl) xl = x; if (x > xr) xr = x; }
+    CHECK((ybot - ytop) > (xr - xl) * 1.6f, "aspect 2 makes the quad twice as tall (%d x %d)", xr - xl, ybot - ytop);
+
+    // ---- the bank and the world's frame
+    World w;
+    w.init();
+    FxWorld fx;
+    FxHost host;
+    fx.init(&w, host);
+    Entity near_b = w.create("Near");
+    w.transform(near_b)->position = Vec3(0, 0, 1);
+    w.transform(near_b)->scale = Vec3(2, 1, 1);
+    w.add(near_b, ModuleKind::Billboard);
+    Billboard* b = (Billboard*)w.get_mut(near_b, ModuleKind::Billboard);
+    b->width = 1; b->height = 1;
+    Entity far_b = w.create("Far");
+    w.transform(far_b)->position = Vec3(0, 0, -8);
+    w.add(far_b, ModuleKind::Billboard);
+    ((Billboard*)w.get_mut(far_b, ModuleKind::Billboard))->blend = ParticleBlend::Additive;
+    Entity hidden_b = w.create("Hidden");
+    w.add(hidden_b, ModuleKind::Billboard);
+    ((Billboard*)w.get_mut(hidden_b, ModuleKind::Billboard))->visible = false;
+    Entity label = w.create("Sign");
+    w.add(label, ModuleKind::Text3D);
+    snprintf(((Text3D*)w.get_mut(label, ModuleKind::Text3D))->text, kPathMax, "Hello");
+    w.progress(1.0f / 60.0f);
+    FxWorld::Frame f = fx.collect(Vec3(0, 0, 10));
+    CHECK(f.batch_count == 2 && f.label_count == 1, "two visible billboards and one label (%d, %d)", f.batch_count, f.label_count);
+    CHECK(f.batch_count == 2 && f.batches[0].items[0].pos.z < f.batches[1].items[0].pos.z && f.batches[0].additive, "far first");
+    CHECK(f.batch_count == 2 && absf(f.batches[1].items[0].size - 2.0f) < 1e-4f && absf(f.batches[1].items[0].aspect - 0.5f) < 1e-4f, "the object's scale sizes the quad (%.2f, aspect %.2f)", f.batches[1].items[0].size, f.batches[1].items[0].aspect);
+    CHECK(strcmp(f.labels[0].text, "Hello") == 0 && f.labels[0].align == 1, "label text and alignment");
+    fx.quality.sprites = false;
+    f = fx.collect(Vec3(0, 0, 10));
+    CHECK(f.batch_count == 0 && f.label_count == 0, "sprites off: nothing to draw");
+    fx.shutdown();
+    w.shutdown();
+}
+
 static void quality_tests() {
     Mat4 id = Mat4::identity();
     ParticleEmitter e;
@@ -536,6 +613,7 @@ int main() {
     raster_tests();
     system_tests();
     quality_tests();
+    sprite_tests();
     animator_tests();
     spawner_tests();
     printf("fx_tests: %d checks, %d failures\n", g_checks, g_failed);

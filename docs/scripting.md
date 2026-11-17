@@ -148,7 +148,7 @@ using a handle as a table key work.
 | `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
 | `obj.alive` | false once destroyed |
 | `obj.material` | the look of a mesh object, or nil for objects without a mesh (see below) |
-| `obj.<module>` | `rigidbody3d`, `collider3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `camera`, `skylight`, `sky`, `post_process` (see modules.md): the module, or nil if the object has none |
+| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
 
 A module's fields read and write through the ECS (`World::get_field` /
 `set_field`): numbers are clamped to the field's range, enums are their name

@@ -1504,6 +1504,17 @@ void test_particles() {
         CHECK_MSG(false, "render_rows with particles");
     }
     free(tmp);
+    // A text label, drawn with the built-in font.
+    TextLabel lab;
+    lab.pos = Vec3(0, 1.5f, 0); lab.height = 0.8f; lab.r = 1; lab.g = 1; lab.b = 0;
+    snprintf(lab.text, sizeof lab.text, "OK");
+    t.scene.particle_batch_count = 0;
+    t.scene.labels = &lab;
+    t.scene.label_count = 1;
+    if (!render_ok(r, t.scene)) return;
+    int yellow = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { Px q = px(r, x, y); if (q.r > 200 && q.g > 200 && q.b < 90) yellow++; }
+    CHECK_MSG(yellow > 20, "a text label shows in the image");
 }
 
 }  // namespace

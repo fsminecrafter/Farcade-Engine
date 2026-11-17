@@ -1557,6 +1557,28 @@ int main() {
         frames(2);
         CHECK(ed.scene.get(mv)->position.x == 0.0f, "Stop puts it back");
         ed.scene.remove(mv);
+        // Billboard and Text 3D show in the viewport; the quality switch hides them.
+        ObjectId bb = ed.create_object("Icon", MeshKind::Cube, Vec3(0, 1, 0));
+        ed.scene.add_module(bb, ModuleKind::Billboard);
+        ObjectId tx = ed.create_object("Sign", MeshKind::Cube, Vec3(0, 2, 0));
+        ed.scene.add_module(tx, ModuleKind::Text3D);
+        snprintf(ed.scene.get(tx)->modules.text3d.text, kPathMax, "Hello");
+        ed.scene.get(tx)->modules.text3d.size = 0.8f;
+        frames(3);
+        CHECK(ed.fx()->last_sprites == 2, "a billboard and a label are drawn (%d)", ed.fx()->last_sprites);
+        ed.settings.fx.sprites = false;
+        frames(2);
+        CHECK(ed.fx()->last_sprites == 0, "Effects > sprites off draws none");
+        ed.settings.fx.sprites = true;
+        ed.play();
+        frames(2);
+        ed.play_scripts()->run("local s = fe.find('Sign'); s.text3d.text = 'Score 10'; s.text3d.size = 1.0; fe.find('Icon').billboard.alpha = 0.5");
+        frames(2);
+        CHECK(!strcmp(ed.scene.get(tx)->modules.text3d.text, "Score 10") && ed.scene.get(bb)->modules.billboard.alpha == 0.5f, "Lua reaches the text and the billboard");
+        ed.stop();
+        frames(2);
+        ed.scene.remove(bb);
+        ed.scene.remove(tx);
         ed.play();
         frames(2);
         ed.stop();

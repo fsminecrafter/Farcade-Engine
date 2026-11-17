@@ -333,7 +333,7 @@ void FxBridge::draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const 
     // Particles: the play world's, or the preview of the selected emitters.
     const gfx::ParticleBatch* batches = nullptr;
     int nb = 0;
-    if (fx_) fx_->particles.bank().quality = ed.settings.fx;
+    if (fx_) { fx_->quality = ed.settings.fx; fx_->particles.bank().quality = ed.settings.fx; }
     if (preview_) preview_->quality = ed.settings.fx;
     if (fx_) nb = fx_->particles.collect(eye, &batches);
     else if (preview_) nb = preview_->collect(eye, &batches);
@@ -362,8 +362,49 @@ void FxBridge::draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const 
         }
     }
 
-    // Gizmos of the selected objects.
     Scene& sc = ed.scene;
+    // Billboards (a tinted rectangle: textures show in the game) and text labels.
+    if (ed.settings.fx.sprites) {
+        ImFont* font = ImGui::GetFont();
+        for (int i = 0; i < sc.count(); i++) {
+            Object& o = sc.at(i);
+            bool has_b = o.modules.has(ModuleKind::Billboard) && o.modules.billboard.visible;
+            bool has_t = o.modules.has(ModuleKind::Text3D) && o.modules.text3d.visible && o.modules.text3d.text[0];
+            if (!(has_b || has_t) || !sc.visible_in_tree(o)) continue;
+            Mat4 m = sc.world_matrix(o);
+            Vec3 t, sv;
+            Quat q;
+            decompose(m, &t, &q, &sv);
+            ImVec2 c;
+            float cw;
+            if (!P.to_screen(t, &c, &cw)) continue;
+            float ppm = P.px_per_meter(cw);
+            if (has_b) {
+                const Billboard& b = o.modules.billboard;
+                float hw = b.width * fabsf_(sv.x) * 0.5f * ppm, hh = b.height * fabsf_(sv.y) * 0.5f * ppm;
+                if (hw < 0.5f || hw > 3000 || hh > 3000) continue;
+                ImU32 col = rgba8(b.color.x, b.color.y, b.color.z, b.alpha * (b.blend == ParticleBlend::Additive ? 0.55f : 0.75f));
+                dl->AddRectFilled(ImVec2(c.x - hw, c.y - hh), ImVec2(c.x + hw, c.y + hh), col);
+                dl->AddRect(ImVec2(c.x - hw, c.y - hh), ImVec2(c.x + hw, c.y + hh), IM_COL32(255, 255, 255, 90));
+                last_sprites++;
+            }
+            if (has_t) {
+                const Text3D& tx = o.modules.text3d;
+                float px = tx.size * fabsf_(sv.y) * ppm;
+                if (px < 5.0f || px > 400.0f) continue;
+                ImVec2 sz = font->CalcTextSizeA(px, 1e9f, 0.0f, tx.text);
+                float x0 = tx.align == TextAlign::Left ? c.x : (tx.align == TextAlign::Right ? c.x - sz.x : c.x - sz.x * 0.5f);
+                ImVec2 p0(x0, c.y - sz.y * 0.5f);
+                if (tx.outline)
+                    for (int k = 0; k < 4; k++)
+                        dl->AddText(font, px, ImVec2(p0.x + (k & 1 ? 1.0f : -1.0f), p0.y + (k & 2 ? 1.0f : -1.0f)), IM_COL32(0, 0, 0, 200), tx.text);
+                dl->AddText(font, px, p0, rgba8(tx.color.x, tx.color.y, tx.color.z, 1.0f), tx.text);
+                last_sprites++;
+            }
+        }
+    }
+
+    // Gizmos of the selected objects.
     for (int i = 0; i < sc.selected_count(); i++) {
         Object* o = sc.get(sc.selected(i));
         if (!o || !sc.visible_in_tree(*o)) continue;

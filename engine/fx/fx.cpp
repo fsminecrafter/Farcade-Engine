@@ -1,8 +1,42 @@
 #include "fx/fx.h"
+#include <stdlib.h>
 #include "script/runtime.h"
 #include "physics/physics.h"
 
 namespace fe {
+
+FxWorld::~FxWorld() {
+    shutdown();
+    free(merged_);
+}
+
+FxWorld::Frame FxWorld::collect(const Vec3& eye) {
+    Frame f;
+    if (!world_) return f;
+    particles.bank().quality = quality;
+    const gfx::ParticleBatch* pb = nullptr;
+    int np = particles.collect(eye, &pb);
+    int ns = 0;
+    if (quality.sprites) {
+        sprites.collect(*world_, eye);
+        ns = sprites.batch_count();
+        f.labels = sprites.labels();
+        f.label_count = sprites.label_count();
+    }
+    int total = np + ns;
+    if (total > merged_cap_) {
+        gfx::ParticleBatch* nm = (gfx::ParticleBatch*)realloc(merged_, sizeof(gfx::ParticleBatch) * (size_t)(total + 16));
+        if (!nm) return f;
+        merged_ = nm;
+        merged_cap_ = total + 16;
+    }
+    // Sprites first, then particles: the glow of a particle shows over a billboard behind it.
+    for (int i = 0; i < ns; i++) merged_[i] = sprites.batches()[i];
+    for (int i = 0; i < np; i++) merged_[ns + i] = pb[i];
+    f.batches = total ? merged_ : nullptr;
+    f.batch_count = total;
+    return f;
+}
 
 bool FxWorld::init(World* world, const FxHost& host) {
     shutdown();

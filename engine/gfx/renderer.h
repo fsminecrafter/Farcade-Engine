@@ -87,6 +87,8 @@ struct RenderScene {
     // items are only read during render().
     const ParticleBatch* particles = nullptr;
     int particle_batch_count = 0;
+    const TextLabel* labels = nullptr;      // Text 3D labels (particles.h)
+    int label_count = 0;
     bool particles_depth_test = true;   // meshes hide particles (false: cheaper, no depth map)
 };
 

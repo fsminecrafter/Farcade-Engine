@@ -23,7 +23,8 @@ struct Particle {
     Vec3 pos;
     float size = 0.1f;                  // meters, edge length
     float r = 1, g = 1, b = 1, a = 1;
-    float rot = 0;                      // radians (sprites; not used by the soft dot)
+    float rot = 0;                      // radians (not used yet)
+    float aspect = 1;                   // height / width of the quad
 };
 
 // Quads that share a texture and a blend mode.
@@ -32,6 +33,17 @@ struct ParticleBatch {
     int count = 0;
     const char* texture = nullptr;      // project path, null/empty = a soft round dot
     bool additive = false;
+};
+
+// A text label in the world, facing the camera (Text 3D). Drawn with a built-in
+// 5x7 bitmap font (ASCII), so it needs no font file.
+struct TextLabel {
+    Vec3 pos;                           // the middle of the first line's left, center or right (by align)
+    float height = 0.5f;                // meters per line
+    float r = 1, g = 1, b = 1, a = 1;
+    uint8_t align = 1;                  // 0 left, 1 center, 2 right
+    bool outline = true;
+    char text[96] = {};
 };
 
 // Triangles that hide quads behind them.
@@ -55,8 +67,9 @@ public:
     // height pixels in `dst` (width * rows words). rgba: red in the low byte
     // (the renderer's pixels()); else 0x00RRGGBB (render_rows). `occluders`
     // may be null. read_asset is the renderer's asset reader (textures).
-    // Returns the number of quads drawn.
-    int draw(const ParticleBatch* batches, int batch_count, const Mat4& view, const Mat4& proj,
+    // Labels are drawn after the quads. Returns the number of quads and labels drawn.
+    int draw(const ParticleBatch* batches, int batch_count, const TextLabel* labels, int label_count,
+             const Mat4& view, const Mat4& proj,
              const Occluder* occluders, int occluder_count,
              uint32_t* dst, int width, int height, int y0, int rows, bool rgba,
              void* (*read_asset)(const char* path, size_t* size, void* user), void* asset_user);
@@ -76,6 +89,7 @@ public:
     };
 
 private:
+    void draw_label(const TextLabel& t, const Mat4& view, const Mat4& proj, bool have_depth, uint32_t* dst, int width, int height, int y0, int rows, bool rgba, long* pixels);
     void build_depth(const Occluder* occ, int n, const Mat4& view, const Mat4& proj, int width, int height);
     const Texture* texture(const char* path, void* (*read_asset)(const char*, size_t*, void*), void* user);
     float* depth_ = nullptr;

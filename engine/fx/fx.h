@@ -16,6 +16,7 @@
 #include "fx/particles.h"
 #include "fx/spawner.h"
 #include "fx/animator.h"
+#include "fx/sprites.h"
 
 namespace fe {
 
@@ -38,27 +39,44 @@ struct FxHost {
 class FxWorld {
 public:
     FxWorld() {}
-    ~FxWorld() { shutdown(); }
+    ~FxWorld();
     FxWorld(const FxWorld&) = delete;
     FxWorld& operator=(const FxWorld&) = delete;
 
     bool init(World* world, const FxHost& host);
     void shutdown();
     // Adds the Lua methods of the modules: particles (play, stop, clear, emit),
-    // joints (snap), spawners (spawn, clear), animators (play, stop). Call after the script runtime started.
+    // billboards and text (properties only), joints (snap), spawners (spawn, clear), animators (play, stop). Call after the script runtime started.
     void bind_script(ScriptRuntime* scripts);
 
     // Call after World::progress(dt) each frame: the work that makes and
     // destroys entities (spawners).
-    void post_frame(float dt) { spawner.update(dt); }
+    void post_frame(float dt) { particles.bank().quality = quality; spawner.update(dt); }
+
+    // Everything the renderer draws over the image for a camera at `eye`:
+    // particles, billboards (as batches) and text labels. The arrays belong to
+    // the FxWorld and stay valid until the next collect(). Fill a
+    // gfx::RenderScene's particles, particle_batch_count, labels and
+    // label_count from it.
+    struct Frame {
+        const gfx::ParticleBatch* batches = nullptr;
+        int batch_count = 0;
+        const gfx::TextLabel* labels = nullptr;
+        int label_count = 0;
+    };
+    Frame collect(const Vec3& eye);
+    FxQuality quality;                  // applied by collect() and the systems
 
     ParticleSystem particles;
+    SpriteBank sprites;
     SpawnerSystem spawner;
     AnimatorSystem animator;
 
 private:
     World* world_ = nullptr;
     FxHost host_;
+    gfx::ParticleBatch* merged_ = nullptr;
+    int merged_cap_ = 0;
 };
 
 }  // namespace fe

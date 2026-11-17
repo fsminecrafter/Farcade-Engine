@@ -155,7 +155,7 @@ struct Renderer::Impl {
     Occluder* occluders = nullptr;
     int occluder_cap = 0;
     void draw_particles(const RenderScene& scene, uint32_t* dst, int y0, int rows, bool rgba) {
-        if (!scene.particles || scene.particle_batch_count <= 0) return;
+        if ((!scene.particles || scene.particle_batch_count <= 0) && (!scene.labels || scene.label_count <= 0)) return;
         int n = scene.particles_depth_test ? scene.item_count : 0;
         if (occluder_cap < n) {
             Occluder* nb = (Occluder*)realloc(occluders, sizeof(Occluder) * (n < 64 ? 64 : n * 2));
@@ -169,7 +169,7 @@ struct Renderer::Impl {
             occluders[m].model = it.model;
             m++;
         }
-        particle_raster.draw(scene.particles, scene.particle_batch_count, scene.camera.view, scene.camera.proj, occluders, m,
+        particle_raster.draw(scene.particles, scene.particle_batch_count, scene.labels, scene.label_count, scene.camera.view, scene.camera.proj, occluders, m,
                              dst, width, height, y0, rows, rgba, scene.read_asset, scene.asset_user);
     }
 

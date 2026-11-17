@@ -28,6 +28,7 @@ struct FxQuality {
     bool particles = true;              // false: particles are off
     float density = 1.0f;               // 0.1..1: share of each emitter's rate and max_particles
     bool depth_test = true;             // renderer: meshes hide particles (off is cheaper: no depth map)
+    bool sprites = true;                // Billboard and Text 3D modules are drawn
     bool reverb = true;                 // audio: Audio Reverb Zones apply (off: the effect is skipped)
 };
 

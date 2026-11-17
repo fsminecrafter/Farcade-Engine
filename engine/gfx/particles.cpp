@@ -25,7 +25,93 @@ void shell_sort(int* idx, const float* key, int n) {     // far (large key) firs
 
 inline int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// The classic 5x7 font, ASCII 32..126: 5 columns per glyph, bit 0 the top row (bit 7 a descender).
+const uint8_t kFont[95][5] = {
+{0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},{0x00,0x07,0x00,0x07,0x00},{0x14,0x7F,0x14,0x7F,0x14},{0x24,0x2A,0x7F,0x2A,0x12},
+{0x23,0x13,0x08,0x64,0x62},{0x36,0x49,0x56,0x20,0x50},{0x00,0x08,0x07,0x03,0x00},{0x00,0x1C,0x22,0x41,0x00},{0x00,0x41,0x22,0x1C,0x00},
+{0x2A,0x1C,0x7F,0x1C,0x2A},{0x08,0x08,0x3E,0x08,0x08},{0x00,0x80,0x70,0x30,0x00},{0x08,0x08,0x08,0x08,0x08},{0x00,0x00,0x60,0x60,0x00},
+{0x20,0x10,0x08,0x04,0x02},{0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},{0x72,0x49,0x49,0x49,0x46},{0x21,0x41,0x49,0x4D,0x33},
+{0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},{0x3C,0x4A,0x49,0x49,0x31},{0x41,0x21,0x11,0x09,0x07},{0x36,0x49,0x49,0x49,0x36},
+{0x46,0x49,0x49,0x29,0x1E},{0x00,0x00,0x14,0x00,0x00},{0x00,0x40,0x34,0x00,0x00},{0x00,0x08,0x14,0x22,0x41},{0x14,0x14,0x14,0x14,0x14},
+{0x00,0x41,0x22,0x14,0x08},{0x02,0x01,0x59,0x09,0x06},{0x3E,0x41,0x5D,0x59,0x4E},{0x7C,0x12,0x11,0x12,0x7C},{0x7F,0x49,0x49,0x49,0x36},
+{0x3E,0x41,0x41,0x41,0x22},{0x7F,0x41,0x41,0x41,0x3E},{0x7F,0x49,0x49,0x49,0x41},{0x7F,0x09,0x09,0x09,0x01},{0x3E,0x41,0x41,0x51,0x73},
+{0x7F,0x08,0x08,0x08,0x7F},{0x00,0x41,0x7F,0x41,0x00},{0x20,0x40,0x41,0x3F,0x01},{0x7F,0x08,0x14,0x22,0x41},{0x7F,0x40,0x40,0x40,0x40},
+{0x7F,0x02,0x1C,0x02,0x7F},{0x7F,0x04,0x08,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},{0x7F,0x09,0x09,0x09,0x06},{0x3E,0x41,0x51,0x21,0x5E},
+{0x7F,0x09,0x19,0x29,0x46},{0x26,0x49,0x49,0x49,0x32},{0x03,0x01,0x7F,0x01,0x03},{0x3F,0x40,0x40,0x40,0x3F},{0x1F,0x20,0x40,0x20,0x1F},
+{0x3F,0x40,0x38,0x40,0x3F},{0x63,0x14,0x08,0x14,0x63},{0x03,0x04,0x78,0x04,0x03},{0x61,0x59,0x49,0x4D,0x43},{0x00,0x7F,0x41,0x41,0x41},
+{0x02,0x04,0x08,0x10,0x20},{0x00,0x41,0x41,0x41,0x7F},{0x04,0x02,0x01,0x02,0x04},{0x40,0x40,0x40,0x40,0x40},{0x00,0x03,0x07,0x08,0x00},
+{0x20,0x54,0x54,0x78,0x40},{0x7F,0x28,0x44,0x44,0x38},{0x38,0x44,0x44,0x44,0x28},{0x38,0x44,0x44,0x28,0x7F},{0x38,0x54,0x54,0x54,0x18},
+{0x00,0x08,0x7E,0x09,0x02},{0x18,0xA4,0xA4,0x9C,0x78},{0x7F,0x08,0x04,0x04,0x78},{0x00,0x44,0x7D,0x40,0x00},{0x20,0x40,0x40,0x3D,0x00},
+{0x7F,0x10,0x28,0x44,0x00},{0x00,0x41,0x7F,0x40,0x00},{0x7C,0x04,0x78,0x04,0x78},{0x7C,0x08,0x04,0x04,0x78},{0x38,0x44,0x44,0x44,0x38},
+{0xFC,0x18,0x24,0x24,0x18},{0x18,0x24,0x24,0x18,0xFC},{0x7C,0x08,0x04,0x04,0x08},{0x48,0x54,0x54,0x54,0x24},{0x04,0x04,0x3F,0x44,0x24},
+{0x3C,0x40,0x40,0x20,0x7C},{0x1C,0x20,0x40,0x20,0x1C},{0x3C,0x40,0x30,0x40,0x3C},{0x44,0x28,0x10,0x28,0x44},{0x4C,0x90,0x90,0x90,0x7C},
+{0x44,0x64,0x54,0x4C,0x44},{0x00,0x08,0x36,0x41,0x00},{0x00,0x00,0x77,0x00,0x00},{0x00,0x41,0x36,0x08,0x00},{0x02,0x01,0x02,0x04,0x02},
+};
+
 }  // namespace
+
+void ParticleRaster::draw_label(const TextLabel& t, const Mat4& view, const Mat4& proj, bool have_depth, uint32_t* dst, int width, int height,
+                                int y0, int rows, bool rgba, long* pixels) {
+    Vec3 vq = transform_point(view, t.pos);
+    float depth = -vq.z;
+    if (depth <= 0.05f || t.a <= 0.003f) return;
+    Vec4 c = proj * Vec4{ vq.x, vq.y, vq.z, 1.0f };
+    if (c.w <= 1e-5f) return;
+    const bool ortho = proj.m[15] == 1.0f && proj.m[11] == 0.0f;
+    float inv = 1.0f / c.w;
+    float cx = (c.x * inv * 0.5f + 0.5f) * width;
+    float cy = (0.5f - c.y * inv * 0.5f) * height;
+    float ppm = proj.m[5] * 0.5f * height * (ortho ? 1.0f : inv);
+    float cell = t.height * ppm / 8.0f;           // pixels per font dot (a line is 8 dots tall)
+    if (cell < 0.45f || cell > 200.0f) return;
+    int n = 0;
+    while (t.text[n] && n < 95) n++;
+    if (n == 0) return;
+    float advance = 6.0f * cell;
+    float total = (float)n * advance - cell;
+    float x0 = t.align == 0 ? cx : (t.align == 2 ? cx - total : cx - total * 0.5f);
+    float top = cy - 4.0f * cell;
+    const int cr = (int)(fclamp(t.r, 0, 1) * 255.0f + 0.5f), cg = (int)(fclamp(t.g, 0, 1) * 255.0f + 0.5f), cb = (int)(fclamp(t.b, 0, 1) * 255.0f + 0.5f);
+    const int ai = (int)(fclamp(t.a, 0, 1) * 256.0f);
+    for (int pass = t.outline ? 0 : 1; pass < 2; pass++) {
+        // pass 0: the outline (the glyphs a dot to each side, dark), pass 1: the text.
+        for (int ch = 0; ch < n; ch++) {
+            int g = (unsigned char)t.text[ch];
+            if (g < 32 || g > 126) g = '?';
+            const uint8_t* col = kFont[g - 32];
+            for (int cxl = 0; cxl < 5; cxl++)
+                for (int row = 0; row < 8; row++) {
+                    if (!((col[cxl] >> row) & 1)) continue;
+                    float fx = x0 + (float)ch * advance + (float)cxl * cell, fy = top + (float)row * cell;
+                    int offs[5][2] = { { 0, 0 }, { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+                    for (int o = pass == 0 ? 1 : 0; o < (pass == 0 ? 5 : 1); o++) {
+                        float ox = pass == 0 ? offs[o][0] * (cell < 2.0f ? 1.0f : cell * 0.5f) : 0, oy = pass == 0 ? offs[o][1] * (cell < 2.0f ? 1.0f : cell * 0.5f) : 0;
+                        int xa = (int)(fx + ox), xb = (int)(fx + ox + cell - 0.001f), ya = (int)(fy + oy), yb = (int)(fy + oy + cell - 0.001f);
+                        if (xb < xa) xb = xa;
+                        if (yb < ya) yb = ya;
+                        for (int y = ya; y <= yb; y++) {
+                            if (y < y0 || y >= y0 + rows || y < 0 || y >= height) continue;
+                            uint32_t* r = dst + (size_t)(y - y0) * width;
+                            for (int x = xa; x <= xb; x++) {
+                                if (x < 0 || x >= width) continue;
+                                if (have_depth && depth_[clampi(y / kDepthDiv, 0, dh_ - 1) * dw_ + clampi(x / kDepthDiv, 0, dw_ - 1)] < depth - 0.02f) continue;
+                                (*pixels)++;
+                                uint32_t d = r[x];
+                                int dr, dg, db;
+                                if (rgba) { dr = d & 0xFF; dg = (d >> 8) & 0xFF; db = (d >> 16) & 0xFF; }
+                                else { dr = (d >> 16) & 0xFF; dg = (d >> 8) & 0xFF; db = d & 0xFF; }
+                                int tr = pass == 0 ? 0 : cr, tg = pass == 0 ? 0 : cg, tb = pass == 0 ? 0 : cb;
+                                int a = pass == 0 ? ai * 3 / 4 : ai;
+                                dr += ((tr - dr) * a) >> 8; dg += ((tg - dg) * a) >> 8; db += ((tb - db) * a) >> 8;
+                                r[x] = rgba ? (0xFF000000u | ((uint32_t)db << 16) | ((uint32_t)dg << 8) | (uint32_t)dr)
+                                            : (((uint32_t)dr << 16) | ((uint32_t)dg << 8) | (uint32_t)db);
+                            }
+                        }
+                    }
+                }
+        }
+    }
+}
 
 ParticleRaster::ParticleRaster() { memset(tex_, 0, sizeof tex_); }
 ParticleRaster::~ParticleRaster() {
@@ -130,7 +216,8 @@ void ParticleRaster::build_depth(const Occluder* occ, int n, const Mat4& view, c
     }
 }
 
-int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const Mat4& view, const Mat4& proj,
+int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const TextLabel* labels, int label_count,
+                         const Mat4& view, const Mat4& proj,
                          const Occluder* occluders, int occluder_count,
                          uint32_t* dst, int width, int height, int y0, int rows, bool rgba,
                          void* (*read_asset)(const char*, size_t*, void*), void* asset_user) {
@@ -139,14 +226,15 @@ int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const Ma
     frame_++;
     int total = 0;
     for (int b = 0; b < batch_count; b++) total += batches[b].count;
-    if (total <= 0 || !dst || width <= 0 || height <= 0 || rows <= 0) return 0;
+    if (!labels) label_count = 0;
+    if ((total <= 0 && label_count <= 0) || !dst || width <= 0 || height <= 0 || rows <= 0) return 0;
     const bool ortho = proj.m[15] == 1.0f && proj.m[11] == 0.0f;
     bool have_depth = false;
     if (occluders && occluder_count > 0) {
         build_depth(occluders, occluder_count, view, proj, width, height);
         have_depth = depth_ != nullptr;
     }
-    if (ocap_ < total) {
+    if (total > 0 && ocap_ < total) {
         ocap_ = total < 256 ? 256 : total * 2;
         free(order_);
         free(keys_);
@@ -182,7 +270,7 @@ int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const Ma
             float cx = (c.x * inv * 0.5f + 0.5f) * width;
             float cy = (0.5f - c.y * inv * 0.5f) * height;
             float hx = p.size * 0.5f * proj.m[0] * (ortho ? 1.0f : inv) * half_w;
-            float hy = p.size * 0.5f * proj.m[5] * (ortho ? 1.0f : inv) * half_h;
+            float hy = p.size * 0.5f * p.aspect * proj.m[5] * (ortho ? 1.0f : inv) * half_h;
             if (hx < 0.3f && hy < 0.3f) continue;
             if (hx > 4000.0f || hy > 4000.0f) continue;
             int x0 = clampi((int)(cx - hx), 0, width - 1), x1 = clampi((int)(cx + hx), 0, width - 1);
@@ -241,6 +329,11 @@ int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const Ma
                 }
             }
         }
+    }
+    for (int i = 0; i < label_count; i++) {
+        if (pixels >= kMaxPixels) break;
+        draw_label(labels[i], view, proj, have_depth, dst, width, height, y0, rows, rgba, &pixels);
+        drawn++;
     }
     last_quads_ = drawn;
     last_pixels_ = pixels;

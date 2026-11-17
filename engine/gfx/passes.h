@@ -10,6 +10,7 @@
 
 #include "gfx/renderer.h"
 #include "gfx/shaders_hq.h"
+#include "gfx/post_stack.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -49,6 +50,10 @@ struct PassHost {
     // A viewport that draw_mesh sets again after its own submits (a submit
     // resets it); w == 0 turns it off.
     void (*set_viewport)(void* user, int x, int y, int w, int h) = nullptr;
+    // Probe GI (gi.h): the probe texture and the window uniforms (u_gi0, u_gi1) when it is on.
+    bool gi_on = false;
+    FGLTexture gi_texture = 0;
+    float gi0[4] = {}, gi1[4] = {};
 };
 
 // What runs this frame: the features, limited by what the scene has.
@@ -72,7 +77,7 @@ public:
     // Draws the frame into the context's color surface (`gl->color`), leaving
     // the context bound to it. False on a FarcadeGL error (`error` says which).
     bool render(FGLContext* gl, const RenderScene& scene, const PackedLights& lights, const GraphicsSettings& settings,
-                const GpuPlan& plan, const PassHost& host, char* error, int error_cap);
+                const GpuPlan& plan, const PassHost& host, const PostFrame& post, char* error, int error_cap);
 
     // Frees every GL object (targets, shaders); call before the context goes.
     void release(FGLContext* gl);

@@ -51,7 +51,6 @@ struct Settings {
     bool view_shadows = true;           // shadows on the ground
 #endif
     bool play_through_camera = true;    // Play shows the scene through the current Camera object
-    FxQuality fx;                       // particle quality: off, density (Settings > Graphics > Effects)
     gfx::GraphicsSettings graphics;     // FarcadeGL quality (GPU tier: graphics card only)
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
@@ -305,6 +304,8 @@ private:
     void window_settings();
     void shortcuts();
     Scene* play_backup_ = nullptr;
+    gfx::GraphicsSettings play_gfx_backup_;     // the graphics settings before Play: scripts may change them (fe.graphics)
+    bool gfx_script_changed_ = false;
     bool want_save_as_ = false;
     void save_as_popup();
     bool want_project_settings_ = false, want_export_ = false;

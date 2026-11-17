@@ -22,7 +22,7 @@ $(BUILD)/os/engine/fx/scan.cpp.o: OS_EXTRA_FLAGS += $(FLECS_OS_DEFS) $(FLECS_INC
 $(BUILD)/host/tests/host/fx_tests.cpp.o: HOST_EXTRA_FLAGS += $(FLECS_DEFS) $(FLECS_INC)
 
 # ---- host tests
-FX_TEST_OBJS = $(call host_objs,$(FX_SRC) $(PHYSICS_SRC) engine/gfx/particles.cpp engine/gfx/stb_image_impl.c $(SCRIPT_SRC) $(LUA_SRC) $(ECS_SRC) $(FLECS_SRC) $(CORE_SRC))
+FX_TEST_OBJS = $(call host_objs,$(FX_SRC) $(PHYSICS_SRC) engine/gfx/particles.cpp engine/gfx/graphics_settings.cpp engine/gfx/stb_image_impl.c $(SCRIPT_SRC) $(LUA_SRC) $(ECS_SRC) $(FLECS_SRC) $(CORE_SRC))
 
 $(BUILD)/host/bin/fx_tests: $(call host_objs,tests/host/fx_tests.cpp) $$(FX_TEST_OBJS)
 	@mkdir -p $(dir $@)

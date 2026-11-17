@@ -90,6 +90,9 @@ struct RenderScene {
     const TextLabel* labels = nullptr;      // Text 3D labels (particles.h)
     int label_count = 0;
     bool particles_depth_test = true;   // meshes hide particles (false: cheaper, no depth map)
+    // Seconds since the last frame, for the auto exposure's adaptation (and
+    // other time based effects). Negative: measured with the wall clock.
+    float delta_time = -1.0f;
 };
 
 struct RendererStats {
@@ -102,6 +105,13 @@ struct RendererStats {
     // CPU pass that turns XRGB into RGBA. The rest is recording commands.
     double shader_ms = 0, upload_ms = 0, submit_ms = 0, read_ms = 0, swizzle_ms = 0;
     int shaders_compiled = 0;
+    // The post stack (post_stack.h): the internal resolution that was drawn,
+    // the exposure that was applied (manual + automatic, EV) and what the
+    // meter saw (log2 of the scene's average luminance, auto exposure on).
+    float render_scale = 1.0f;
+    int internal_width = 0, internal_height = 0;
+    float exposure_ev = 0, meter_log2 = 0;
+    double gi_ms = 0;                       // the probe GI's CPU update (gi.h)
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage
@@ -110,7 +120,9 @@ struct GpuTierStats {
     double shadow_ms = 0, depth_ms = 0, ssao_ms = 0, blur_ms = 0, lit_ms = 0, bloom_ms = 0, composite_ms = 0, fxaa_ms = 0;
     double local_shadow_ms = 0;             // the point / spot shadow atlas
     int passes = 0;                         // render passes of the frame
-    bool shadow_reused = false;             // the shadow map of the last frame was still valid
+    bool shadow_reused = false;             // every sun cascade of the last frame was still valid
+    int cascades = 0, cascades_drawn = 0, cascades_reused = 0;   // the sun's cascades and what the frame did with them
+    float cascade_texel[3] = {};            // meters per shadow texel of each cascade
     int local_shadows = 0;                  // point / spot lights that got an atlas shadow
     bool atlas_reused = false;              // the atlas of the last frame was still valid
     double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms + local_shadow_ms; }
@@ -164,6 +176,10 @@ public:
     GraphicsFeatures features() const;
     // The FarcadeGL backend, from fglGetDeviceInfo ("cpu ...", "nvidia 3D engine").
     const char* backend() const;
+    // The device caps and the feature level that runs (feature_level.h):
+    // features().level, or ask directly.
+    const DeviceCaps& caps() const;
+    FeatureLevel feature_level() const { return features().level; }
     // Stage timings of the last frame, and the render targets and shader
     // programs the GPU tier holds right now (they are freed on resize and shutdown).
     const GpuTierStats& gpu_tier_stats() const;

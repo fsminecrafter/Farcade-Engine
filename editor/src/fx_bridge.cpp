@@ -204,7 +204,7 @@ void FxBridge::update_preview(Editor& ed, float dt) {
     fx_ = ed.session_.fx();                 // the play session's effects, null in edit mode
     if (fx_) { delete preview_; preview_ = nullptr; return; }
     if (!preview_) preview_ = new ParticleBank();
-    preview_->quality = ed.settings.fx;
+    preview_->quality = fx_quality_of(ed.settings.graphics);
     preview_time_ += dt;
     FieldVolume fields[kMaxFieldsPerStep];
     int nf = 0;
@@ -235,8 +235,8 @@ void FxBridge::draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const 
     const gfx::ParticleBatch* batches = nullptr;
     fx_ = ed.session_.fx();
     int nb = 0;
-    if (fx_) { fx_->quality = ed.settings.fx; fx_->particles.bank().quality = ed.settings.fx; }
-    if (preview_) preview_->quality = ed.settings.fx;
+    if (fx_) { fx_->quality = fx_quality_of(ed.settings.graphics); fx_->particles.bank().quality = fx_quality_of(ed.settings.graphics); }
+    if (preview_) preview_->quality = fx_quality_of(ed.settings.graphics);
     if (fx_) nb = fx_->particles.collect(eye, &batches);
     else if (preview_) nb = preview_->collect(eye, &batches);
     int budget = 4000;
@@ -266,7 +266,7 @@ void FxBridge::draw_overlay(Editor& ed, ImDrawList* dl, const Mat4& view, const 
 
     Scene& sc = ed.scene;
     // Billboards (a tinted rectangle: textures show in the game) and text labels.
-    if (ed.settings.fx.sprites) {
+    if (ed.settings.graphics.fx_sprites) {
         ImFont* font = ImGui::GetFont();
         for (int i = 0; i < sc.count(); i++) {
             Object& o = sc.at(i);

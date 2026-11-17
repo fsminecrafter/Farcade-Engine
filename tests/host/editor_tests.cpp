@@ -1602,10 +1602,10 @@ int main() {
         ed.scene.get(tx)->modules.text3d.size = 0.8f;
         frames(3);
         CHECK(ed.fx()->last_sprites == 2, "a billboard and a label are drawn (%d)", ed.fx()->last_sprites);
-        ed.settings.fx.sprites = false;
+        ed.settings.graphics.fx_sprites = false;
         frames(2);
         CHECK(ed.fx()->last_sprites == 0, "Effects > sprites off draws none");
-        ed.settings.fx.sprites = true;
+        ed.settings.graphics.fx_sprites = true;
         ed.play();
         frames(2);
         ed.play_scripts()->run("local s = fe.find('Sign'); s.text3d.text = 'Score 10'; s.text3d.size = 1.0; fe.find('Icon').billboard.alpha = 0.5");

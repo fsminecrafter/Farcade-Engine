@@ -342,6 +342,10 @@ struct SkyLight {
     Vec3 ground_color = Vec3(0.25f, 0.22f, 0.20f);
     float intensity = 0.6f;
     bool current = false;
+    // Probe GI (Settings > Graphics > GI = probes): how strongly the probe light replaces this hemisphere
+    // ambient, and how much of the light a surface got is re-emitted as bounce.
+    float gi_intensity = 1.0f;
+    float gi_bounce = 0.8f;
 };
 
 enum class SkyMode : uint8_t { Gradient, Color };
@@ -359,7 +363,7 @@ struct Sky {
     bool current = false;
 };
 
-enum class Tonemap : uint8_t { None, Reinhard, ACES };
+enum class Tonemap : uint8_t { None, Reinhard, ACES, AgX };
 
 // The look of the final image.
 struct PostProcess {
@@ -372,6 +376,21 @@ struct PostProcess {
     float bloom = 0.0f;                 // 0..1 strength
     float bloom_threshold = 1.0f;
     bool current = false;
+    // Color grading in display light, after tonemap, contrast and saturation:
+    // out = pow(max(c * gain + lift * (1 - c), 0), 1 / gamma).
+    Vec3 lift = Vec3(0, 0, 0);          // tints the shadows
+    Vec3 gamma = Vec3(1, 1, 1);         // mid tones: > 1 brightens
+    Vec3 gain = Vec3(1, 1, 1);          // tints / scales the highlights
+    float bloom_radius = 0.5f;          // 0..1: how far the glow spreads (weight of the wide levels)
+    float chromatic_aberration = 0.0f;  // 0..1: color fringes towards the edges (GPU tier)
+    float film_grain = 0.0f;            // 0..1
+    // Auto exposure: the image's average brightness is measured every frame
+    // and the exposure eases towards a mid grey (Exposure becomes a
+    // compensation on top).
+    bool auto_exposure = false;
+    float exposure_speed = 2.0f;        // adaptation rate, 1 / seconds
+    float auto_exposure_min = -3.0f;    // EV range of the automatic part
+    float auto_exposure_max = 3.0f;
 };
 
 // ---------------------------------------------------------------- reflection

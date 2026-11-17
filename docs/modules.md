@@ -83,7 +83,7 @@ by the systems while playing (`particles.playing`, `particles.particle_count`,
   5x7 bitmap font in the game renderer (ASCII). The editor shows a billboard
   as a tinted rectangle (textures show in the game).
 
-Options to make them cheaper or turn them off: Settings > Graphics > Effects
+Options to make them cheaper or turn them off: Settings > Graphics > Effects (graphics.cfg: particles, particle_density, particle_depth_test, sprites, audio_reverb; fe.graphics too)
 (particles on/off, density, depth test, sprites, reverb), `FxQuality` in C++.
 
 ## Scene objects

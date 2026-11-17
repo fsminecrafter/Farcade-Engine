@@ -16,13 +16,15 @@
 
 #include "ecs/ecs.h"
 #include "fx/forcefield.h"
+#include "gfx/graphics_settings.h"
 #include "gfx/particles.h"
 #include "scene/modules.h"
 
 namespace fe {
 
-// How much the effects may cost (the editor's Settings > Graphics > Effects;
-// a game sets its own). Everything defaults to full quality; `particles` off
+// How much the effects may cost: the fx_* options of gfx::GraphicsSettings
+// (particles, particle_density, particle_depth_test, sprites, audio_reverb;
+// Settings > Graphics > Effects, graphics.cfg, fe.graphics), through fx_quality_of(). Everything defaults to full quality; `particles` off
 // draws and simulates nothing.
 struct FxQuality {
     bool particles = true;              // false: particles are off
@@ -31,6 +33,16 @@ struct FxQuality {
     bool sprites = true;                // Billboard and Text 3D modules are drawn
     bool reverb = true;                 // audio: Audio Reverb Zones apply (off: the effect is skipped)
 };
+
+inline FxQuality fx_quality_of(const gfx::GraphicsSettings& g) {
+    FxQuality q;
+    q.particles = g.fx_particles;
+    q.density = g.fx_particle_density;
+    q.depth_test = g.fx_depth_test;
+    q.sprites = g.fx_sprites;
+    q.reverb = g.fx_reverb;
+    return q;
+}
 
 constexpr int kMaxPool = 2000;          // particles per emitter
 constexpr int kMaxFieldsPerStep = 16;   // force fields applied to particles

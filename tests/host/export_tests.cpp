@@ -171,15 +171,16 @@ static void test_graphics_text() {
     g.apply_preset(gfx::GraphicsPreset::Ultra);
     g.render_scale = 0.5f;
     size_t n = 0;
-    char* t = graphics_settings_to_text(g, &n);
+    char* t = project_graphics_to_text(g, &n);
     gfx::GraphicsSettings h;
-    CHECK(t && graphics_settings_from_text(t, n, &h));
+    CHECK(t && project_graphics_from_text(t, n, &h));
     CHECK(h.preset == gfx::GraphicsPreset::Ultra && h.render_scale == 0.5f && h.shadow_resolution == 4096 && h.local_shadow_lights == 4);
     free(t);
-    const char* odd = "future_field 3\nbloom false\nshadow_resolution 99999\n";
+    // Unknown names and bad values are skipped; the rest still loads.
+    const char* odd = "future_field 3\nbloom off\nshadow_resolution 99999\n";
     gfx::GraphicsSettings k;
-    CHECK(graphics_settings_from_text(odd, strlen(odd), &k) && !k.bloom && k.shadow_resolution == 4096);
-    CHECK(!graphics_settings_from_text("nothing known", 13, &k));
+    CHECK(project_graphics_from_text(odd, strlen(odd), &k) && !k.bloom && k.shadow_resolution == gfx::GraphicsSettings().shadow_resolution);
+    CHECK(!project_graphics_from_text("nothing known", 13, &k));
 }
 
 static void test_project() {
@@ -240,7 +241,7 @@ static void build_demo_project() {
     }
     put_str("audio/beep.wav", "not really a wav");
     put_str("icon.bmp", "BM-not-a-bitmap");
-    put_str("graphics.cfg", "preset 0\nshadows false\nbloom false\n");
+    put_str("graphics.cfg", "farcade-graphics 1\npreset low\nshadows off\nbloom off\n");
     put_str("unused/readme.txt", "never referenced");
 
     Scene s;

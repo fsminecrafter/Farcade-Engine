@@ -97,6 +97,8 @@ bool PlaySession::start(Scene& scene, const PlayHost& host, AudioDevice* audio_d
     };
     script_count_ = 0;
     if (scripts_->init(world_, sh)) {
+        // Before any instance: on_start may already call fe.graphics.
+        if (host_.graphics) scripts_->set_graphics_settings(host_.graphics, host_.graphics_changed);
         for (int i = 0; i < count_; i++) {
             Object* o = scene.get(objects_[i]);
             if (!o) continue;

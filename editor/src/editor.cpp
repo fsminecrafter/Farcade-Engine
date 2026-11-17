@@ -587,157 +587,30 @@ void Editor::play() {
     play_backup_->copy_from(scene);
     play_time = 0.0;
     build_world();
-    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", world_count_, script_count_, script_count_ == 1 ? "" : "s");
+    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", session_.entity_count(), session_.script_count(), session_.script_count() == 1 ? "" : "s");
 }
 
 void Editor::build_world() {
     free_world();
-    world_ = new World();
-    if (!world_->init()) {
-        log(LogLevel::Error, "Play: the ECS world could not start");
-        free_world();
-        return;
-    }
-    int n = scene.count();
-    world_objects_ = (ObjectId*)malloc(sizeof(ObjectId) * (n ? n : 1));
-    world_entities_ = (uint64_t*)malloc(sizeof(uint64_t) * (n ? n : 1));
-    world_count_ = 0;
-    // All at the root first (a child can come before its parent in the
-    // list), then the parents.
-    for (int i = 0; i < n; i++) {
-        Object& o = scene.at(i);
-        Entity e = world_->create(o.name);
-        if (!e) e = world_->create(nullptr);    // a name taken by a sibling, or reserved
-        if (!e) continue;
-        Transform* t = world_->transform(e);
-        t->position = o.position;
-        t->rotation = o.rotation;
-        t->scale = o.scale;
-        world_->load(e, o.modules);
-        if (o.kind == ObjectKind::Mesh) {
-            Renderable* r = world_->add_renderable(e);
-            r->mesh = (uint8_t)o.mesh;
-            memcpy(r->model_path, o.model_path, sizeof(r->model_path));
-            memcpy(r->texture_path, o.texture_path, sizeof(r->texture_path));
-            memcpy(r->shader_path, o.shader_path, sizeof(r->shader_path));
-            r->color = o.color;
-            r->visible = o.visible;
-            r->roughness = o.roughness;
-            r->metallic = o.metallic;
-            r->unlit = o.unlit;
-            r->cast_shadows = o.cast_shadows;
-        }
-        world_objects_[world_count_] = o.id;
-        world_entities_[world_count_] = e;
-        world_count_++;
-    }
-    for (int i = 0; i < world_count_; i++) {
-        Object* o = scene.get(world_objects_[i]);
-        if (o && o->parent) {
-            Entity pe = entity_of(o->parent);
-            if (pe && !world_->set_parent(world_entities_[i], pe)) {
-                // A sibling has the same name: flecs names are unique per parent.
-                world_->set_name(world_entities_[i], nullptr);
-                world_->set_parent(world_entities_[i], pe);
-            }
-        }
-    }
-    // The current flags as the scene has them.
-    for (int k = 0; k < kModuleKindCount; k++) {
-        ObjectId c = scene.current((ModuleKind)k);
-        if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
-    }
-    world_->update_transforms();
-    // Scripts (Lua): one instance per script on each object, in Inspector
-    // order; object inputs become the linked objects' entities.
-    scripts_ = new ScriptRuntime();
-    ScriptHost host;
-    host.user = this;
-    host.log = [](ScriptLogLevel level, const char* text, void* u) {
-        LogLevel l = level == ScriptLogLevel::Error ? LogLevel::Error : (level == ScriptLogLevel::Warning ? LogLevel::Warning : LogLevel::Info);
-        ((Editor*)u)->log(l, "%s", text);
-    };
-    script_count_ = 0;
-    if (scripts_->init(world_, host)) {
-        for (int i = 0; i < world_count_; i++) {
-            Object* o = scene.get(world_objects_[i]);
-            if (!o) continue;
-            for (int s = 0; s < o->script_count; s++) {
-                ScriptSlot& sl = o->scripts[s];
-                size_t size = 0;
-                char* text = read_script_text(sl.path, &size);
-                if (!text) { log(LogLevel::Error, "%s: cannot read %s", o->name, sl.path); continue; }
-                Entity links[kMaxProps] = {};
-                for (int k = 0; k < sl.prop_count; k++)
-                    if (sl.props[k].type == PropType::Object) links[k] = entity_of(sl.props[k].object);
-                if (scripts_->add_instance(world_entities_[i], sl.path, text, (uint32_t)size, sl.props, sl.prop_count, links)) script_count_++;
-                free(text);
-            }
-        }
-    } else {
-        log(LogLevel::Error, "Play: the Lua runtime could not start");
-    }
-    // Audio: Audio Streams with "play on start" begin now; samplers play
-    // when scripts call obj.audio_sampler:play(). The device stays open
-    // between plays.
+    // The device stays open between plays.
     if (!audio_device_) {
         audio_device_ = new AudioDevice();
         if (!audio_device_->init()) log(LogLevel::Warning, "Audio: no device (sound is mixed but not heard)");
     }
-    audio_ = new AudioSystem();
-    AudioHost ah;
-    ah.user = this;
-    ah.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
-    ah.log = [](const char* line, void* u) { ((Editor*)u)->log(LogLevel::Warning, "Audio: %s", line); };
-    if (audio_->init(world_, audio_device_, ah)) {
-        audio_->restart();
-        audio_->clear_cache();      // the files may have changed since the last Play
-        if (scripts_) {
-            ScriptRuntime* rt = scripts_;
-            rt->add_module_method(ModuleKind::AudioSampler, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_sampler(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_stream(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "stop", [](Entity e, void* u) { ((AudioSystem*)u)->stop_stream(e); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "pause", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, true); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "resume", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, false); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioSampler, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
-        }
-    } else {
-        log(LogLevel::Error, "Play: the audio system could not start");
-    }
-    // Physics on the bodies and colliders (the built-in step, see physics.h).
-    physics_ = new PhysicsWorld();
-    PhysicsEvents pe;
-    pe.user = this;
-    pe.trigger_enter = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("entered", t, o); };
-    pe.trigger_exit = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("left", t, o); };
-    pe.collision = [](Entity a, Entity b, void* u) { ((Editor*)u)->physics_event("hit", a, b); };
-    physics_->init(world_, pe);
-    for (int i = 0; i < world_count_; i++) {
-        physics_->add(world_entities_[i]);
-        // A Mesh collider is the convex hull of its object's mesh.
-        Object* o = scene.get(world_objects_[i]);
-        if (o && o->kind == ObjectKind::Mesh && o->modules.has(ModuleKind::Collider3D) && o->modules.collider3d.shape == ColliderShape::Mesh) {
-            const MeshData& md = Scene::mesh_for(*o);
-            physics_->set_mesh(world_entities_[i], md.positions, (int)md.vertex_count);
-        }
-    }
+    PlayHost host;
+    host.user = this;
+    host.log = [](PlayLog level, const char* text, void* u) {
+        ((Editor*)u)->log(level == PlayLog::Error ? LogLevel::Error : (level == PlayLog::Warning ? LogLevel::Warning : LogLevel::Info), "%s", text);
+    };
+    host.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
+    host.physics_event = [](const char* what, uint64_t a, uint64_t b, void* u) { ((Editor*)u)->physics_event(what, a, b); };
+    session_.start(scene, host, audio_device_);
 }
 
-ObjectId Editor::object_of(uint64_t e) const {
-    for (int i = 0; i < world_count_; i++)
-        if (world_entities_[i] == e) return world_objects_[i];
-    return kNoObject;
-}
+ObjectId Editor::object_of(uint64_t e) const { return session_.object_of(e); }
 
 void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
     physics_event_count++;
-    // Scripts get them as on_trigger_enter / on_trigger_exit / on_collision.
-    if (scripts_) {
-        if (what[0] == 'e') scripts_->trigger_enter(a, b);
-        else if (what[0] == 'l') scripts_->trigger_exit(a, b);
-        else scripts_->collision(a, b);
-    }
     if (on_physics_event) { on_physics_event(this, what, a, b); return; }
     Object* oa = scene.get(object_of(a));
     Object* ob = scene.get(object_of(b));
@@ -747,59 +620,11 @@ void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
     else log(LogLevel::Info, "Physics: %s %s trigger %s", ob->name, what, oa->name);
 }
 
-uint64_t Editor::entity_of(ObjectId id) const {
-    if (!id) return 0;
-    for (int i = 0; i < world_count_; i++)
-        if (world_objects_[i] == id) return world_entities_[i];
-    return 0;
-}
+uint64_t Editor::entity_of(ObjectId id) const { return session_.entity_of(id); }
 
-void Editor::step_world(float dt) {
-    if (!world_) return;
-    world_->progress(dt);
-    // Transforms and current flags back into the scene, for the viewport
-    // and the Inspector.
-    for (int i = 0; i < world_count_; i++) {
-        Object* o = scene.get(world_objects_[i]);
-        Entity e = world_entities_[i];
-        if (!o || !world_->alive(e)) continue;
-        if (const Transform* t = world_->transform(e)) {
-            o->position = t->position;
-            o->rotation = t->rotation;
-            o->scale = t->scale;
-        }
-        // The look: scripts change it through obj.material.
-        if (const Renderable* r = world_->renderable(e)) {
-            o->color = r->color;
-            o->visible = r->visible;
-            o->roughness = r->roughness;
-            o->metallic = r->metallic;
-            o->unlit = r->unlit;
-            o->cast_shadows = r->cast_shadows;
-            memcpy(o->texture_path, r->texture_path, sizeof(o->texture_path));
-            memcpy(o->shader_path, r->shader_path, sizeof(o->shader_path));
-        }
-        // Modules too: scripts and physics change them (a light's
-        // intensity, a body's velocity, which camera is current).
-        world_->store(e, &o->modules);
-    }
-}
+void Editor::step_world(float dt) { session_.step(dt); }
 
-void Editor::free_world() {
-    if (audio_) { audio_->shutdown(); delete audio_; }
-    audio_ = nullptr;
-    if (scripts_) { scripts_->shutdown(); delete scripts_; }
-    scripts_ = nullptr;
-    if (physics_) { physics_->shutdown(); delete physics_; }
-    physics_ = nullptr;
-    if (world_) { world_->shutdown(); delete world_; }
-    world_ = nullptr;
-    free(world_objects_);
-    free(world_entities_);
-    world_objects_ = nullptr;
-    world_entities_ = nullptr;
-    world_count_ = 0;
-}
+void Editor::free_world() { session_.stop(); }
 
 void Editor::stop() {
     if (!playing()) return;
@@ -1095,6 +920,15 @@ bool Editor::frame() {
     while (platform::poll(e)) {
         // Only these can change the scene (a plain mouse move cannot).
         if (e.type != platform::EventType::MouseMove) had_events_ = true;
+        // Play: keyboard and mouse reach the scripts (fe.key_down ...); the mouse
+        // in viewport pixels, buttons and wheel only over the viewport.
+        if (playing() && !io.WantTextInput) {
+            platform::Event f = e;
+            bool over = e.x >= view_rect[0] && e.y >= view_rect[1] && e.x < view_rect[0] + view_rect[2] && e.y < view_rect[1] + view_rect[3];
+            f.x -= view_rect[0];
+            f.y -= view_rect[1];
+            if (e.type == platform::EventType::Key || e.type == platform::EventType::MouseMove || over) session_.forward_event(f);
+        }
         switch (e.type) {
             case platform::EventType::MouseMove: io.AddMousePosEvent(e.x, e.y); break;
             case platform::EventType::MouseButton:

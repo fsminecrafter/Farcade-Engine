@@ -4,6 +4,7 @@
 #include "gfx/graphics_settings.h"
 
 #include "scene.h"
+#include "play_session.h"
 #include "widgets.h"
 #include "gfx/renderer.h"
 #include "swraster.h"
@@ -172,10 +173,10 @@ public:
     // per object, with its transform, modules and mesh. Systems (physics,
     // scripts, audio) plug into it; each frame the transforms come back to
     // the scene so the viewport shows them.
-    World* play_world() { return world_; }
-    PhysicsWorld* play_physics() { return physics_; }
-    ScriptRuntime* play_scripts() { return scripts_; }
-    AudioSystem* play_audio() { return audio_; }
+    World* play_world() { return session_.world(); }
+    PhysicsWorld* play_physics() { return session_.physics(); }
+    ScriptRuntime* play_scripts() { return session_.scripts(); }
+    AudioSystem* play_audio() { return session_.audio(); }
     AudioDevice* audio_device() { return audio_device_; }
     // A script file's text (full path, or relative to the project); malloc'd, or null.
     char* read_script_text(const char* path, size_t* size);
@@ -250,15 +251,8 @@ public:
 private:
     int collider_drag_ = -1;                    // the handle being dragged
     ObjectId collider_drag_object_ = kNoObject;
-    World* world_ = nullptr;
-    PhysicsWorld* physics_ = nullptr;
-    ScriptRuntime* scripts_ = nullptr;
+    PlaySession session_;                       // the running scene (play_session.h), shared with the player
     AudioDevice* audio_device_ = nullptr;       // opened at the first Play, kept
-    AudioSystem* audio_ = nullptr;
-    ObjectId* world_objects_ = nullptr;         // [i] = object of world_entities_[i]
-    uint64_t* world_entities_ = nullptr;
-    int world_count_ = 0;
-    int script_count_ = 0;
     void build_world();
     void step_world(float dt);
     void free_world();

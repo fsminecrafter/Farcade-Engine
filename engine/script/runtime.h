@@ -74,6 +74,16 @@ public:
     void trigger_exit(Entity trigger_owner, Entity other);
     void collision(Entity a, Entity b);                           // calls on_collision on both
 
+    // Input from the host, read by scripts as fe.key_down("w"), fe.key_pressed("space"),
+    // fe.mouse_x(), fe.mouse_y(), fe.mouse_down(0), fe.mouse_pressed(0), fe.mouse_wheel()
+    // (docs/scripting.md). Key names: "a".."z", "0".."9", "space", "enter", "escape",
+    // "tab", "backspace", "left", "right", "up", "down", "shift", "ctrl", "alt", "f1".."f12".
+    // "pressed" / "released" / the wheel hold for the next update only.
+    void key_event(const char* name, bool down);
+    void mouse_move(float x, float y);                // pixels of the game's view
+    void mouse_button(int button, bool down);         // 0 left, 1 right, 2 middle
+    void mouse_wheel(float dy);
+
     // Reads an instance's value by name, for tests and the editor (numbers,
     // booleans and strings). False when absent or of another type.
     bool get_number(int instance, const char* field, double* out);

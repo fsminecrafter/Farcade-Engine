@@ -1,11 +1,57 @@
 #include "icons.h"
+#include "icon_font.h"
+#include "imgui/imgui_internal.h"
 
 #include "core/math.h"
 #include "widgets.h"
 
 namespace fe {
 
+// The vector icon (editor/icons/<name>.svg) for each Icon, in enum order.
+static const char* const kIconFile[] = {
+    "pointer", "move", "rotate", "scale", "world", "local",
+    "magnet", "grid", "play", "pause", "folder", "file",
+    "image", "model", "script", "cube", "sphere", "cylinder",
+    "plane", "up", "refresh", "trash", "info", "warning",
+    "error", "stop", "eye", "eye_off", "plus", "search",
+    "gear", "chevron_down", "chevron_right", "close", "sun", "monitor",
+    "layers", "camera", "bulb", "cloud", "speaker", "wave",
+    "body", "collider", "ear", "wand", "empty", "star",
+    "sparks", "joint", "clip", "wind", "spawn", "reverb",
+    "sprite", "text_t",
+};
+static_assert(sizeof(kIconFile) / sizeof(kIconFile[0]) == (size_t)Icon::TextT + 1, "one file per Icon");
+
+// The icon's character in the vector icon font; 0 = none (draw the lines below).
+static unsigned icon_glyph(Icon icon) {
+    static unsigned cps[(size_t)Icon::TextT + 1];
+    static bool done = false;
+    if (!done) {
+        for (size_t i = 0; i <= (size_t)Icon::TextT; i++) cps[i] = icon_codepoint(kIconFile[i]);
+        done = true;
+    }
+    return (size_t)icon <= (size_t)Icon::TextT ? cps[(size_t)icon] : 0;
+}
+
+static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c);
+
 void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
+    unsigned cp = icon_glyph(icon);
+    ImFont* font = icon_box_font();
+    if (cp && font && s >= 4.0f) {
+        // Whole pixels and a whole size: the glyph is rasterized for exactly this box.
+        char utf8[5] = {};
+        ImTextCharToUtf8(utf8, cp);
+        float size = (float)(int)(s + 0.5f);
+        ImVec2 at((float)(int)(p.x + (s - size) * 0.5f + 0.5f), (float)(int)(p.y + (s - size) * 0.5f + 0.5f));
+        dl->AddText(font, size, at, c, utf8);
+        return;
+    }
+    draw_icon_lines(dl, icon, p, s, c);
+}
+
+// The original line drawings: used when the icon font is not there.
+static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
     // Work in a 16x16 design grid scaled to the box.
     float k = s / 16.0f;
     float t = 1.5f * k;     // stroke width
@@ -363,6 +409,15 @@ bool icon_button(Icon icon, const char* tooltip, bool active, float size, uint32
 }
 
 void draw_logo(ImDrawList* dl, ImVec2 p, float s, ImU32 accent) {
+    // The vector logo (docs/logo/farcade-logo.svg) in its own colors.
+    ImFont* font = icon_box_font();
+    if (font && icon_codepoint("logo") && s >= 4.0f) {
+        char utf8[5] = {};
+        ImTextCharToUtf8(utf8, icon_codepoint("logo"));
+        float size = (float)(int)(s + 0.5f);
+        dl->AddText(font, size, ImVec2((float)(int)(p.x + 0.5f), (float)(int)(p.y + 0.5f)), IM_COL32_WHITE, utf8);
+        return;
+    }
     float k = s / 16.0f;
     auto P = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
     dl->AddRectFilled(P(0, 0), P(16, 16), accent, 4.0f * k);

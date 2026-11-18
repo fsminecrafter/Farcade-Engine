@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "icon_font.h"
 #include "fx_bridge.h"
 #include "fx/fx.h"
 #include "icons.h"
@@ -275,9 +276,14 @@ bool Editor::init(int width, int height) {
     cfg.FontDataOwnedByAtlas = false;
     cfg.OversampleH = 1;
     cfg.OversampleV = 1;
+    // Each UI font gets the vector icons merged in (FE_ICON_* characters).
     font_ui = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_regular, (int)fe_font_inter_regular_size, 14.0f * settings.ui_scale, &cfg);
+    if (font_ui) icon_font_merge(io.Fonts);
     font_medium = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_medium, (int)fe_font_inter_medium_size, 14.0f * settings.ui_scale, &cfg);
+    if (font_medium) icon_font_merge(io.Fonts);
     font_mono = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_roboto_mono, (int)fe_font_roboto_mono_size, 13.0f * settings.ui_scale, &cfg);
+    if (font_mono) icon_font_merge(io.Fonts);
+    icon_font_add_box(io.Fonts);        // draw_icon: one icon per box
     if (!font_ui) font_ui = io.Fonts->AddFontDefault();
     if (!font_medium) font_medium = font_ui;
     if (!font_mono) font_mono = font_ui;

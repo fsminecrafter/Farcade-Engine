@@ -167,3 +167,29 @@ The sheets show each icon at 14, 16, 20, 24 and 48 px on dark (#191B20, icons #D
 | `info` | Information badge |
 | `warning` | Warning badge |
 | `error` | Error badge |
+
+## How the editor uses them
+
+The SVGs are the source. The editor embeds them as Minimal-OS vector images
+(the `.img` format's vector mode, version 2; Minimal-OS `docs/media.md`,
+SDK `docs/images.md`) and draws them through its fonts:
+
+1. `tools/icons/build_pack.py convert <path to Minimal-OS>/build/tools/mosmedia`
+   converts every SVG (and `docs/logo/farcade-logo.svg` as `logo`) to
+   `editor/icons/img/<name>.img` (build `mosmedia` with
+   `make build/tools/mosmedia` in Minimal-OS). The `.img` files are
+   committed, so building the editor needs no Minimal-OS tools.
+2. `tools/icons/build_pack.py header` gives new icons a codepoint in the
+   Private Use Area (`codepoints.txt`, append-only) and rewrites
+   `editor/src/icon_glyphs.h` (`FE_ICON_<NAME>` strings).
+3. The build embeds the `.img` files (`mk/editor.mk`), and
+   `editor/src/icon_font.cpp` rasterizes each one with the SDK's
+   `mimg_render_ex` into the font atlas at the size a frame asks for,
+   tinted through the "current color" paint.
+
+So an icon can sit in any label (`ImGui::Button(FE_ICON_SAVE "  Save")`),
+and `draw_icon(dl, Icon::..., pos, size, color)` draws one in a box. To add
+an icon: draw `editor/icons/<name>.svg` to the spec above, run
+`python3 tools/icons/check.py`, then steps 1 and 2. To use it through the
+`Icon` enum as well, add the enum value (icons.h) and its file name in
+`kIconFile` (icons.cpp).

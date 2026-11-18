@@ -228,6 +228,7 @@ give `{x=, y=, z=}` or `{1, 2, 3}`.
 | `fe.current(module)` | the current camera/sky/skylight/post_process/listener object, or nil |
 | `fe.broadcast(event, ...)` | `on_<event>` and `on_event` on every script instance |
 | `fe.time()` | seconds since the runtime started |
+| `fe.status(text [, progress])` | shows a line (and a bar when `progress`, 0..1, is given; without it the bar moves on its own) over the game, in the player and in Play; `fe.status()` hides it. For loading screens and "waiting for ..." messages; it is drawn together with FarcadeGL's "Compiling shaders" bar |
 | `fe.dt` | the dt of the frame being run |
 | `fe.log(...)`, `print(...)` | to the console (Info), arguments as text separated by tabs |
 | `fe.warn(...)`, `fe.error(...)` | to the console as Warning / Error |

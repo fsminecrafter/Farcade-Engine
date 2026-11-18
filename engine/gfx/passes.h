@@ -69,6 +69,24 @@ struct GpuPlan {
     bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows || ssr; }
 };
 
+// Shader compiling spread over frames (Renderer::set_compile_budget): once
+// a frame has compiled for budget_ms, the next shader it needs stops the
+// frame (`deferred`), and the next frame carries on where it stopped.
+struct CompileGate {
+    double budget_ms = 0;           // 0: compile everything a frame needs at once
+    double deadline = 0;            // this frame's, in now_ms() time
+    int frame_compiles = 0;         // shaders compiled this frame
+    int total = 0;                  // since the gate was opened
+    bool deferred = false;          // the last frame stopped to compile more
+    // Whether one more shader may be compiled now (at least one per frame).
+    bool may_compile(double now) {
+        if (budget_ms <= 0 || frame_compiles == 0 || now < deadline) return true;
+        deferred = true;
+        return false;
+    }
+    void compiled() { frame_compiles++; total++; }
+};
+
 class GpuTier {
 public:
     GpuTier();
@@ -86,6 +104,8 @@ public:
 
     // Frees every GL object (targets, shaders); call before the context goes.
     void release(FGLContext* gl);
+    // The renderer's compile gate (may be null: no budget).
+    void set_gate(CompileGate* gate);
 
     const GpuTierStats& stats() const;
     // Live FarcadeGL surfaces and programs the tier holds (tests: no leaks).

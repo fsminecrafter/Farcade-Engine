@@ -1070,6 +1070,69 @@ void test_errors() {
     CHECK_EQ(r.stats().draws, 0);
 }
 
+// Shader compiling spread over frames (the loading bar): with a tiny budget
+// every render() compiles one shader and stops; once it is done the picture
+// is the one a renderer that compiled everything at once draws.
+void test_compile_budget() {
+    for (int tier = 0; tier < 2; tier++) {
+        SmokeScene s;
+        s.build();
+        GraphicsSettings g;
+        if (tier) {
+            g.apply_preset(GraphicsPreset::High);
+            g.shadow_resolution = 512;
+            g.allow_gpu_effects_on_cpu = true;
+            g.antialiasing = false;     // TAA jitters by frame number: the stopped frames count too
+            g.ao_mode = AOMode::SSAO;     // GTAO rotates by frame number and keeps a history
+            g.cascade_cache = false;      // a cascade reused from an earlier frame
+            s.scene.post.bloom = 0.4f;
+            s.scene.post.bloom_threshold = 0.8f;
+        }
+        Renderer ref, r;
+        ref.set_settings(g);
+        r.set_settings(g);
+        CHECK(ref.init(kSmokeWidth, kSmokeHeight) && r.init(kSmokeWidth, kSmokeHeight));
+        CHECK(ref.render(s.scene));
+        uint32_t want = checksum(ref.pixels(), kSmokeWidth * kSmokeHeight);
+        r.set_compile_budget(0.000001);
+        int frames = 0;
+        bool ok = false;
+        while (frames < 200) {
+            frames++;
+            ok = r.render(s.scene);
+            if (ok || !r.compiling()) break;
+            CHECK(r.shaders_compiled() == frames);                  // one per frame
+        }
+        CHECK_MSG(ok, r.error());
+        CHECK(frames > 1);                                          // it did take several frames
+        CHECK(!r.compiling());
+        int compiled = r.shaders_compiled();
+        CHECK(compiled >= frames - 1);
+        r.set_compile_budget(0);
+        CHECK(r.render(s.scene));                                   // nothing more to compile: a frame like any other
+        if (!tier) {
+            CHECK_EQ(checksum(r.pixels(), kSmokeWidth * kSmokeHeight), want);
+        } else {
+            // The GPU tier's picture changes a little from frame to frame by
+            // itself (exposure, cascades): the same picture within a margin.
+            CHECK(r.render(s.scene) && ref.render(s.scene));
+            long diff = 0;
+            const uint32_t* a = r.pixels();
+            const uint32_t* b = ref.pixels();
+            for (int i = 0; i < kSmokeWidth * kSmokeHeight; i++)
+                for (int c = 0; c < 24; c += 8) {
+                    int d = (int)((a[i] >> c) & 255u) - (int)((b[i] >> c) & 255u);
+                    diff += d < 0 ? -d : d;
+                }
+            double mean = (double)diff / (3.0 * kSmokeWidth * kSmokeHeight);
+            CHECK_MSG(mean < 4.0, "the GPU tier after a spread compile looks different");
+            CHECK(r.gpu_tier_stats().passes >= 5);
+            (void)want;
+        }
+        printf("compile budget, %s tier: %d frames, %d shaders\n", tier ? "GPU" : "base", frames, compiled);
+    }
+}
+
 void test_smoke_scene() {
     // The scene of the Minimal-OS program: print what the host draws so the two can be compared.
     SmokeScene s;
@@ -1720,6 +1783,7 @@ int main() {
     test_jit_matches_interpreter();
     test_errors();
     test_smoke_scene();
+    test_compile_budget();
     test_features();
     test_shadows();
     test_local_shadows();

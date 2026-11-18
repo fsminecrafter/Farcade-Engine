@@ -340,4 +340,81 @@ int ParticleRaster::draw(const ParticleBatch* batches, int batch_count, const Te
     return drawn;
 }
 
+namespace {
+
+void box_fill(uint32_t* px, int w, int h, int pitch, int x0, int y0, int x1, int y1, uint32_t c, int alpha) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > w) x1 = w;
+    if (y1 > h) y1 = h;
+    for (int y = y0; y < y1; y++) {
+        uint32_t* r = px + (size_t)y * pitch;
+        for (int x = x0; x < x1; x++) {
+            uint32_t d = r[x];
+            int dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
+            dr += ((int)((c >> 16) & 255) - dr) * alpha >> 8;
+            dg += ((int)((c >> 8) & 255) - dg) * alpha >> 8;
+            db += ((int)(c & 255) - db) * alpha >> 8;
+            r[x] = ((uint32_t)dr << 16) | ((uint32_t)dg << 8) | (uint32_t)db;
+        }
+    }
+}
+
+int box_text_width(const char* s, int cell) {
+    int n = 0;
+    while (s[n]) n++;
+    return n ? n * 6 * cell - cell : 0;
+}
+
+void box_text(uint32_t* px, int w, int h, int pitch, int x, int y, const char* s, int cell, uint32_t c) {
+    for (int ch = 0; s[ch]; ch++) {
+        int g = (unsigned char)s[ch];
+        if (g < 32 || g > 126) g = '?';
+        const uint8_t* col = kFont[g - 32];
+        for (int cx = 0; cx < 5; cx++)
+            for (int row = 0; row < 8; row++)
+                if ((col[cx] >> row) & 1)
+                    box_fill(px, w, h, pitch, x + (ch * 6 + cx) * cell, y + row * cell, x + (ch * 6 + cx + 1) * cell,
+                             y + (row + 1) * cell, c, 256);
+    }
+}
+
+}  // namespace
+
+void draw_status_box(uint32_t* xrgb, int width, int height, int pitch, const char* line, const char* sub, float progress,
+                     double t) {
+    if (!xrgb || width < 64 || height < 48) return;
+    int cell = height < 360 ? 1 : 2 + (height >= 940 ? (height - 540) / 400 : 0);
+    int pad = 8 * cell, lh = 8 * cell;
+    int tw = box_text_width(line ? line : "", cell);
+    if (sub && box_text_width(sub, cell) > tw) tw = box_text_width(sub, cell);
+    int bw = tw + 2 * pad;
+    if (bw < width / 3) bw = width / 3;
+    if (bw > width - 16) bw = width - 16;
+    int bar_h = 3 * cell;
+    int bh = pad + lh + pad / 2 + bar_h + (sub && *sub ? pad / 2 + lh : 0) + pad;
+    int x0 = (width - bw) / 2, y0 = height - bh - height / 12;
+    box_fill(xrgb, width, height, pitch, x0, y0, x0 + bw, y0 + bh, 0x14181E, 215);
+    box_fill(xrgb, width, height, pitch, x0, y0, x0 + bw, y0 + cell, 0x4FA3E0, 256);
+    int y = y0 + pad;
+    if (line) box_text(xrgb, width, height, pitch, x0 + pad, y, line, cell, 0xE8EEF3);
+    y += lh + pad / 2;
+    int tx0 = x0 + pad, tx1 = x0 + bw - pad;
+    box_fill(xrgb, width, height, pitch, tx0, y, tx1, y + bar_h, 0x2C3742, 256);
+    if (progress >= 0.0f) {
+        float p = progress > 1.0f ? 1.0f : progress;
+        int fx = tx0 + (int)((float)(tx1 - tx0) * p);
+        if (fx < tx0 + bar_h) fx = tx0 + bar_h;
+        box_fill(xrgb, width, height, pitch, tx0, y, fx, y + bar_h, 0x4FA3E0, 256);
+    } else {
+        // No known end: a segment that runs along the track.
+        int seg = (tx1 - tx0) / 4;
+        double ph = t * 0.8 - (double)(long)(t * 0.8);
+        int sx = tx0 + (int)((double)(tx1 - tx0 + seg) * ph) - seg;
+        box_fill(xrgb, width, height, pitch, sx < tx0 ? tx0 : sx, y, sx + seg > tx1 ? tx1 : sx + seg, y + bar_h, 0x4FA3E0, 256);
+    }
+    y += bar_h + pad / 2;
+    if (sub && *sub) box_text(xrgb, width, height, pitch, x0 + pad, y, sub, cell, 0x8FA3AF);
+}
+
 }  // namespace fe::gfx

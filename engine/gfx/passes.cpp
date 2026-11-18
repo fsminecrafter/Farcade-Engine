@@ -199,9 +199,13 @@ struct GpuTier::Impl {
 
     // ---- objects
 
+    CompileGate* gate = nullptr;
+
     bool compile(FGLShader** out, const char* vs, const char* fs, const char* what) {
         if (*out) return true;
+        if (gate && !gate->may_compile(now_ms())) return fail("compiling shaders");
         FGLShader* sh = fglCreateShader(gl, vs, fs);
+        if (sh && gate) gate->compiled();
         if (!sh) {
             if (err && err_cap) snprintf(err, (size_t)err_cap, "%s shader: %s", what, fglShaderLog(gl));
             if (getenv("FE_DUMP_SHADER")) fprintf(stderr, "%s\n", fs);
@@ -1572,6 +1576,7 @@ bool GpuTier::render(FGLContext* gl, const RenderScene& scene, const PackedLight
 }
 
 void GpuTier::release(FGLContext*) { impl_->release_all(); }
+void GpuTier::set_gate(CompileGate* gate) { impl_->gate = gate; }
 
 const GpuTierStats& GpuTier::stats() const { return impl_->stats; }
 int GpuTier::live_surfaces() const { return impl_->surfaces; }

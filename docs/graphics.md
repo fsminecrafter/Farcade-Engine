@@ -341,6 +341,23 @@ approximation. AO multiplies ambient fully and direct light by 40%.
 `exp(-0.06 * Sky.fog * distance)` towards the sky's horizon color (the flat
 color in `SkyMode::Color`), applied to lit and unlit items before post.
 
+## Shader compiling and the shader cache
+
+FarcadeGL keeps every compiled program in `0:/cache/shaders` (the SDK's
+`fglcache.h`, shared by all programs on the system), so a game's second
+start, or switching the editor's viewport back to FarcadeGL, skips the
+compiler. The limit follows the size of the 0: volume: 20 MB under 256 MB,
+5 GB under 80 GB, 30 GB under 300 GB and 50 GB above, never more than half
+the volume; the least recently used programs go first. Settings > Graphics
+shows its size and has Clear cache and Recompile shaders.
+
+The renderer compiles at most ~25 ms of shaders a frame
+(`Renderer::set_compile_budget`): a frame that needs more stops early,
+`compiling()` is true, and the next frame goes on. The editor keeps the
+last picture with a "Compiling shaders  n / m" bar (m is how many the last
+time needed), the player shows a loading box. Fixed-step player runs
+(`--frames`) compile at once, so their frames stay reproducible.
+
 ## Limits hit (FGSL / FarcadeGL / host JIT)
 
 - 32 vec4 temporaries per stage and none are shared between variables of a

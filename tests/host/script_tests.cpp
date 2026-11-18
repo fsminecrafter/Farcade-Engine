@@ -86,6 +86,33 @@ static void run(const char* name, F f) {
     printf("  %-14s %s\n", name, g_failures == before ? "ok" : "FAILED");
 }
 
+// fe.status: what a game wants shown over itself (the player draws it).
+static void check_status() {
+    SCRIPT_ENV(E);
+    SCRIPT_CHECK(!E.rt.status().shown);
+    fe::Entity e = E.w.create("e");
+    int id = E.add(e, "scripts/status.lua",
+        "local n = 0\n"
+        "function on_start(self) fe.status('Loading level 2', 0.25) end\n"
+        "function on_update(self, dt) n = n + 1\n"
+        "  if n == 1 then fe.status('Waiting for players') end\n"
+        "  if n == 2 then fe.status('Too far', 7) end\n"
+        "  if n == 3 then fe.status() end\n"
+        "  if n == 4 then self.bad = pcall(fe.status, {}) end\n"
+        "end\n");
+    SCRIPT_CHECK(id > 0);
+    E.w.progress(0.016f);
+    const fe::GameStatus& st = E.rt.status();
+    // on_start ran, then the first on_update in the same frame
+    SCRIPT_CHECK(st.shown && !strcmp(st.text, "Waiting for players") && st.progress < 0);
+    E.w.progress(0.016f);
+    SCRIPT_CHECK(st.shown && !strcmp(st.text, "Too far") && st.progress == 1.0f);   // clamped to 0..1
+    E.w.progress(0.016f);
+    SCRIPT_CHECK(!st.shown && st.text[0] == 0);
+    E.w.progress(0.016f);
+    SCRIPT_CHECK(!E.flag(id, "bad"));                                                // a table is no text: an error
+}
+
 int main() {
     run("load errors", check_load_errors);
     run("inputs", check_inputs);
@@ -103,6 +130,7 @@ int main() {
     run("sandbox", check_sandbox);
     run("destroy", check_destroy);
     run("graphics", check_graphics);
+    run("status", check_status);
     double ms = 0;
     run("2000 instances", [&] { check_many(&ms, 2000); });
     printf("script: 2000 instances on_update: %.3f ms/frame\n", ms);

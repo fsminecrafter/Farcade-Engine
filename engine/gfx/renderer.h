@@ -131,6 +131,16 @@ struct GpuTierStats {
     double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms + local_shadow_ms + ssr_ms + taa_ms + smaa_ms; }
 };
 
+// FarcadeGL's shader cache (0:/cache/shaders, the SDK's fglcache.h), shared
+// by every program on the system. Off on the host unless a directory is set.
+struct ShaderCacheInfo {
+    bool enabled = false;
+    uint32_t entries = 0, hits = 0, misses = 0;
+    uint64_t bytes = 0, limit = 0;
+};
+ShaderCacheInfo shader_cache_info();
+void shader_cache_clear();
+
 class Renderer {
 public:
     Renderer();
@@ -173,6 +183,18 @@ public:
     const char* take_warning();
     // Drops cached GPU meshes (for example when a model file changed).
     void forget_meshes();
+
+    // Shader compiling spread over frames, for a loading bar: with a budget,
+    // a render() that has compiled shaders for `budget_ms` stops before the
+    // next one it needs and returns false with compiling() true; nothing is
+    // drawn, the shaders made so far are kept, and the next render() goes
+    // on. 0 (the default) compiles everything a frame needs at once.
+    void set_compile_budget(double budget_ms);
+    bool compiling() const;
+    // Shaders compiled since the budget was set (reset by set_compile_budget).
+    int shaders_compiled() const;
+    // The last frame (also one that stopped to compile) used the GPU tier.
+    bool uses_gpu_tier() const;
 
     // Quality settings (graphics_settings.h). The GPU tier runs only when
     // FarcadeGL is on a graphics card, unless the settings force it.

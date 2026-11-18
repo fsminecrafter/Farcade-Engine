@@ -1028,6 +1028,32 @@ void Editor::settings_graphics() {
                      pc.scissor ? "yes" : "no", pc.mipmaps ? "yes" : "no", pc.tex16 ? "yes" : "no", pc.mrt ? "yes" : "no");
             faint(caps);
         }
+        // The shader cache FarcadeGL keeps for every program (0:/cache/shaders).
+        {
+            gfx::ShaderCacheInfo ci = gfx::shader_cache_info();
+            prop_label("Shader cache");
+            ImGui::AlignTextToFramePadding();
+            if (ci.enabled) {
+                auto mb = [](uint64_t b) { return (double)b / (1024.0 * 1024.0); };
+                if (ci.limit >= 1024ull * 1024ull * 1024ull)
+                    ImGui::Text("%u programs, %.1f MB of %.0f GB", ci.entries, mb(ci.bytes), mb(ci.limit) / 1024.0);
+                else
+                    ImGui::Text("%u programs, %.1f MB of %.0f MB", ci.entries, mb(ci.bytes), mb(ci.limit));
+            } else {
+                ImGui::TextDisabled("off (no cache directory on this system)");
+            }
+            prop_label("");
+            ImGui::BeginDisabled(!ci.enabled || ci.entries == 0);
+            if (ImGui::Button("Clear cache")) { gfx::shader_cache_clear(); log(LogLevel::Info, "Shader cache cleared"); }
+            ImGui::EndDisabled();
+            track("gfx:cache_clear");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!fgl_backend[0]);
+            if (ImGui::Button("Recompile shaders")) fgl_restart = true;
+            ImGui::EndDisabled();
+            track("gfx:recompile");
+            faint("Compiled shaders are kept here for the next start. The limit follows the disk: 20 MB under 256 MB, 5 GB under 80 GB, 30 GB under 300 GB, 50 GB above (at most half the disk).");
+        }
         ImGui::Dummy(ImVec2(0, 4));
     }
     if (section_header("Effects", Icon::Sparks)) {

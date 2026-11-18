@@ -93,7 +93,9 @@ void write_fields(Out& o, const ModuleInfo& mi, const void* data, const char* in
         }
         case FieldType::Color:
         case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); o.vec(v); break; }
+        case FieldType::Text:
         case FieldType::Path: o.raw(" ", 1); o.str((const char*)p); break;
+        case FieldType::Object: { uint32_t v; memcpy(&v, p, 4); o.f(" %u", (unsigned)v); break; }
         }
         o.raw("\n", 1);
     }
@@ -167,6 +169,7 @@ bool read_field(const ModuleInfo& mi, void* data, const Line& l) {
     switch (fi->type) {
     case FieldType::Float: { float v; if (!parse_float(l.tok[1], &v)) return false; memcpy(p, &v, 4); return true; }
     case FieldType::Int: { long v; if (!parse_int(l.tok[1], &v)) return false; int32_t i = (int32_t)v; memcpy(p, &i, 4); return true; }
+    case FieldType::Object:
     case FieldType::Bits: {
         char* end = nullptr;
         unsigned long v = strtoul(l.tok[1], &end, 10);
@@ -186,6 +189,7 @@ bool read_field(const ModuleInfo& mi, void* data, const Line& l) {
     }
     case FieldType::Color:
     case FieldType::Vec3: { Vec3 v; if (!parse_vec(l, 1, &v)) return false; memcpy(p, &v, sizeof v); return true; }
+    case FieldType::Text:
     case FieldType::Path: copy_str((char*)p, kPathMax, l.tok[1]); return true;
     }
     return false;
@@ -229,12 +233,17 @@ char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsig
             const void* data = ob.modules.data((ModuleKind)k);
             if (mi.fields == nullptr) { o.f("  end\n"); continue; }
             // Paths inside the project are stored relative to it, like the object's.
-            if ((ModuleKind)k == ModuleKind::AudioStream || (ModuleKind)k == ModuleKind::AudioSampler) {
+            bool has_path = false;
+            for (int f = 0; f < mi.field_count; f++) has_path |= mi.fields[f].type == FieldType::Path;
+            if (has_path) {
                 uint8_t tmp[sizeof(ModuleSet)];
                 memcpy(tmp, data, mi.size);
-                char* path = (char*)tmp + ((ModuleKind)k == ModuleKind::AudioStream ? offsetof(AudioStream, path) : offsetof(AudioSampler, path));
-                const char* rel = relative(path, project_dir);
-                if (rel != path) memmove(path, rel, strlen(rel) + 1);
+                for (int f = 0; f < mi.field_count; f++) {
+                    if (mi.fields[f].type != FieldType::Path) continue;
+                    char* path = (char*)tmp + mi.fields[f].offset;
+                    const char* rel = relative(path, project_dir);
+                    if (rel != path) memmove(path, rel, strlen(rel) + 1);
+                }
                 write_fields(o, mi, tmp, "    ");
             } else {
                 write_fields(o, mi, data, "    ");

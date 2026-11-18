@@ -20,6 +20,9 @@
 //     Bloom is not implemented.
 #include "gfx/renderer.h"
 #include "gfx/shaders.h"
+#include "gfx/feature_level.h"
+#include "gfx/post_stack.h"
+#include "gfx/gi.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
 #include "stb/stb_image.h"
@@ -65,17 +68,21 @@ struct Locs {
     int post = -1, tint = -1, res = -1, mat = -1, cam = -1, sky = -1, gnd = -1;
     int l0 = -1, l1 = -1, l2 = -1, l3 = -1;
     int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
+    int lift = -1, gamma = -1, gain = -1, grain = -1;
+    int gi = -1, gi0 = -1, gi1 = -1;
 };
 
 struct Shader {
     FGLShader* sh = nullptr;
     Locs loc;
+    shaders::PostKey key;                   // the post chain compiled in
 };
 
 struct Variant {
     Shader shader;
     int nd = 0, np = 0, ns = 0;
-    bool draft = false;
+    shaders::PostKey key;
+    bool gi = false;
     uint64_t last_use = 0;
     bool used = false;
 };
@@ -84,6 +91,7 @@ struct TextureEntry {
     char path[256] = {};
     FGLTexture texture = 0;
     uint64_t last_use = 0;
+    bool missing = false;           // could not be read or decoded: `texture` is the shared white one
 };
 
 struct CustomShaderEntry {
@@ -125,6 +133,28 @@ FGLMat4 to_fgl(const Mat4& m) {
     return r;
 }
 
+GraphicsFeatures make_features(const DeviceCaps& caps, const GraphicsSettings& settings) {
+    GraphicsFeatures f;
+    FeatureLevelChoice c = pick_feature_level(caps, settings.feature_level, settings.allow_gpu_effects_on_cpu);
+    f.level = c.level;
+    f.level_forced = c.forced;
+    f.level_clamped = c.clamped;
+    f.pass_caps = pass_caps(caps);
+    f.gpu = caps.hw_3d;
+    f.gpu_tier = c.level == FeatureLevel::GpuTier;
+    f.shadows = f.gpu_tier && settings.shadows;
+    f.ambient_occlusion = f.gpu_tier && settings.ambient_occlusion;
+    f.bloom = f.gpu_tier && settings.bloom;
+    f.antialiasing = f.gpu_tier && settings.antialiasing;
+    f.pbr = f.gpu_tier && settings.pbr;
+    f.local_shadows = f.gpu_tier && settings.local_shadows;
+    f.gi = settings.gi_mode == GiMode::Probes;
+    f.aa_mode = settings.aa_mode;
+    f.ao_mode = settings.ao_mode;
+    f.ssr = f.gpu_tier && settings.ssr;
+    return f;
+}
+
 }  // namespace
 
 struct Renderer::Impl {
@@ -138,17 +168,60 @@ struct Renderer::Impl {
     FGLBuffer sky_buffer = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
+    char warning[256] = "";             // take_warning()
     RendererStats stats;
     double init_ms = 0, init_shader_ms = 0; // init(): all, and the shader compiles in it
     bool in_render = false;
     uint64_t frame = 0;
 
+    // Post stack (post_stack.h): the internal resolution, auto exposure, the
+    // values of this frame's post chain.
+    int rw = 0, rh = 0;                     // the surfaces being drawn (internal size; a band: the image)
+    uint32_t* ipixels = nullptr;            // the internal-size readback, when it differs from the image
+    size_t ipixels_cap = 0;
+    AutoExposure ae;
+    DynamicResolution dyn;
+    PostFrame pf;
+    double last_render_end_ms = 0;
+    uint32_t post_frames = 0;
+
     // GPU tier (graphics_settings.h, passes.h)
     GraphicsSettings settings;
     bool hw = false;                        // FGPU_CAP_HW_3D: FarcadeGL runs on a graphics card
+    DeviceCaps caps;                        // from fglGetDeviceInfo (feature_level.h)
     char backend[40] = "";
     GpuTier tier;
+    // Probe GI (gi.h): updated once a frame on the CPU, uploaded as a texture both tiers sample.
+    GiSystem gi;
+    FGLTexture gi_tex = 0;
+    uint64_t gi_uploaded = 0;
+    uint32_t* gi_pixels = nullptr;
+    bool gi_started = false;
+    struct GiFrame { bool on = false; float u0[4] = {}, u1[4] = {}; } gi_frame;
     bool tier_ran = false;                  // the last frame used the GPU tier
+
+    // Particles (particles.h): drawn over the read-back image.
+    ParticleRaster particle_raster;
+    Occluder* occluders = nullptr;
+    int occluder_cap = 0;
+    void draw_particles(const RenderScene& scene, uint32_t* dst, int y0, int rows, bool rgba) {
+        if ((!scene.particles || scene.particle_batch_count <= 0) && (!scene.labels || scene.label_count <= 0)) return;
+        int n = scene.particles_depth_test ? scene.item_count : 0;
+        if (occluder_cap < n) {
+            Occluder* nb = (Occluder*)realloc(occluders, sizeof(Occluder) * (n < 64 ? 64 : n * 2));
+            if (nb) { occluders = nb; occluder_cap = n < 64 ? 64 : n * 2; }
+        }
+        int m = 0;
+        for (int i = 0; i < n && occluders && m < occluder_cap; i++) {
+            const DrawItem& it = scene.items[i];
+            occluders[m].positions = it.mesh.positions;
+            occluders[m].vertex_count = it.mesh.vertex_count;
+            occluders[m].model = it.model;
+            m++;
+        }
+        particle_raster.draw(scene.particles, scene.particle_batch_count, scene.labels, scene.label_count, scene.camera.view, scene.camera.proj, occluders, m,
+                             dst, width, height, y0, rows, rgba, scene.read_asset, scene.asset_user);
+    }
 
     // Mesh cache: open addressing on key, entries never move between rebuilds.
     MeshEntry* table = nullptr;
@@ -225,6 +298,13 @@ struct Renderer::Impl {
         l->sun = fglUniformLocation(sh, "u_sun");
         l->suncol = fglUniformLocation(sh, "u_suncol");
         l->texture = fglUniformLocation(sh, "u_texture");
+        l->lift = fglUniformLocation(sh, "u_lift");
+        l->gamma = fglUniformLocation(sh, "u_gamma");
+        l->gain = fglUniformLocation(sh, "u_gain");
+        l->grain = fglUniformLocation(sh, "u_grain");
+        l->gi = fglUniformLocation(sh, "u_gi");
+        l->gi0 = fglUniformLocation(sh, "u_gi0");
+        l->gi1 = fglUniformLocation(sh, "u_gi1");
     }
 
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
@@ -242,6 +322,25 @@ struct Renderer::Impl {
         return true;
     }
 
+    // A texture that cannot be read or decoded is not fatal: it is drawn
+    // plain white (the object's color still shows), remembered so it is not
+    // retried every frame, and reported once through take_warning().
+    FGLTexture missing_texture(const char* path, const char* why) {
+        snprintf(warning, sizeof warning, "texture %s: %s (drawn without it)", path, why);
+        TextureEntry* slot = nullptr;
+        for (TextureEntry& e : textures) if (!e.texture) { slot = &e; break; }
+        if (!slot) {
+            slot = &textures[0];
+            for (TextureEntry& e : textures) if (e.last_use < slot->last_use) slot = &e;
+            if (!slot->missing) fglDestroyTexture(gl, slot->texture);
+        }
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->texture = white_texture;
+        slot->missing = true;
+        slot->last_use = frame;
+        return white_texture;
+    }
+
     FGLTexture texture_for(const char* path, const RenderScene& scene) {
         for (TextureEntry& e : textures) {
             if (e.texture && strcmp(e.path, path) == 0) { e.last_use = frame; return e.texture; }
@@ -249,24 +348,19 @@ struct Renderer::Impl {
         if (!scene.read_asset) { set_error("FarcadeGL: no asset reader for texture"); return 0; }
         size_t size = 0;
         uint8_t* bytes = (uint8_t*)scene.read_asset(path, &size, scene.asset_user);
-        if (!bytes) { snprintf(error, sizeof error, "FarcadeGL: cannot read texture %s", path); return 0; }
+        if (!bytes) return missing_texture(path, "cannot be read");
         if (size == 0 || size > 128u * 1024u * 1024u || size > 0x7FFFFFFFu) {
             free(bytes);
-            snprintf(error, sizeof error, "FarcadeGL: invalid texture size for %s", path);
-            return 0;
+            return missing_texture(path, "has an invalid size");
         }
         int w = 0, h = 0, comp = 0;
         if (!stbi_info_from_memory(bytes, (int)size, &w, &h, &comp) || w < 1 || h < 1 || w > 4096 || h > 4096) {
             free(bytes);
-            snprintf(error, sizeof error, "FarcadeGL: invalid image dimensions for %s", path);
-            return 0;
+            return missing_texture(path, "is not an image this renderer reads (or larger than 4096)");
         }
         stbi_uc* rgba = stbi_load_from_memory(bytes, (int)size, &w, &h, &comp, 4);
         free(bytes);
-        if (!rgba) {
-            snprintf(error, sizeof error, "FarcadeGL: cannot decode texture %s", path);
-            return 0;
-        }
+        if (!rgba) return missing_texture(path, "cannot be decoded");
         uint32_t* pixels = (uint32_t*)malloc((size_t)w * (size_t)h * sizeof(uint32_t));
         if (!pixels) { stbi_image_free(rgba); set_error("out of memory decoding texture"); return 0; }
         for (size_t i = 0, n = (size_t)w * h; i < n; i++)
@@ -280,10 +374,11 @@ struct Renderer::Impl {
         if (!slot) {
             slot = &textures[0];
             for (TextureEntry& e : textures) if (e.last_use < slot->last_use) slot = &e;
-            fglDestroyTexture(gl, slot->texture);
+            if (!slot->missing) fglDestroyTexture(gl, slot->texture);
         }
         snprintf(slot->path, sizeof slot->path, "%s", path);
         slot->texture = texture;
+        slot->missing = false;
         slot->last_use = frame;
         return texture;
     }
@@ -339,14 +434,16 @@ struct Renderer::Impl {
     }
 
     // The unlit and the sky shader (compiled on first use, cached).
-    bool use_shader(Shader* s, bool sky_shader, bool draft) {
-        if (s->sh) return true;
+    bool use_shader(Shader* s, bool sky_shader, const shaders::PostKey& key) {
+        if (s->sh && s->key == key) return true;
+        if (s->sh) drop(s);
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return false; }
-        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, draft); }
-        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, draft); }
+        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, key); }
+        else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, key); }
         bool ok = compile(s, vs, fs, sky_shader ? "sky" : "unlit");
+        if (ok) s->key = key;
         free(vs);
         free(fs);
         return ok;
@@ -372,9 +469,9 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns, bool draft) {
+    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key, bool gi) {
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.draft == draft) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.key == key && v.gi == gi) { v.last_use = frame; return &v.shader; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -388,14 +485,14 @@ struct Renderer::Impl {
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
         shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, draft);
+        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key, gi);
         Shader s;
         bool ok = compile(&s, vs, fs, "lit");
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
-        slot->nd = nd; slot->np = np; slot->ns = ns; slot->draft = draft;
+        slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key; slot->gi = gi;
         slot->used = true;
         slot->last_use = frame;
         return &slot->shader;
@@ -498,7 +595,9 @@ struct Renderer::Impl {
                         float* o = scratch + (v + t) * 8;
                         o[0] = ps[t].x; o[1] = ps[t].y; o[2] = ps[t].z;
                         o[3] = ns[t].x; o[4] = ns[t].y; o[5] = ns[t].z;
-                        if (fabsf(ns[t].y) > fabsf(ns[t].x) && fabsf(ns[t].y) > fabsf(ns[t].z)) {
+                        if (m.uvs) {
+                            o[6] = m.uvs[(size_t)(at + t) * 2]; o[7] = m.uvs[(size_t)(at + t) * 2 + 1];
+                        } else if (fabsf(ns[t].y) > fabsf(ns[t].x) && fabsf(ns[t].y) > fabsf(ns[t].z)) {
                             o[6] = ps[t].x + 0.5f; o[7] = ps[t].z + 0.5f;
                         } else if (fabsf(ns[t].x) > fabsf(ns[t].z)) {
                             o[6] = ps[t].z + 0.5f; o[7] = ps[t].y + 0.5f;
@@ -678,9 +777,15 @@ struct Renderer::Impl {
 
     void set_post(const Shader& s, const PostProcess& p) {
         const Locs& l = s.loc;
-        fglUniform4f(s.sh, l.post, p.exposure, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
+        fglUniform4f(s.sh, l.post, pf.exposure_ev, p.contrast, p.saturation, fclamp(p.vignette, 0.0f, 1.0f));
         fglUniform4f(s.sh, l.tint, p.tint.x, p.tint.y, p.tint.z, (float)(int)p.tonemap);
-        fglUniform4f(s.sh, l.res, (float)width, (float)height, 0, banding ? (float)band_y0 : 0.0f);
+        fglUniform4f(s.sh, l.res, (float)rw, (float)rh, 0, banding ? (float)band_y0 : 0.0f);
+        if (l.lift >= 0) {
+            fglUniform4f(s.sh, l.lift, pf.lift[0], pf.lift[1], pf.lift[2], 0);
+            fglUniform4f(s.sh, l.gamma, pf.inv_gamma[0], pf.inv_gamma[1], pf.inv_gamma[2], 0);
+            fglUniform4f(s.sh, l.gain, pf.gain[0], pf.gain[1], pf.gain[2], 0);
+        }
+        if (l.grain >= 0) fglUniform4f(s.sh, l.grain, pf.grain[0], pf.grain[1], pf.grain[2], 0);
     }
 
     void set_lit_frame(const Shader& s, const RenderScene& scene, const LightSet& ls) {
@@ -691,6 +796,11 @@ struct Renderer::Impl {
         const SkyLight& sl = scene.sky_light;
         fglUniform4f(s.sh, l.sky, sl.sky_color.x * sl.intensity, sl.sky_color.y * sl.intensity, sl.sky_color.z * sl.intensity, 0);
         fglUniform4f(s.sh, l.gnd, sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
+        if (gi_frame.on && l.gi >= 0) {
+            fglUniform4f(s.sh, l.gi0, gi_frame.u0[0], gi_frame.u0[1], gi_frame.u0[2], gi_frame.u0[3]);
+            fglUniform4f(s.sh, l.gi1, gi_frame.u1[0], gi_frame.u1[1], gi_frame.u1[2], gi_frame.u1[3]);
+            fglUniformTexture(gl, s.sh, l.gi, gi_tex, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        }
         uint32_t total = (uint32_t)(ls.nd + ls.np + ls.ns);
         if (total) {
             fglUniformArray(s.sh, l.l0, 0, ls.l0, total);
@@ -795,17 +905,41 @@ struct Renderer::Impl {
         if (w > 0) fglViewport(I->gl, x, y, w, h);
     }
 
-    GraphicsFeatures feature_set() const {
-        GraphicsFeatures f;
-        f.gpu = hw;
-        f.gpu_tier = hw || settings.allow_gpu_effects_on_cpu;
-        f.shadows = f.gpu_tier && settings.shadows;
-        f.ambient_occlusion = f.gpu_tier && settings.ambient_occlusion;
-        f.bloom = f.gpu_tier && settings.bloom;
-        f.antialiasing = f.gpu_tier && settings.antialiasing;
-        f.pbr = f.gpu_tier && settings.pbr;
-        f.local_shadows = f.gpu_tier && settings.local_shadows;
-        return f;
+    // The one place where caps + settings become what runs (feature_level.h).
+    GraphicsFeatures feature_set() const { return make_features(caps, settings); }
+
+    bool update_gi(const RenderScene& scene, float dt) {
+        double t0 = now_ms();
+        GiInput in;
+        in.items = scene.items;
+        in.item_count = scene.item_count;
+        in.lights = scene.lights;
+        in.light_count = scene.light_count;
+        const SkyLight& sl = scene.sky_light;
+        in.sky_color = sl.sky_color * sl.intensity;
+        in.ground_color = sl.ground_color * sl.intensity;
+        in.camera = scene.camera.position;
+        in.dt = dt;
+        GiParams gp;
+        gp.density = settings.gi_density;
+        gp.update = settings.gi_update;
+        gp.bounce = scene.sky_light.gi_bounce;
+        gp.intensity = scene.sky_light.gi_intensity;
+        gi.update(in, gp, !gi_started);
+        gi_started = true;
+        if (!gi_pixels) gi_pixels = (uint32_t*)malloc((size_t)GiSystem::kTexW * GiSystem::kTexH * 4);
+        if (!gi_pixels) { set_error("out of memory"); return false; }
+        if (!gi_tex || gi_uploaded != gi.version()) {
+            gi.encode(gi_pixels);
+            if (!gi_tex) gi_tex = fglCreateTexture(gl, GiSystem::kTexW, GiSystem::kTexH, gi_pixels);
+            else if (fglTextureData(gl, gi_tex, gi_pixels, GiSystem::kTexW * 4) != 0) { set_error("FarcadeGL: cannot upload the GI probes"); return false; }
+            if (!gi_tex) { set_error("FarcadeGL: cannot create the GI texture"); return false; }
+            gi_uploaded = gi.version();
+        }
+        gi.uniforms(gi_frame.u0, gi_frame.u1);
+        gi_frame.on = true;
+        stats.gi_ms = now_ms() - t0;
+        return true;
     }
 
     // rows == 0: the whole image into `pixels` (as RGBA); else rows
@@ -818,9 +952,59 @@ struct Renderer::Impl {
         error[0] = 0;
         banding = rows > 0;
         band_y0 = y0;
-        if (!ensure_surface(width, banding ? rows : height)) return false;
+
+        // Internal resolution (post_stack.h): the passes draw at iw x ih and the image is upscaled
+        // when read back. Bands are always drawn at full size (the editor has its own adaptive resolution).
+        float scale = 1.0f;
+        if (!banding) {
+            scale = fclamp(settings.render_scale, 0.25f, 1.0f);
+            if (settings.dynamic_resolution) {
+                float lo = fclamp(settings.min_render_scale, 0.25f, scale);
+                if (dyn.scale > scale || dyn.scale < lo) dyn.scale = fclamp(dyn.scale, lo, scale);
+                scale = dyn.scale;
+            } else {
+                dyn.scale = scale;
+            }
+        }
+        int iw = DynamicResolution::internal_size(width, scale);
+        int ih = DynamicResolution::internal_size(height, scale);
+        // TAA drives the upscale: the passes before its resolve draw at the internal size and the resolve writes the
+        // full size image (so there is no CPU upscale). Only when the GPU tier will really run.
+        bool taa_up = false;
+        if (!banding && (iw != width || ih != height) && settings.antialiasing && settings.aa_mode == AAMode::TAA && !scene.draft) {
+            GpuPlan tp = GpuTier::plan(scene, feature_set());
+            bool assets = false;
+            for (int i = 0; i < scene.item_count; i++)
+                assets |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
+                          (scene.items[i].shader_path && scene.items[i].shader_path[0]);
+            taa_up = tp.any() && tp.aa && !assets;
+        }
+        rw = banding || taa_up ? width : iw;
+        rh = banding || taa_up ? height : ih;
+        stats.render_scale = (float)iw / (float)width;
+        stats.taa_upscale = taa_up;
+        stats.internal_width = taa_up ? iw : rw;
+        stats.internal_height = banding ? rows : (taa_up ? ih : rh);
+        if (!ensure_surface(rw, banding ? rows : rh)) return false;
         gl->error = 0;
         frame++;
+
+        // This frame's post chain values: the exposure is the manual one plus the automatic one (measured
+        // from the previous frame). Bands of one image share the values of the image.
+        float dt = scene.delta_time;
+        if (dt < 0) dt = last_render_end_ms > 0 ? fclamp((float)((t0 - last_render_end_ms) * 0.001), 0.0f, 0.25f) : 1.0f / 60.0f;
+        if (!banding) post_frames++;
+        pf = PostFrame::make(scene.post, scene.post.auto_exposure ? ae.ev : 0.0f, post_frames, scene.draft, false);
+        stats.exposure_ev = pf.exposure_ev;
+
+        // Probe GI: update on the CPU, upload when the probes changed (not for bands, not for draft frames)
+        gi_frame.on = false;
+        if (settings.gi_mode == GiMode::Probes && !scene.draft && !banding) {
+            if (!update_gi(scene, dt)) return false;
+        } else if (settings.gi_mode == GiMode::Probes && !scene.draft && gi_tex && gi_started) {
+            gi_frame.on = true;                     // bands of one image use the probes of that image
+            gi.uniforms(gi_frame.u0, gi_frame.u1);
+        }
 
         // The GPU tier replaces the main pass below (passes.cpp); the readback is shared.
         GpuPlan plan = GpuTier::plan(scene, feature_set());
@@ -850,7 +1034,12 @@ struct Renderer::Impl {
             host.user = this;
             host.draw_mesh = &Impl::tier_draw_mesh;
             host.set_viewport = &Impl::tier_set_viewport;
-            failed = !tier.render(gl, scene, pl, settings, plan, host, error, (int)sizeof error);
+            if (taa_up) { host.iw = iw; host.ih = ih; }
+            host.gi_on = gi_frame.on;
+            host.gi_texture = gi_tex;
+            memcpy(host.gi0, gi_frame.u0, sizeof host.gi0);
+            memcpy(host.gi1, gi_frame.u1, sizeof host.gi1);
+            failed = !tier.render(gl, scene, pl, settings, plan, host, pf, error, (int)sizeof error);
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
             tier_done = true;
         }
@@ -859,7 +1048,7 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count; i++) if (!scene.items[i].unlit) { any_lit = true; break; }
         Shader* lit = nullptr;
         if (any_lit) {
-            lit = lit_variant(ls.nd, ls.np, ls.ns, scene.draft);
+            lit = lit_variant(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on);
             if (!lit) return false;
             set_lit_frame(*lit, scene, ls);
         }
@@ -867,7 +1056,7 @@ struct Renderer::Impl {
         Shader& sky_s = sky[scene.draft ? 1 : 0];
         bool any_unlit = false;
         for (int i = 0; i < scene.item_count; i++) if (scene.items[i].unlit) { any_unlit = true; break; }
-        if ((any_unlit && !use_shader(&unlit_s, false, scene.draft)) || !use_shader(&sky_s, true, scene.draft)) return false;
+        if ((any_unlit && !use_shader(&unlit_s, false, pf.key)) || !use_shader(&sky_s, true, pf.key)) return false;
         if (any_unlit) set_post(unlit_s, scene.post);
         set_sky_frame(sky_s, scene, ls);
 
@@ -899,7 +1088,19 @@ struct Renderer::Impl {
         free_temps();
         if (failed) return false;
         double tr = now_ms();
-        int rr = fglReadPixels(gl, banding ? dst : pixels, (uint32_t)width * 4);
+        bool scaled = !banding && (rw != width || rh != height);
+        uint32_t* target = banding ? dst : pixels;
+        if (scaled) {
+            size_t need = (size_t)rw * (size_t)rh;
+            if (ipixels_cap < need) {
+                free(ipixels);
+                ipixels = (uint32_t*)malloc(need * 4);
+                ipixels_cap = ipixels ? need : 0;
+                if (!ipixels) { set_error("out of memory"); return false; }
+            }
+            target = ipixels;
+        }
+        int rr = fglReadPixels(gl, target, (uint32_t)rw * 4);
         stats.read_ms = now_ms() - tr;
         if (rr != 0) {
             set_error("FarcadeGL: readback failed", gl->error);
@@ -907,17 +1108,26 @@ struct Renderer::Impl {
         }
         double ts = now_ms();
         if (banding) {
+            draw_particles(scene, dst, band_y0, rows, false);   // particles hook (bands)
             stats.ms = now_ms() - t0;
             return true;
         }
-        // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque.
-        uint32_t n = (uint32_t)width * (uint32_t)height;
-        for (uint32_t i = 0; i < n; i++) {
-            uint32_t p = pixels[i];
-            pixels[i] = 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
+        // Auto exposure: meter the frame just drawn (XRGB), for the next one.
+        if (scene.post.auto_exposure) {
+            float l2 = AutoExposure::meter(target, rw, rh, false, scene.post.tonemap, pf.exposure_ev);
+            float tgt = AutoExposure::target_for(l2, scene.post.auto_exposure_min, scene.post.auto_exposure_max);
+            ae.step(tgt, scene.post.exposure_speed, dt);
+            stats.meter_log2 = l2;
+        } else {
+            ae.reset();
         }
+        // XRGB (blue in the low byte) to RGBA (red in the low byte), opaque; upscaled from the internal size.
+        upscale_xrgb_to_rgba(target, rw, rh, pixels, width, height);
         stats.swizzle_ms = now_ms() - ts;
+        draw_particles(scene, pixels, 0, height, true);         // particles hook
         stats.ms = now_ms() - t0;
+        last_render_end_ms = now_ms();
+        if (settings.dynamic_resolution) dyn.update((float)stats.ms, settings.target_frame_ms, settings.min_render_scale, settings.render_scale);
         return true;
     }
 
@@ -929,17 +1139,26 @@ struct Renderer::Impl {
             for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             for (CustomShaderEntry& e : custom_shaders) { drop(&e.shader); e.path[0] = 0; }
             for (TextureEntry& e : textures) {
-                if (e.texture) fglDestroyTexture(gl, e.texture);
+                if (e.texture && !e.missing) fglDestroyTexture(gl, e.texture);     // missing ones share white_texture
                 e = TextureEntry();
             }
             if (white_texture) fglDestroyTexture(gl, white_texture);
             white_texture = 0;
+            if (gi_tex) fglDestroyTexture(gl, gi_tex);
+            gi_tex = 0;
+            gi_started = false;
+            gi.reset();
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;
             tier.release(gl);
             fglDestroyContext(gl);
             gl = nullptr;
         }
+        free(gi_pixels);
+        gi_pixels = nullptr;
+        free(ipixels);
+        ipixels = nullptr;
+        ipixels_cap = 0;
     }
 };
 
@@ -964,6 +1183,7 @@ bool Renderer::init(int width, int height) {
         syscall_gpu_info_t info;
         if (fglGetDeviceInfo(&info) == 0) {
             m.hw = (info.caps & FGPU_CAP_HW_3D) != 0;
+            m.caps = DeviceCaps::from_abi(info.caps, info.backend);
             snprintf(m.backend, sizeof m.backend, "%s", info.backend);
         }
     }
@@ -983,6 +1203,7 @@ void Renderer::shutdown() {
     if (!impl_) return;
     impl_->destroy_gl_objects();
     free(impl_->scratch);
+    free(impl_->occluders);
     free(impl_->pixels);
     delete impl_;
     impl_ = nullptr;
@@ -1036,6 +1257,14 @@ int Renderer::width() const { return impl_ ? impl_->width : 0; }
 int Renderer::height() const { return impl_ ? impl_->height : 0; }
 const char* Renderer::error() const { return impl_ ? impl_->error : "the renderer is not initialised"; }
 
+const char* Renderer::take_warning() {
+    static char out[256];
+    if (!impl_ || !impl_->warning[0]) return nullptr;
+    snprintf(out, sizeof out, "%s", impl_->warning);
+    impl_->warning[0] = 0;
+    return out;
+}
+
 const RendererStats& Renderer::stats() const {
     static const RendererStats none;
     return impl_ ? impl_->stats : none;
@@ -1052,17 +1281,14 @@ const GraphicsSettings& Renderer::settings() const { return settings_; }
 
 GraphicsFeatures Renderer::features() const {
     if (impl_) return impl_->feature_set();
-    GraphicsFeatures f;                     // before init: no backend known, the base tier
-    f.gpu_tier = settings_.allow_gpu_effects_on_cpu;
-    f.shadows = f.gpu_tier && settings_.shadows;
-    f.ambient_occlusion = f.gpu_tier && settings_.ambient_occlusion;
-    f.bloom = f.gpu_tier && settings_.bloom;
-    f.antialiasing = f.gpu_tier && settings_.antialiasing;
-    f.pbr = f.gpu_tier && settings_.pbr;
-    return f;
+    return make_features(DeviceCaps(), settings_);      // before init: no backend known
 }
 
 const char* Renderer::backend() const { return impl_ ? impl_->backend : ""; }
+const DeviceCaps& Renderer::caps() const {
+    static const DeviceCaps none;
+    return impl_ ? impl_->caps : none;
+}
 
 const GpuTierStats& Renderer::gpu_tier_stats() const {
     static const GpuTierStats none;

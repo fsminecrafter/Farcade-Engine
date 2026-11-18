@@ -157,6 +157,17 @@ public:
     // Overall volume (the listener's volume).
     float master = 1.0f;
 
+    // A reverb and a low-pass on the whole mix (the Audio Reverb Zone module):
+    // four damped comb filters and two all-passes per side (a Freeverb-like
+    // tail) mixed in by `wet`, then a one-pole low-pass (`lowpass` 0 = open,
+    // 1 = very muffled). The values move towards the new ones over a few
+    // blocks, so a zone's edge does not click. wet 0 and lowpass 0 cost
+    // nothing; the buffers (about 60 KB) are made on first use. The tail
+    // rings out after the last voice ends.
+    struct ReverbParams { float wet = 0, room = 0.5f, damping = 0.5f, lowpass = 0; };
+    void set_reverb(const ReverbParams& p);
+    bool reverb_active() const;
+
     int rate() const { return rate_; }
     int voice_count() const { return nvoices_; }
     int active_count() const;
@@ -175,6 +186,10 @@ private:
     uint32_t serial_ = 0;
     uint32_t ended_ = 0;
     float* acc_ = nullptr;
+    struct Reverb;
+    Reverb* rv_ = nullptr;
+    ReverbParams rv_target_;
+    int tail_ = 0;
 
     Voice* find(VoiceId v) const;
     Voice* alloc();
@@ -236,6 +251,9 @@ public:
     void pause_stream(Entity e, bool paused = true);    // false resumes
     bool is_playing(Entity e) const;    // a stream playing (not paused) or any sampler voice
     void stop_all();
+
+    // Off: Audio Reverb Zones are ignored (saves the effect's mixing time).
+    bool reverb_enabled = true;
 
     AudioStats stats() const;
     Mixer& mixer() { return mixer_; }

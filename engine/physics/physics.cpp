@@ -1,5 +1,6 @@
 #include "physics/physics.h"
 #include "physics/convex.h"
+#include "fx/forcefield.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +77,7 @@ struct Item {
     float ii[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };    // inverse inertia tensor, world frame
     Vec3 ax[3];
     Vec3 pos0;                          // the origin before the step
+    Mat4 mat;                           // the pose (object to world) at the start of the step
 };
 
 }  // namespace
@@ -99,6 +101,18 @@ struct PhysicsWorld::Manifold {
     int count = 0;
     bool touching = false;
     ManifoldPt p[4];
+};
+
+struct PhysicsWorld::JointState {
+    Entity e = 0;
+    bool init = false;
+    Vec3 la;                            // anchor in A's object space
+    Vec3 lb;                            // ... in B's object space (the world position without B)
+    Vec3 axl, axb;                      // hinge axis in A's and B's frames
+    Vec3 pl, pb;                        // reference perpendicular in A's and B's frames (angle zero)
+    Vec3 rel[3];                        // B's axes in A's frame (Fixed)
+    Vec3 acc_lin, acc_ang;              // accumulated impulses, for warm starting
+    float acc_limit = 0, acc_limit2 = 0, acc_motor = 0, acc_spring = 0;   // upper limit (<= 0), lower limit (>= 0), motor, spring
 };
 
 namespace {
@@ -141,6 +155,66 @@ uint64_t pair_hash(Entity a, Entity b) {
     return h ^ (h >> 29);
 }
 
+
+// ---- joints
+
+constexpr float kJointBeta = 0.2f;      // share of a joint's error corrected per step
+constexpr float kJointMaxPush = 4.0f;   // m/s (rad/s) cap of that correction
+
+Vec3 rot_of(const Item& it, const Vec3& v) { return it.ax[0] * v.x + it.ax[1] * v.y + it.ax[2] * v.z; }
+Vec3 unrot_of(const Item& it, const Vec3& w) { return Vec3(dot(it.ax[0], w), dot(it.ax[1], w), dot(it.ax[2], w)); }
+
+void apply_ang(Item& A, Item& B, const Vec3& L) {
+    if (A.rotates) A.w -= mulm(A.ii, L);
+    if (B.rotates) B.w += mulm(B.ii, L);
+}
+
+float ang_mass(const Item& A, const Item& B, const Vec3& d) {
+    float k = dot(d, mulm(A.ii, d)) + dot(d, mulm(B.ii, d));
+    return k > 1e-12f ? 1.0f / k : 0.0f;
+}
+
+bool wants_entity(const World* w, Entity e) {
+    return w->has(e, ModuleKind::RigidBody3D) || w->has(e, ModuleKind::Collider3D) || w->has(e, ModuleKind::CharacterController3D) ||
+           w->has(e, ModuleKind::Joint3D) || w->has(e, ModuleKind::ForceField);
+}
+bool has_item(const World* w, Entity e) {
+    return w->has(e, ModuleKind::RigidBody3D) || w->has(e, ModuleKind::Collider3D) || w->has(e, ModuleKind::CharacterController3D);
+}
+
+// The pose of an entity as the gather step reads it.
+bool pose_of(const World* w, Entity e, Mat4* m) {
+    const Transform* t = w->transform(e);
+    if (!t) return false;
+    if (!w->parent(e)) { *m = Mat4::trs(t->position, t->rotation, t->scale); return true; }
+    const WorldTransform* wt = w->world_transform(e);
+    if (!wt) return false;
+    *m = wt->matrix;
+    return true;
+}
+
+float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// A joint in one step: its bodies, the anchors and the rows' masses.
+struct JointRow {
+    PhysicsWorld::JointState* js = nullptr;
+    Joint3D* m = nullptr;
+    Item* A = nullptr;
+    Item* B = nullptr;                  // the world: &dummy
+    Item dummy;
+    Vec3 pa, pb, rA, rB;
+    Vec3 axis;                          // Hinge: A's axis in the world
+    Vec3 t1, t2;                        // Hinge: perpendicular to it
+    Vec3 e_ang;                         // angular error (the rotation B needs to reach its place)
+    float mlin[3] = { 0, 0, 0 };
+    float mang[3] = { 0, 0, 0 };
+    float m_axis = 0;                   // about the hinge axis
+    float theta = 0;                    // hinge angle, radians
+    float spring_m = 0, gamma = 0, beta_s = 0, len = 0;
+    Vec3 n;                             // spring direction
+    bool lin = true, fixed = false, hinge = false, spring = false;
+};
+
 }  // namespace
 
 PhysicsWorld::PhysicsWorld() {}
@@ -160,6 +234,11 @@ void PhysicsWorld::shutdown() {
     world_ = nullptr;
     system_ = 0;
     free(bodies_);
+    for (int i = 0; i < joint_count_; i++) joints_[i].~JointState();
+    free(joints_);
+    joints_ = nullptr;
+    joint_count_ = joint_cap_ = 0;
+    time_ = 0;
     free(overlaps_);
     free(manifolds_);
     for (int i = 0; i < mesh_count_; i++) hull_free(meshes_[i].hull);
@@ -174,8 +253,7 @@ void PhysicsWorld::shutdown() {
 }
 
 void PhysicsWorld::add(Entity e) {
-    if (!world_ || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D) ||
-                     world_->has(e, ModuleKind::CharacterController3D))) return;
+    if (!world_ || !wants_entity(world_, e)) return;
     for (int i = 0; i < count_; i++)
         if (bodies_[i].e == e) return;
     if (count_ == cap_) {
@@ -186,6 +264,13 @@ void PhysicsWorld::add(Entity e) {
         cap_ = nc;
     }
     bodies_[count_++].e = e;
+}
+
+bool PhysicsWorld::break_joint(Entity e) {
+    if (!world_ || !world_->has(e, ModuleKind::Joint3D)) return false;
+    Joint3D* j = (Joint3D*)world_->get_mut(e, ModuleKind::Joint3D);
+    j->broken = true;
+    return true;
 }
 
 void PhysicsWorld::remove(Entity e) {
@@ -234,13 +319,23 @@ void PhysicsWorld::step(float dt) {
     // Drop dead entities and those that lost both modules.
     for (int i = 0; i < count_;) {
         Entity e = bodies_[i].e;
-        if (!world_->alive(e) || !(world_->has(e, ModuleKind::RigidBody3D) || world_->has(e, ModuleKind::Collider3D) ||
-                                   world_->has(e, ModuleKind::CharacterController3D))) bodies_[i] = bodies_[--count_];
+        if (!world_->alive(e) || !wants_entity(world_, e)) bodies_[i] = bodies_[--count_];
         else i++;
     }
     for (int i = 0; i < mesh_count_;) {
         if (!world_->alive(meshes_[i].e)) { hull_free(meshes_[i].hull); meshes_[i] = meshes_[--mesh_count_]; }
         else i++;
+    }
+    time_ += dt;
+    // Force fields that push bodies.
+    FieldVolume fields[32];
+    int nfields = 0;
+    for (int i = 0; i < count_ && nfields < 32; i++) {
+        Entity fe_ = bodies_[i].e;
+        if (!world_->has(fe_, ModuleKind::ForceField)) continue;
+        const ForceField* f = (const ForceField*)world_->get(fe_, ModuleKind::ForceField);
+        Mat4 fm;
+        if (f->affect_bodies && pose_of(world_, fe_, &fm) && field_volume(*f, fm, &fields[nfields])) nfields++;
     }
     int cap = count_ ? count_ : 1;
     Item* items = (Item*)malloc(sizeof(Item) * cap);
@@ -253,6 +348,7 @@ void PhysicsWorld::step(float dt) {
     // ---- gather: poses, shapes, mass properties, velocities with gravity and damping
     for (int i = 0; i < count_; i++) {
         Entity e = bodies_[i].e;
+        if (!has_item(world_, e)) continue;       // a joint or a field only
         Mat4 m;
         Entity parent = world_->parent(e);
         const Transform* t = world_->transform(e);
@@ -263,6 +359,7 @@ void PhysicsWorld::step(float dt) {
         Item* ip = new (&items[ns]) Item();
         Item& it = *ip;
         it.e = e;
+        it.mat = m;
         it.controller = world_->has(e, ModuleKind::CharacterController3D)
             ? (CharacterController3D*)world_->get_mut(e, ModuleKind::CharacterController3D) : nullptr;
         it.rb = !it.controller && world_->has(e, ModuleKind::RigidBody3D)
@@ -391,6 +488,10 @@ void PhysicsWorld::step(float dt) {
                 if (rb.use_gravity) it.v += gravity * (rb.gravity_scale * dt);
                 it.v = it.v * (1.0f / (1.0f + rb.linear_damping * dt));
                 it.w = it.w * (1.0f / (1.0f + rb.angular_damping * dt));
+                for (int f = 0; f < nfields; f++) {
+                    if (!(fields[f].f.layers & it.layer)) continue;
+                    it.v += field_force(fields[f], it.com, (float)time_) * (it.im * dt);
+                }
                 if (it.rotates) {
                     float im3[3] = { 1.0f / (inertia.x * rb.mass), 1.0f / (inertia.y * rb.mass), 1.0f / (inertia.z * rb.mass) };
                     for (int a = 0; a < 3; a++)
@@ -404,6 +505,98 @@ void PhysicsWorld::step(float dt) {
         }
         ns++;
     }
+
+    // ---- joints: the active ones, their bodies and anchors
+    JointRow* jr = nullptr;
+    int njr = 0;
+    uint64_t* jskip = nullptr;          // pairs that must not collide: (smaller, larger) entity
+    int njskip = 0, jskip_cap = 0;
+    for (int i = 0; i < joint_count_;) {
+        if (!world_->alive(joints_[i].e) || !world_->has(joints_[i].e, ModuleKind::Joint3D)) { joints_[i].~JointState(); if (i != joint_count_ - 1) memcpy((void*)&joints_[i], (void*)&joints_[joint_count_ - 1], sizeof(JointState)); joint_count_--; }
+        else i++;
+    }
+    for (int i = 0; i < count_; i++) {
+        Entity je = bodies_[i].e;
+        if (!world_->has(je, ModuleKind::Joint3D)) continue;
+        bool known = false;
+        for (int k = 0; k < joint_count_; k++) if (joints_[k].e == je) known = true;
+        if (known) continue;
+        if (joint_count_ == joint_cap_) {
+            int nc = joint_cap_ ? joint_cap_ * 2 : 16;
+            JointState* nj = (JointState*)malloc(sizeof(JointState) * nc);
+            if (!nj) break;
+            for (int k = 0; k < joint_count_; k++) { new (&nj[k]) JointState(joints_[k]); joints_[k].~JointState(); }
+            free(joints_);
+            joints_ = nj;
+            joint_cap_ = nc;
+        }
+        JointState* st = new (&joints_[joint_count_++]) JointState();
+        st->e = je;
+    }
+    if (joint_count_ > 0) {
+        jr = (JointRow*)malloc(sizeof(JointRow) * joint_count_);
+        for (int k = 0; k < joint_count_ && jr; k++) {
+            JointState& st = joints_[k];
+            Joint3D* jm = (Joint3D*)world_->get_mut(st.e, ModuleKind::Joint3D);
+            if (!jm) continue;
+            if (jm->broken) { jm->force = 0; continue; }
+            Item* A = nullptr;
+            for (int q = 0; q < ns; q++) if (items[q].e == st.e) A = &items[q];
+            if (!A || !A->rb) continue;
+            Item* B = nullptr;
+            if (jm->connected) {
+                Entity be = world_->link_entity(jm->connected);
+                if (!be) { jm->broken = true; continue; }        // the other body is gone
+                for (int q = 0; q < ns; q++) if (items[q].e == be) B = &items[q];
+                if (!B) continue;
+            }
+            bool a_moves = A->im > 0 || A->rotates, b_moves = B && (B->im > 0 || B->rotates);
+            if (!a_moves && !b_moves) continue;
+            JointRow* r = new (&jr[njr]) JointRow();
+            r->js = &st;
+            r->m = jm;
+            r->A = A;
+            if (B) r->B = B;
+            else {
+                r->B = &r->dummy;
+                r->dummy.ax[0] = Vec3(1, 0, 0); r->dummy.ax[1] = Vec3(0, 1, 0); r->dummy.ax[2] = Vec3(0, 0, 1);
+                r->dummy.mat = Mat4::identity();
+            }
+            Item& Bi = *r->B;
+            if (!st.init) {
+                Vec3 wa = transform_point(A->mat, jm->anchor);
+                // A spring hangs from the anchor (on the other body or in the world) to this object's origin.
+                st.la = jm->type == JointType::Spring ? Vec3(0, 0, 0) : jm->anchor;
+                Mat4 inv;
+                st.lb = B && invert(B->mat, &inv) ? transform_point(inv, wa) : wa;
+                Vec3 axl = normalize(jm->axis);
+                if (length(axl) == 0) axl = Vec3(0, 1, 0);
+                st.axl = axl;
+                Vec3 a0 = rot_of(*A, axl);
+                st.axb = unrot_of(Bi, a0);
+                Vec3 h = fabsf_(axl.y) < 0.9f ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+                st.pl = normalize(cross(axl, h));
+                st.pb = unrot_of(Bi, rot_of(*A, st.pl));
+                for (int c = 0; c < 3; c++) st.rel[c] = unrot_of(*A, Bi.ax[c]);
+                st.init = true;
+            }
+            r->pa = transform_point(A->mat, st.la);
+            r->pb = B ? transform_point(B->mat, st.lb) : st.lb;
+            if (!B) r->dummy.com = r->pb;
+            r->rA = r->pa - A->com;
+            r->rB = r->pb - Bi.com;
+            r->fixed = jm->type == JointType::Fixed;
+            r->hinge = jm->type == JointType::Hinge;
+            r->spring = jm->type == JointType::Spring;
+            r->lin = !r->spring;
+            njr++;
+            if (!jm->collide_connected && B) {
+                Entity lo = A->e < B->e ? A->e : B->e, hi = A->e < B->e ? B->e : A->e;
+                pair_add(&jskip, &njskip, &jskip_cap, lo, hi);
+            }
+        }
+    }
+    stats_.joints = njr;
 
     // ---- broadphase: sweep and prune on x
     for (int i = 0; i < ns; i++) { order[i] = i; keys[i] = items[i].shape ? items[i].cv.lo.x : 1e30f; }
@@ -449,6 +642,7 @@ void PhysicsWorld::step(float dt) {
             if (!b.shape) continue;
             if (b.cv.lo.x > a.cv.hi.x + kMargin) break;
             if (!(a.layer & b.layer)) continue;
+            if (njskip && pair_has(jskip, njskip, a.e < b.e ? a.e : b.e, a.e < b.e ? b.e : a.e)) continue;
             bool trig = a.trigger || b.trigger;
             if (!trig && a.im == 0 && b.im == 0 && !a.dynamic && !b.dynamic) {
                 // Nothing here can be pushed (static / kinematic / no body).
@@ -544,8 +738,150 @@ void PhysicsWorld::step(float dt) {
         }
     }
 
+    // ---- joint setup: masses, anchors, warm start
+    for (int k = 0; k < njr; k++) {
+        JointRow& r = jr[k];
+        JointState& st = *r.js;
+        Item& A = *r.A;
+        Item& B = *r.B;
+        const Joint3D& jm = *r.m;
+        static const Vec3 W[3] = { Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1) };
+        if (r.lin) {
+            for (int c = 0; c < 3; c++) r.mlin[c] = eff_mass(A, B, r.rA, r.rB, W[c]);
+            apply(A, B, r.rA, r.rB, st.acc_lin);
+        }
+        if (r.fixed) {
+            // B should keep its orientation relative to A: the rotation it needs.
+            Vec3 des[3], cur[3] = { B.ax[0], B.ax[1], B.ax[2] };
+            for (int c = 0; c < 3; c++) des[c] = rot_of(A, st.rel[c]);
+            float E[3][3] = {};
+            for (int c = 0; c < 3; c++) {
+                const float dv[3] = { des[c].x, des[c].y, des[c].z }, cv[3] = { cur[c].x, cur[c].y, cur[c].z };
+                for (int i2 = 0; i2 < 3; i2++) for (int j2 = 0; j2 < 3; j2++) E[i2][j2] += dv[i2] * cv[j2];
+            }
+            r.e_ang = Vec3(0.5f * (E[2][1] - E[1][2]), 0.5f * (E[0][2] - E[2][0]), 0.5f * (E[1][0] - E[0][1]));
+            for (int c = 0; c < 3; c++) r.mang[c] = ang_mass(A, B, W[c]);
+            apply_ang(A, B, st.acc_ang);
+        } else if (r.hinge) {
+            // The rows turn about -axis, so that positive angle, speed and limits mean
+            // this body turning positively about its axis relative to the connected one.
+            Vec3 a_user = normalize(rot_of(A, st.axl));
+            r.axis = a_user * -1.0f;
+            Vec3 b = rot_of(B, st.axb);
+            r.e_ang = cross(b, a_user);
+            Vec3 h = fabsf_(r.axis.y) < 0.9f ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+            r.t1 = normalize(cross(r.axis, h));
+            r.t2 = cross(r.axis, r.t1);
+            r.mang[0] = ang_mass(A, B, r.t1);
+            r.mang[1] = ang_mass(A, B, r.t2);
+            r.m_axis = ang_mass(A, B, r.axis);
+            Vec3 u = rot_of(A, st.pl), v = rot_of(B, st.pb);
+            r.theta = fatan2(dot(r.axis, cross(u, v)), dot(u, v));
+            apply_ang(A, B, r.t1 * st.acc_ang.x + r.t2 * st.acc_ang.y + r.axis * (st.acc_limit + st.acc_limit2 + st.acc_motor));
+        } else if (r.spring) {
+            Vec3 d = r.pb - r.pa;
+            r.len = length(d);
+            r.n = r.len > 1e-5f ? d * (1.0f / r.len) : Vec3(0, 0, 0);
+            float k_ = jm.stiffness, c_ = jm.damping;
+            float den = dt * (c_ + dt * k_);
+            if (r.len > 1e-5f && den > 1e-9f) {
+                r.gamma = 1.0f / den;
+                r.beta_s = dt * k_ * r.gamma;
+                float m = eff_mass(A, B, r.rA, r.rB, r.n);
+                r.spring_m = m > 0 ? 1.0f / (1.0f / m + r.gamma) : 0.0f;
+                apply(A, B, r.rA, r.rB, r.n * st.acc_spring);
+            } else {
+                r.spring_m = 0;
+            }
+        }
+    }
+
     // ---- velocity iterations
     for (int it = 0; it < velocity_iterations; it++) {
+        // Joints first, then the contacts.
+        for (int k = 0; k < njr; k++) {
+            JointRow& r = jr[k];
+            JointState& st = *r.js;
+            Item& A = *r.A;
+            Item& B = *r.B;
+            const Joint3D& jm = *r.m;
+            static const Vec3 W[3] = { Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1) };
+            if (r.hinge) {
+                if (jm.use_motor && r.m_axis > 0) {
+                    float cdot = dot(r.axis, B.w - A.w);
+                    float lam = (radians(jm.motor_speed) - cdot) * r.m_axis;
+                    float maxi = jm.motor_torque * dt;
+                    float nl = clampf(st.acc_motor + lam, -maxi, maxi);
+                    lam = nl - st.acc_motor;
+                    st.acc_motor = nl;
+                    apply_ang(A, B, r.axis * lam);
+                } else {
+                    st.acc_motor = 0;
+                }
+                if (jm.use_limits && r.m_axis > 0) {
+                    float lo = jm.limit_min < jm.limit_max ? jm.limit_min : jm.limit_max, hi = jm.limit_min < jm.limit_max ? jm.limit_max : jm.limit_min;
+                    float tlo = radians(lo), thi = radians(hi);
+                    float cdot = dot(r.axis, B.w - A.w);
+                    // upper limit: Cdot may not exceed (thi - theta) / dt; lower: not fall below (tlo - theta) / dt
+                    float up = (thi - r.theta) / dt, down = (tlo - r.theta) / dt;
+                    if (r.theta > thi) up = -clampf((r.theta - thi) * kJointBeta / dt, 0, kJointMaxPush);
+                    if (r.theta < tlo) down = clampf((tlo - r.theta) * kJointBeta / dt, 0, kJointMaxPush);
+                    float lam_u = (up - cdot) * r.m_axis;
+                    float nu = st.acc_limit + lam_u;
+                    if (nu > 0) nu = 0;
+                    float du = nu - st.acc_limit;
+                    st.acc_limit = nu;
+                    apply_ang(A, B, r.axis * du);
+                    cdot = dot(r.axis, B.w - A.w);
+                    float lam_d = (down - cdot) * r.m_axis;
+                    float nd = st.acc_limit2 + lam_d;
+                    if (nd < 0) nd = 0;
+                    float dd = nd - st.acc_limit2;
+                    st.acc_limit2 = nd;
+                    apply_ang(A, B, r.axis * dd);
+                } else {
+                    st.acc_limit = st.acc_limit2 = 0;
+                }
+                const Vec3 ts[2] = { r.t1, r.t2 };
+                float* acc[2] = { &st.acc_ang.x, &st.acc_ang.y };
+                for (int c = 0; c < 2; c++) {
+                    float cdot = dot(ts[c], B.w - A.w);
+                    float bias = clampf(kJointBeta * dot(r.e_ang, ts[c]) / dt, -kJointMaxPush, kJointMaxPush);
+                    float lam = (bias - cdot) * r.mang[c];
+                    *acc[c] += lam;
+                    apply_ang(A, B, ts[c] * lam);
+                }
+            } else if (r.fixed) {
+                float* acc[3] = { &st.acc_ang.x, &st.acc_ang.y, &st.acc_ang.z };
+                const float ev[3] = { r.e_ang.x, r.e_ang.y, r.e_ang.z };
+                for (int c = 0; c < 3; c++) {
+                    float cdot = dot(W[c], B.w - A.w);
+                    float bias = clampf(kJointBeta * ev[c] / dt, -kJointMaxPush, kJointMaxPush);
+                    float lam = (bias - cdot) * r.mang[c];
+                    *acc[c] += lam;
+                    apply_ang(A, B, W[c] * lam);
+                }
+            }
+            if (r.lin) {
+                float* acc[3] = { &st.acc_lin.x, &st.acc_lin.y, &st.acc_lin.z };
+                const Vec3 err = r.pb - r.pa;
+                const float ev[3] = { err.x, err.y, err.z };
+                for (int c = 0; c < 3; c++) {
+                    float cdot = dot(rel_vel(A, B, r.rA, r.rB), W[c]);
+                    float bias = clampf(kJointBeta * ev[c] / dt, -kJointMaxPush, kJointMaxPush);
+                    // pb - pa = ev: B's anchor is ahead by ev; a negative relative velocity fixes it.
+                    float lam = -(cdot + bias) * r.mlin[c];
+                    *acc[c] += lam;
+                    apply(A, B, r.rA, r.rB, W[c] * lam);
+                }
+            } else if (r.spring && r.spring_m > 0) {
+                float cdot = dot(rel_vel(A, B, r.rA, r.rB), r.n);
+                float C = r.len - jm.rest_length;
+                float lam = -r.spring_m * (cdot + r.beta_s * C + r.gamma * st.acc_spring);
+                st.acc_spring += lam;
+                apply(A, B, r.rA, r.rB, r.n * lam);
+            }
+        }
         for (int q = 0; q < cur_count; q++) {
             Manifold& mf = cur[(it & 1) ? cur_count - 1 - q : q];
             Item& A = items[mf.ia];
@@ -596,6 +932,23 @@ void PhysicsWorld::step(float dt) {
             }
         }
     }
+
+    // ---- joints: forces, angles, breaking
+    for (int k = 0; k < njr; k++) {
+        JointRow& r = jr[k];
+        JointState& st = *r.js;
+        Joint3D& jm = *r.m;
+        float f = r.spring ? absf(st.acc_spring) / dt : length(st.acc_lin) / dt;
+        jm.force = f;
+        if (r.hinge) jm.angle = degrees(r.theta);
+        if (jm.break_force > 0 && f > jm.break_force) {
+            jm.broken = true;
+            st.acc_lin = st.acc_ang = Vec3(0, 0, 0);
+            st.acc_limit = st.acc_limit2 = st.acc_motor = st.acc_spring = 0;
+        }
+    }
+    free(jr);
+    free(jskip);
 
     // ---- integrate and write back
     for (int i = 0; i < ns; i++) {

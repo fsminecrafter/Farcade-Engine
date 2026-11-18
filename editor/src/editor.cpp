@@ -1,4 +1,7 @@
 #include "editor.h"
+#include "icon_font.h"
+#include "fx_bridge.h"
+#include "fx/fx.h"
 #include "icons.h"
 #include "swraster.h"
 #include "platform/platform.h"
@@ -7,6 +10,9 @@
 #include "script/runtime.h"
 #include "audio/audio.h"
 #include "scene_io.h"
+#include "model_cache.h"
+#include "model_import.h"
+#include "core/vfs.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -103,63 +109,77 @@ ImU32 rgbu(uint32_t hex, float a = 1.0f) { return ImGui::ColorConvertFloat4ToU32
 void Editor::apply_theme() {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();
-    st.WindowPadding = ImVec2(8, 8);
-    st.FramePadding = ImVec2(7, 4);
+    st.WindowPadding = ImVec2(10, 10);
+    st.FramePadding = ImVec2(8, 4);
     st.ItemSpacing = ImVec2(6, 5);
-    st.ItemInnerSpacing = ImVec2(5, 4);
-    st.CellPadding = ImVec2(6, 3);
+    st.ItemInnerSpacing = ImVec2(6, 4);
+    st.CellPadding = ImVec2(6, 4);
     st.IndentSpacing = 14;
-    st.ScrollbarSize = 8;
-    st.GrabMinSize = 8;
+    st.ScrollbarSize = 9;
+    st.GrabMinSize = 9;
+    // Docked panels: no outlines (they are cards on the darker background,
+    // separated by gaps). Floating windows and dialogs add their own border
+    // and shadow (begin_floating / begin_modal in widgets.cpp).
     st.WindowBorderSize = 0;
     st.ChildBorderSize = 0;
     st.PopupBorderSize = 1;
     st.FrameBorderSize = 0;
     st.TabBorderSize = 0;
-    st.TabBarBorderSize = 1;
+    st.TabBarBorderSize = 0;
     st.TabBarOverlineSize = 2;
-    st.WindowRounding = 6;
+    st.WindowRounding = 8;
     st.ChildRounding = 6;
-    st.FrameRounding = 4;
-    st.PopupRounding = 6;
-    st.ScrollbarRounding = 4;
-    st.GrabRounding = 3;
-    st.TabRounding = 4;
+    st.FrameRounding = 5;
+    st.PopupRounding = 8;
+    st.ScrollbarRounding = 6;
+    st.GrabRounding = 4;
+    st.TabRounding = 5;
     st.WindowTitleAlign = ImVec2(0.0f, 0.5f);
     st.WindowMenuButtonPosition = ImGuiDir_None;
     st.SeparatorTextBorderSize = 1;
-    st.DockingSeparatorSize = 2;
+    st.DockingSeparatorSize = 3;
     st.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+    st.DisabledAlpha = 0.45f;
     st.AntiAliasedLines = true;
     st.AntiAliasedFill = true;
 
     Palette& p = pal;
+    // One accent, the logo's blue.
     uint32_t accent = 0x4C8DFF;
     p.accent = rgbu(accent);
-    p.axis[0] = rgbu(0xE5534B);
-    p.axis[1] = rgbu(0x6CC24A);
+    p.axis[0] = rgbu(0xEF5B57);
+    p.axis[1] = rgbu(0x72C64F);
     p.axis[2] = rgbu(0x4C8DFF);
     uint32_t bg0, bg1, bg2, bg3, bg4, head, border, text, dim, faint;
     if (settings.dark_theme) {
-        bg0 = 0x101215; bg1 = 0x191B20; bg2 = 0x22252B; bg3 = 0x2A2E35; bg4 = 0x343941;
-        head = 0x1F2227; border = 0x2A2E35; text = 0xDCDFE4; dim = 0x8D949E; faint = 0x5E656F;
-        p.accent_soft = rgbu(accent, 0.22f);
-        p.accent_text = rgbu(0x6EA3FF);
+        // Neutral, slightly cool greys: background, panel, input, hover, pressed.
+        bg0 = 0x0D0F12; bg1 = 0x16181D; bg2 = 0x1E2127; bg3 = 0x262A31; bg4 = 0x30353D;
+        head = 0x1B1E23; border = 0x2A2E35; text = 0xE4E7EB; dim = 0x969DA7; faint = 0x626973;
+        p.accent_soft = rgbu(accent, 0.20f);
+        p.accent_text = rgbu(0x78AAFF);
         p.play = rgbu(0x3FBF7F);
         p.warning = rgbu(0xE8B04B);
         p.error = rgbu(0xEF6461);
-        p.overlay = rgbu(0x191B20, 0.90f);
-        p.shadow = rgbu(0x000000, 0.35f);
+        p.overlay = rgbu(0x1B1E23, 0.92f);
+        p.shadow = rgbu(0x000000, 0.42f);
+        p.float_bg = rgbu(0x1A1D22);
+        p.float_border = rgbu(0x353A43);
+        p.float_title = rgbu(0x1A1D22);
+        p.sidebar = rgbu(0x15171B);
     } else {
-        bg0 = 0xD9DCE1; bg1 = 0xF4F5F7; bg2 = 0xFFFFFF; bg3 = 0xE8EAEE; bg4 = 0xDADDE3;
-        head = 0xEBEDF0; border = 0xD3D7DD; text = 0x1C1F24; dim = 0x5D646E; faint = 0x9AA1AA;
-        p.accent_soft = rgbu(accent, 0.18f);
+        bg0 = 0xD5D9DF; bg1 = 0xF6F7F9; bg2 = 0xFFFFFF; bg3 = 0xEAECF0; bg4 = 0xDDE0E6;
+        head = 0xEEF0F3; border = 0xD6DAE0; text = 0x1A1D22; dim = 0x5A616B; faint = 0x98A0A9;
+        p.accent_soft = rgbu(accent, 0.16f);
         p.accent_text = rgbu(0x2F6FE4);
         p.play = rgbu(0x1E9E5E);
         p.warning = rgbu(0xC4860F);
         p.error = rgbu(0xD64541);
-        p.overlay = rgbu(0xFFFFFF, 0.92f);
-        p.shadow = rgbu(0x000000, 0.12f);
+        p.overlay = rgbu(0xFFFFFF, 0.94f);
+        p.shadow = rgbu(0x1A2030, 0.16f);
+        p.float_bg = rgbu(0xFFFFFF);
+        p.float_border = rgbu(0xC9CED6);
+        p.float_title = rgbu(0xFFFFFF);
+        p.sidebar = rgbu(0xF3F4F7);
     }
     p.app_bg = rgbu(bg0); p.panel = rgbu(bg1); p.frame = rgbu(bg2); p.hover = rgbu(bg3); p.active = rgbu(bg4);
     p.header = rgbu(head); p.border = rgbu(border); p.text = rgbu(text); p.text_dim = rgbu(dim); p.text_faint = rgbu(faint);
@@ -172,15 +192,18 @@ void Editor::apply_theme() {
     c[ImGuiCol_TextDisabled] = rgb(faint);
     c[ImGuiCol_WindowBg] = rgb(bg1);
     c[ImGuiCol_ChildBg] = rgb(0, 0);
-    c[ImGuiCol_PopupBg] = dark ? rgb(0x15171B) : rgb(0xF4F5F7);
-    c[ImGuiCol_Border] = rgb(border);
+    // Menus, combo lists and tooltips float too: lifted, with an outline.
+    c[ImGuiCol_PopupBg] = dark ? rgb(0x1A1D22) : rgb(0xFFFFFF);
+    c[ImGuiCol_Border] = dark ? rgb(0x353A43) : rgb(0xC9CED6);
     c[ImGuiCol_BorderShadow] = rgb(0, 0);
     c[ImGuiCol_FrameBg] = rgb(bg2);
     c[ImGuiCol_FrameBgHovered] = rgb(bg3);
     c[ImGuiCol_FrameBgActive] = rgb(bg4);
-    c[ImGuiCol_TitleBg] = rgb(bg0);
-    c[ImGuiCol_TitleBgActive] = rgb(bg0);
-    c[ImGuiCol_TitleBgCollapsed] = rgb(bg0);
+    // A docked panel's tab strip is part of its card: the panel color.
+    // (Floating windows set their own title colors, widgets.cpp.)
+    c[ImGuiCol_TitleBg] = rgb(bg1);
+    c[ImGuiCol_TitleBgActive] = rgb(bg1);
+    c[ImGuiCol_TitleBgCollapsed] = rgb(bg1);
     c[ImGuiCol_MenuBarBg] = rgb(bg0);
     c[ImGuiCol_ScrollbarBg] = rgb(0, 0);
     c[ImGuiCol_ScrollbarGrab] = rgb(bg3);
@@ -192,25 +215,27 @@ void Editor::apply_theme() {
     c[ImGuiCol_Button] = rgb(bg3);
     c[ImGuiCol_ButtonHovered] = rgb(bg4);
     c[ImGuiCol_ButtonActive] = dark ? rgb(0x3E444D) : rgb(0xCDD1D8);
-    c[ImGuiCol_Header] = rgb(accent, dark ? 0.22f : 0.18f);
+    c[ImGuiCol_Header] = rgb(accent, dark ? 0.20f : 0.16f);
     c[ImGuiCol_HeaderHovered] = dark ? rgb(0xFFFFFF, 0.05f) : rgb(0x000000, 0.045f);
     c[ImGuiCol_HeaderActive] = rgb(accent, 0.30f);
     c[ImGuiCol_Separator] = rgb(border);
+    // The gaps between docked panels are the background itself.
+    c[ImGuiCol_DockingEmptyBg] = rgb(bg0);
     c[ImGuiCol_SeparatorHovered] = acc;
     c[ImGuiCol_SeparatorActive] = acc;
     c[ImGuiCol_ResizeGrip] = rgb(0, 0);
     c[ImGuiCol_ResizeGripHovered] = rgb(accent, 0.5f);
     c[ImGuiCol_ResizeGripActive] = acc;
     c[ImGuiCol_InputTextCursor] = rgb(text);
-    c[ImGuiCol_Tab] = rgb(bg0, 0);
+    // Tabs: the selected one a step raised, the accent line on the focused panel only.
+    c[ImGuiCol_Tab] = rgb(bg1, 0);
     c[ImGuiCol_TabHovered] = rgb(bg3);
-    c[ImGuiCol_TabSelected] = rgb(bg1);
+    c[ImGuiCol_TabSelected] = rgb(bg2);
     c[ImGuiCol_TabSelectedOverline] = acc;
-    c[ImGuiCol_TabDimmed] = rgb(bg0, 0);
-    c[ImGuiCol_TabDimmedSelected] = rgb(bg1);
+    c[ImGuiCol_TabDimmed] = rgb(bg1, 0);
+    c[ImGuiCol_TabDimmedSelected] = rgb(bg2);
     c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0, 0);
     c[ImGuiCol_DockingPreview] = rgb(accent, 0.40f);
-    c[ImGuiCol_DockingEmptyBg] = rgb(bg0);
     c[ImGuiCol_PlotLines] = acc;
     c[ImGuiCol_PlotLinesHovered] = rgb(0x6EA3FF);
     c[ImGuiCol_PlotHistogram] = acc;
@@ -254,9 +279,14 @@ bool Editor::init(int width, int height) {
     cfg.FontDataOwnedByAtlas = false;
     cfg.OversampleH = 1;
     cfg.OversampleV = 1;
+    // Each UI font gets the vector icons merged in (FE_ICON_* characters).
     font_ui = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_regular, (int)fe_font_inter_regular_size, 14.0f * settings.ui_scale, &cfg);
+    if (font_ui) icon_font_merge(io.Fonts);
     font_medium = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_inter_medium, (int)fe_font_inter_medium_size, 14.0f * settings.ui_scale, &cfg);
+    if (font_medium) icon_font_merge(io.Fonts);
     font_mono = io.Fonts->AddFontFromMemoryTTF((void*)fe_font_roboto_mono, (int)fe_font_roboto_mono_size, 13.0f * settings.ui_scale, &cfg);
+    if (font_mono) icon_font_merge(io.Fonts);
+    icon_font_add_box(io.Fonts);        // draw_icon: one icon per box
     if (!font_ui) font_ui = io.Fonts->AddFontDefault();
     if (!font_medium) font_medium = font_ui;
     if (!font_mono) font_mono = font_ui;
@@ -274,6 +304,15 @@ bool Editor::init(int width, int height) {
 
     snprintf(project_dir, sizeof(project_dir), "%s", platform::default_project_root());
     snprintf(files_dir, sizeof(files_dir), "%s", project_dir);
+    load_project();
+    // Models and other project files are read through the VFS: plain files under the project.
+    {
+        vfs::Disk disk;
+        disk.read_file = platform::read_file;
+        disk.file_exists = platform::file_exists;
+        vfs::set_disk(disk);
+        vfs::set_root(project_dir);
+    }
     history_reset();
     log(LogLevel::Info, "Farcade Editor started (%dx%d)", platform::width(), platform::height());
     return true;
@@ -293,6 +332,8 @@ void Editor::shutdown() {
 }
 
 Editor::~Editor() {
+    delete fx_bridge_;
+    fx_bridge_ = nullptr;
     free_world();
     if (audio_device_) { audio_device_->shutdown(); delete audio_device_; }
     delete play_backup_;
@@ -528,28 +569,29 @@ ObjectId Editor::create_light(LightType type, const Vec3& at, ObjectId parent) {
 
 void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     Vec3 ground(at.x, 0.5f, at.z), flat(at.x, 0, at.z);
-    auto mesh = [&](const char* name, MeshKind k, const Vec3& p) {
-        if (!menu_item(name)) return;
+    auto mesh = [&](const char* name, MeshKind k, const Vec3& p, const char* icon) {
+        if (!menu_item(name, nullptr, false, true, icon)) return;
         if (parent) create_child(name, k, parent);
         else create_object(name, k, p);
     };
-    mesh("Cube", MeshKind::Cube, ground);
-    mesh("Sphere", MeshKind::Sphere, ground);
-    mesh("Cylinder", MeshKind::Cylinder, ground);
-    mesh("Plane", MeshKind::Plane, flat);
-    if (menu_item("Empty")) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    mesh("Cube", MeshKind::Cube, ground, FE_ICON_CUBE);
+    mesh("Sphere", MeshKind::Sphere, ground, FE_ICON_SPHERE);
+    mesh("Cylinder", MeshKind::Cylinder, ground, FE_ICON_CYLINDER);
+    mesh("Plane", MeshKind::Plane, flat, FE_ICON_PLANE);
+    if (menu_item("Empty", nullptr, false, true, FE_ICON_EMPTY)) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    if (menu_item("Import model...", nullptr, false, true, FE_ICON_IMPORT)) { want_import_model_ = true; import_path[0] = 0; }
     ImGui::Separator();
-    if (ImGui::BeginMenu("Light")) {
-        if (menu_item("Directional Light")) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
-        if (menu_item("Point Light")) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
-        if (menu_item("Spot Light")) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
+    if (ImGui::BeginMenu(FE_ICON_BULB "  Light###Light")) {
+        if (menu_item("Directional Light", nullptr, false, true, FE_ICON_LIGHT_DIRECTIONAL)) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
+        if (menu_item("Point Light", nullptr, false, true, FE_ICON_LIGHT_POINT)) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
+        if (menu_item("Spot Light", nullptr, false, true, FE_ICON_LIGHT_SPOT)) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
         ImGui::EndMenu();
     }
-    if (menu_item("Camera")) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
+    if (menu_item("Camera", nullptr, false, true, FE_ICON_CAMERA)) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
     ImGui::Separator();
-    if (menu_item("Sky")) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
-    if (menu_item("Sky Light")) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
-    if (menu_item("Post Processing")) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky Light", nullptr, false, true, FE_ICON_SUN)) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Post Processing", nullptr, false, true, FE_ICON_WAND)) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
 }
 
 void Editor::frame_selection() {
@@ -583,161 +625,45 @@ void Editor::play() {
     // Script inputs follow the files as they are now (the values set in the
     // editor stay).
     reload_all_scripts();
+    model_cache_clear();                // model files may have changed
     play_backup_ = new Scene();
     play_backup_->copy_from(scene);
     play_time = 0.0;
     build_world();
-    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", world_count_, script_count_, script_count_ == 1 ? "" : "s");
+    log(LogLevel::Info, "Play: %d entities, %d script%s running; the scene comes back on Stop", session_.entity_count(), session_.script_count(), session_.script_count() == 1 ? "" : "s");
 }
 
 void Editor::build_world() {
     free_world();
-    world_ = new World();
-    if (!world_->init()) {
-        log(LogLevel::Error, "Play: the ECS world could not start");
-        free_world();
-        return;
-    }
-    int n = scene.count();
-    world_objects_ = (ObjectId*)malloc(sizeof(ObjectId) * (n ? n : 1));
-    world_entities_ = (uint64_t*)malloc(sizeof(uint64_t) * (n ? n : 1));
-    world_count_ = 0;
-    // All at the root first (a child can come before its parent in the
-    // list), then the parents.
-    for (int i = 0; i < n; i++) {
-        Object& o = scene.at(i);
-        Entity e = world_->create(o.name);
-        if (!e) e = world_->create(nullptr);    // a name taken by a sibling, or reserved
-        if (!e) continue;
-        Transform* t = world_->transform(e);
-        t->position = o.position;
-        t->rotation = o.rotation;
-        t->scale = o.scale;
-        world_->load(e, o.modules);
-        if (o.kind == ObjectKind::Mesh) {
-            Renderable* r = world_->add_renderable(e);
-            r->mesh = (uint8_t)o.mesh;
-            memcpy(r->model_path, o.model_path, sizeof(r->model_path));
-            memcpy(r->texture_path, o.texture_path, sizeof(r->texture_path));
-            memcpy(r->shader_path, o.shader_path, sizeof(r->shader_path));
-            r->color = o.color;
-            r->visible = o.visible;
-            r->roughness = o.roughness;
-            r->metallic = o.metallic;
-            r->unlit = o.unlit;
-            r->cast_shadows = o.cast_shadows;
-        }
-        world_objects_[world_count_] = o.id;
-        world_entities_[world_count_] = e;
-        world_count_++;
-    }
-    for (int i = 0; i < world_count_; i++) {
-        Object* o = scene.get(world_objects_[i]);
-        if (o && o->parent) {
-            Entity pe = entity_of(o->parent);
-            if (pe && !world_->set_parent(world_entities_[i], pe)) {
-                // A sibling has the same name: flecs names are unique per parent.
-                world_->set_name(world_entities_[i], nullptr);
-                world_->set_parent(world_entities_[i], pe);
-            }
-        }
-    }
-    // The current flags as the scene has them.
-    for (int k = 0; k < kModuleKindCount; k++) {
-        ObjectId c = scene.current((ModuleKind)k);
-        if (Entity e = entity_of(c)) world_->set_current(e, (ModuleKind)k);
-    }
-    world_->update_transforms();
-    // Scripts (Lua): one instance per script on each object, in Inspector
-    // order; object inputs become the linked objects' entities.
-    scripts_ = new ScriptRuntime();
-    ScriptHost host;
-    host.user = this;
-    host.log = [](ScriptLogLevel level, const char* text, void* u) {
-        LogLevel l = level == ScriptLogLevel::Error ? LogLevel::Error : (level == ScriptLogLevel::Warning ? LogLevel::Warning : LogLevel::Info);
-        ((Editor*)u)->log(l, "%s", text);
-    };
-    script_count_ = 0;
-    if (scripts_->init(world_, host)) {
-        for (int i = 0; i < world_count_; i++) {
-            Object* o = scene.get(world_objects_[i]);
-            if (!o) continue;
-            for (int s = 0; s < o->script_count; s++) {
-                ScriptSlot& sl = o->scripts[s];
-                size_t size = 0;
-                char* text = read_script_text(sl.path, &size);
-                if (!text) { log(LogLevel::Error, "%s: cannot read %s", o->name, sl.path); continue; }
-                Entity links[kMaxProps] = {};
-                for (int k = 0; k < sl.prop_count; k++)
-                    if (sl.props[k].type == PropType::Object) links[k] = entity_of(sl.props[k].object);
-                if (scripts_->add_instance(world_entities_[i], sl.path, text, (uint32_t)size, sl.props, sl.prop_count, links)) script_count_++;
-                free(text);
-            }
-        }
-    } else {
-        log(LogLevel::Error, "Play: the Lua runtime could not start");
-    }
-    // Audio: Audio Streams with "play on start" begin now; samplers play
-    // when scripts call obj.audio_sampler:play(). The device stays open
-    // between plays.
+    // The device stays open between plays.
     if (!audio_device_) {
         audio_device_ = new AudioDevice();
         if (!audio_device_->init()) log(LogLevel::Warning, "Audio: no device (sound is mixed but not heard)");
     }
-    audio_ = new AudioSystem();
-    AudioHost ah;
-    ah.user = this;
-    ah.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
-    ah.log = [](const char* line, void* u) { ((Editor*)u)->log(LogLevel::Warning, "Audio: %s", line); };
-    if (audio_->init(world_, audio_device_, ah)) {
-        audio_->restart();
-        audio_->clear_cache();      // the files may have changed since the last Play
-        if (scripts_) {
-            ScriptRuntime* rt = scripts_;
-            rt->add_module_method(ModuleKind::AudioSampler, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_sampler(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "play", [](Entity e, void* u) { return (int)((AudioSystem*)u)->play_stream(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "stop", [](Entity e, void* u) { ((AudioSystem*)u)->stop_stream(e); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "pause", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, true); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "resume", [](Entity e, void* u) { ((AudioSystem*)u)->pause_stream(e, false); return 1; }, audio_);
-            rt->add_module_method(ModuleKind::AudioStream, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
-            rt->add_module_method(ModuleKind::AudioSampler, "is_playing", [](Entity e, void* u) { return (int)((AudioSystem*)u)->is_playing(e); }, audio_);
-        }
-    } else {
-        log(LogLevel::Error, "Play: the audio system could not start");
-    }
-    // Physics on the bodies and colliders (the built-in step, see physics.h).
-    physics_ = new PhysicsWorld();
-    PhysicsEvents pe;
-    pe.user = this;
-    pe.trigger_enter = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("entered", t, o); };
-    pe.trigger_exit = [](Entity t, Entity o, void* u) { ((Editor*)u)->physics_event("left", t, o); };
-    pe.collision = [](Entity a, Entity b, void* u) { ((Editor*)u)->physics_event("hit", a, b); };
-    physics_->init(world_, pe);
-    for (int i = 0; i < world_count_; i++) {
-        physics_->add(world_entities_[i]);
-        // A Mesh collider is the convex hull of its object's mesh.
-        Object* o = scene.get(world_objects_[i]);
-        if (o && o->kind == ObjectKind::Mesh && o->modules.has(ModuleKind::Collider3D) && o->modules.collider3d.shape == ColliderShape::Mesh) {
-            const MeshData& md = Scene::mesh_for(*o);
-            physics_->set_mesh(world_entities_[i], md.positions, (int)md.vertex_count);
-        }
-    }
+    PlayHost host;
+    host.user = this;
+    host.log = [](PlayLog level, const char* text, void* u) {
+        ((Editor*)u)->log(level == PlayLog::Error ? LogLevel::Error : (level == PlayLog::Warning ? LogLevel::Warning : LogLevel::Info), "%s", text);
+    };
+    host.read_file = [](const char* path, size_t* size, void* u) -> void* { return ((Editor*)u)->read_script_text(path, size); };
+    host.physics_event = [](const char* what, uint64_t a, uint64_t b, void* u) { ((Editor*)u)->physics_event(what, a, b); };
+    // fe.graphics changes the live settings during Play; Stop restores them.
+    play_gfx_backup_ = settings.graphics;
+    host.graphics = &settings.graphics;
+    host.graphics_changed = &gfx_script_changed_;
+    session_.start(scene, host, audio_device_);
+    session_.set_quality(fx_quality_of(settings.graphics));
 }
 
-ObjectId Editor::object_of(uint64_t e) const {
-    for (int i = 0; i < world_count_; i++)
-        if (world_entities_[i] == e) return world_objects_[i];
-    return kNoObject;
+FxBridge* Editor::fx() {
+    if (!fx_bridge_) fx_bridge_ = new FxBridge();
+    return fx_bridge_;
 }
+
+ObjectId Editor::object_of(uint64_t e) const { return session_.object_of(e); }
 
 void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
     physics_event_count++;
-    // Scripts get them as on_trigger_enter / on_trigger_exit / on_collision.
-    if (scripts_) {
-        if (what[0] == 'e') scripts_->trigger_enter(a, b);
-        else if (what[0] == 'l') scripts_->trigger_exit(a, b);
-        else scripts_->collision(a, b);
-    }
     if (on_physics_event) { on_physics_event(this, what, a, b); return; }
     Object* oa = scene.get(object_of(a));
     Object* ob = scene.get(object_of(b));
@@ -747,64 +673,20 @@ void Editor::physics_event(const char* what, uint64_t a, uint64_t b) {
     else log(LogLevel::Info, "Physics: %s %s trigger %s", ob->name, what, oa->name);
 }
 
-uint64_t Editor::entity_of(ObjectId id) const {
-    if (!id) return 0;
-    for (int i = 0; i < world_count_; i++)
-        if (world_objects_[i] == id) return world_entities_[i];
-    return 0;
-}
+uint64_t Editor::entity_of(ObjectId id) const { return session_.entity_of(id); }
 
 void Editor::step_world(float dt) {
-    if (!world_) return;
-    world_->progress(dt);
-    // Transforms and current flags back into the scene, for the viewport
-    // and the Inspector.
-    for (int i = 0; i < world_count_; i++) {
-        Object* o = scene.get(world_objects_[i]);
-        Entity e = world_entities_[i];
-        if (!o || !world_->alive(e)) continue;
-        if (const Transform* t = world_->transform(e)) {
-            o->position = t->position;
-            o->rotation = t->rotation;
-            o->scale = t->scale;
-        }
-        // The look: scripts change it through obj.material.
-        if (const Renderable* r = world_->renderable(e)) {
-            o->color = r->color;
-            o->visible = r->visible;
-            o->roughness = r->roughness;
-            o->metallic = r->metallic;
-            o->unlit = r->unlit;
-            o->cast_shadows = r->cast_shadows;
-            memcpy(o->texture_path, r->texture_path, sizeof(o->texture_path));
-            memcpy(o->shader_path, r->shader_path, sizeof(o->shader_path));
-        }
-        // Modules too: scripts and physics change them (a light's
-        // intensity, a body's velocity, which camera is current).
-        world_->store(e, &o->modules);
-    }
+    session_.set_quality(fx_quality_of(settings.graphics));
+    session_.step(dt);
 }
 
-void Editor::free_world() {
-    if (audio_) { audio_->shutdown(); delete audio_; }
-    audio_ = nullptr;
-    if (scripts_) { scripts_->shutdown(); delete scripts_; }
-    scripts_ = nullptr;
-    if (physics_) { physics_->shutdown(); delete physics_; }
-    physics_ = nullptr;
-    if (world_) { world_->shutdown(); delete world_; }
-    world_ = nullptr;
-    free(world_objects_);
-    free(world_entities_);
-    world_objects_ = nullptr;
-    world_entities_ = nullptr;
-    world_count_ = 0;
-}
+void Editor::free_world() { session_.stop(); }
 
 void Editor::stop() {
     if (!playing()) return;
     ObjectId next = scene.next_id();
     free_world();
+    settings.graphics = play_gfx_backup_;
     scene.copy_from(*play_backup_);
     scene.keep_ids_above(next);         // objects made while playing keep their ids retired
     delete play_backup_;
@@ -963,11 +845,11 @@ void Editor::do_pending() {
 void Editor::unsaved_popup() {
     if (want_unsaved_prompt_) { ImGui::OpenPopup("Unsaved changes"); want_unsaved_prompt_ = false; }
     ImGui::SetNextWindowSize(ImVec2(400 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Unsaved changes", nullptr, ImGuiWindowFlags_NoResize)) return;
     const char* name = scene_path[0] ? path_filename(scene_path) : "the scene";
     ImGui::TextWrapped("Save the changes to %s first? Without saving they are lost.", name);
     ImGui::Dummy(ImVec2(0, 4));
-    bool save = ImGui::Button("Save");
+    bool save = primary_button("Save");
     track("unsaved:save");
     ImGui::SameLine();
     bool discard = ImGui::Button("Don't save");
@@ -1026,7 +908,7 @@ void Editor::new_scene() {
 void Editor::save_as_popup() {
     if (want_save_as_) { ImGui::OpenPopup("Save scene as"); want_save_as_ = false; }
     ImGui::SetNextWindowSize(ImVec2(360 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
     ImGui::TextUnformatted("Name (saved in scenes/ as .fscene)");
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(-1);
@@ -1034,7 +916,7 @@ void Editor::save_as_popup() {
     track("save_as:name");
     bool valid = save_as_name[0] != 0 && !strchr(save_as_name, '/');
     ImGui::BeginDisabled(!valid);
-    bool save = ImGui::Button("Save") || (enter && valid);
+    bool save = primary_button("Save") || (enter && valid);
     track("save_as:save");
     ImGui::EndDisabled();
     ImGui::SameLine();
@@ -1050,6 +932,7 @@ void Editor::save_as_popup() {
 
 void Editor::open_file(const char* path) {
     if (path_is_scene(path)) { request_open_scene(path); return; }
+    if (path_is_importable_model(path)) { import_model(path); return; }
     const char* program = settings.program_for(path);
     if (!program || !*program) {
         log(LogLevel::Warning, "No editor set for %s files (Settings > File editors)", path_extension(path));
@@ -1069,6 +952,19 @@ void Editor::apply_file_to_object(const char* path, ObjectId id) {
         snprintf(o->shader_path, sizeof(o->shader_path), "%s", path);
         log(LogLevel::Info, "%s: shader %s", o->name, path_filename(path));
     } else if (path_is_model(path)) {
+        // .gltf/.glb/.obj are converted to a .mof first; the object then uses that.
+        char mof[512], msg[1024];
+        if (path_is_importable_model(path)) {
+            char full[600];
+            project_path(path, full, sizeof full);
+            if (!model_convert_file(full, mof, sizeof mof, msg, sizeof msg)) {
+                log(LogLevel::Error, "Import %s: %s", path_filename(path), msg);
+                return;
+            }
+            if (msg[0]) log(LogLevel::Warning, "Import %s: %s", path_filename(path), msg);
+            path = mof;
+        }
+        model_cache_clear();
         o->mesh = MeshKind::Model;
         snprintf(o->model_path, sizeof(o->model_path), "%s", path);
         log(LogLevel::Info, "%s: model %s", o->name, path_filename(path));
@@ -1095,6 +991,15 @@ bool Editor::frame() {
     while (platform::poll(e)) {
         // Only these can change the scene (a plain mouse move cannot).
         if (e.type != platform::EventType::MouseMove) had_events_ = true;
+        // Play: keyboard and mouse reach the scripts (fe.key_down ...); the mouse
+        // in viewport pixels, buttons and wheel only over the viewport.
+        if (playing() && !io.WantTextInput) {
+            platform::Event f = e;
+            bool over = e.x >= view_rect[0] && e.y >= view_rect[1] && e.x < view_rect[0] + view_rect[2] && e.y < view_rect[1] + view_rect[3];
+            f.x -= view_rect[0];
+            f.y -= view_rect[1];
+            if (e.type == platform::EventType::Key || e.type == platform::EventType::MouseMove || over) session_.forward_event(f);
+        }
         switch (e.type) {
             case platform::EventType::MouseMove: io.AddMousePosEvent(e.x, e.y); break;
             case platform::EventType::MouseButton:
@@ -1162,6 +1067,7 @@ bool Editor::frame() {
         play_time += io.DeltaTime;
         step_world(io.DeltaTime);
     }
+    fx()->update_preview(*this, io.DeltaTime);          // edit mode: the selected emitters preview
 
     ui_rect_count = 0;
     double t_build = platform::time_seconds();
@@ -1216,6 +1122,9 @@ void Editor::build_ui() {
     main_menu();
     save_as_popup();
     unsaved_popup();
+    project_settings_popup();
+    export_popup();
+    import_model_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -1236,8 +1145,11 @@ void Editor::build_ui() {
 }
 
 // A menu item that also records where it was drawn ("menu:<label>").
-bool Editor::menu_item(const char* label, const char* shortcut, bool selected, bool enabled) {
-    bool r = ImGui::MenuItem(label, shortcut, selected, enabled);
+bool Editor::menu_item(const char* label, const char* shortcut, bool selected, bool enabled, const char* icon) {
+    // The icon, two spaces, the label; the id stays the label's.
+    char text[96];
+    if (icon) snprintf(text, sizeof(text), "%s  %s###%s", icon, label, label);
+    bool r = ImGui::MenuItem(icon ? text : label, shortcut, selected, enabled);
     char key[48];
     snprintf(key, sizeof(key), "menu:%s", label);
     track(key);
@@ -1268,44 +1180,47 @@ void Editor::main_menu() {
     bool file_menu = ImGui::BeginMenu("File");
     track("menubar:File");
     if (file_menu) {
-        if (menu_item("New scene")) request_new_scene();
-        menu_item("Open project...", nullptr, false, false);
-        if (menu_item("Save scene", "Ctrl+S")) save_scene();
-        if (menu_item("Save scene as...")) {
+        if (menu_item("New scene", nullptr, false, true, FE_ICON_FILE)) request_new_scene();
+        menu_item("Open project...", nullptr, false, false, FE_ICON_FOLDER_OPEN);
+        if (menu_item("Save scene", "Ctrl+S", false, true, FE_ICON_SAVE)) save_scene();
+        if (menu_item("Save scene as...", nullptr, false, true, FE_ICON_COPY)) {
             const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fscene";
             snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 7 : 0)), cur);
             want_save_as_ = true;
         }
         ImGui::Separator();
-        menu_item("Export game...", nullptr, false, false);
+        if (menu_item("Project settings...", nullptr, false, !playing(), FE_ICON_SETTINGS_SLIDERS)) request_project_settings();
+        if (menu_item("Export game...", nullptr, false, !playing(), FE_ICON_EXPORT)) request_export();
         ImGui::Separator();
-        if (menu_item("Quit")) request_quit();
+        if (menu_item("Quit", nullptr, false, true, FE_ICON_CLOSE)) request_quit();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        if (menu_item("Undo", "Ctrl+Z", false, can_undo() && !playing())) undo();
-        if (menu_item("Redo", "Ctrl+Y", false, can_redo() && !playing())) redo();
+        if (menu_item("Undo", "Ctrl+Z", false, can_undo() && !playing(), FE_ICON_UNDO)) undo();
+        if (menu_item("Redo", "Ctrl+Y", false, can_redo() && !playing(), FE_ICON_REDO)) redo();
         ImGui::Separator();
-        if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0)) duplicate_selection();
-        if (menu_item("Delete", "Del", false, scene.selected_count() > 0)) delete_selection();
+        if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0, FE_ICON_DUPLICATE)) duplicate_selection();
+        if (menu_item("Delete", "Del", false, scene.selected_count() > 0, FE_ICON_TRASH)) delete_selection();
         ImGui::Separator();
-        if (menu_item("Settings...")) show_settings = true;
+        if (menu_item("Settings...", nullptr, false, true, FE_ICON_GEAR)) show_settings = true;
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Create")) {
+    bool create_menu = ImGui::BeginMenu("Create");
+    track("menubar:Create");
+    if (create_menu) {
         create_menu_items(kNoObject, camera.target);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
-        if (menu_item("Grid", "G", settings.show_grid)) settings.show_grid = !settings.show_grid;
+        if (menu_item("Frame selection", "F", false, scene.selected_count() > 0, FE_ICON_FULLSCREEN)) frame_selection();
+        if (menu_item("Grid", "G", settings.show_grid, true, FE_ICON_GRID)) settings.show_grid = !settings.show_grid;
         ImGui::Separator();
-        if (menu_item("Reset layout")) want_reset_layout = true;
-        if (menu_item("Dark theme", nullptr, settings.dark_theme)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
+        if (menu_item("Reset layout", nullptr, false, true, FE_ICON_LAYERS)) want_reset_layout = true;
+        if (menu_item("Dark theme", nullptr, settings.dark_theme, true, FE_ICON_PALETTE)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        if (menu_item("ImGui demo", nullptr, show_demo)) show_demo = !show_demo;
+        if (menu_item("ImGui demo", nullptr, show_demo, true, FE_ICON_HELP)) show_demo = !show_demo;
         ImGui::EndMenu();
     }
 
@@ -1488,10 +1403,10 @@ void Editor::dockspace(float top, float bottom) {
         left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
         right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
         bottom_id = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, nullptr, &center);
-        ImGui::DockBuilderDockWindow("Hierarchy", left);
-        ImGui::DockBuilderDockWindow("Inspector", right);
-        ImGui::DockBuilderDockWindow("Files", bottom_id);
-        ImGui::DockBuilderDockWindow("Console", bottom_id);
+        ImGui::DockBuilderDockWindow("###Hierarchy", left);
+        ImGui::DockBuilderDockWindow("###Inspector", right);
+        ImGui::DockBuilderDockWindow("###Files", bottom_id);
+        ImGui::DockBuilderDockWindow("###Console", bottom_id);
         ImGui::DockBuilderDockWindow("Viewport", center);
         if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(center)) n->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
         ImGui::DockBuilderFinish(id);

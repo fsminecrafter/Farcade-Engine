@@ -4,7 +4,8 @@
 //
 // - Modules attach to any object, at most one of each kind per object:
 //   RigidBody3D, Collider3D, CharacterController3D, AudioListener,
-//   AudioStream, AudioSampler, Light.
+//   AudioStream, AudioSampler, Light, ParticleEmitter, Joint3D, Animator,
+//   ForceField, Spawner, ReverbZone, Billboard, Text3D.
 // - Special objects are object kinds with their own settings: Camera,
 //   SkyLight, Sky, PostProcess (ObjectKind).
 // - Some kinds have a "current" flag: only one object (or module) of that
@@ -37,6 +38,7 @@ enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProces
 // reflection table covers both.
 enum class ModuleKind : uint8_t {
     RigidBody3D, Collider3D, CharacterController3D, AudioListener, AudioStream, AudioSampler, Light, // modules
+    ParticleEmitter, Joint3D, Animator, ForceField, Spawner, ReverbZone, Billboard, Text3D,         // more modules
     Camera, SkyLight, Sky, PostProcess,                                          // special objects
     Count
 };
@@ -140,6 +142,185 @@ struct Light {
     bool shadows = true;
 };
 
+// ---------------------------------------------------------------- effects, joints, animation, ...
+
+// Links between objects are stored as the editor's object id (ObjectId in
+// scene.h, 0 = none). At run time World::link_entity (ecs.h) turns one into
+// the entity.
+typedef uint32_t ObjectLink;
+
+enum class EmitShape : uint8_t { Point, Sphere, Cone, Box };
+enum class ParticleBlend : uint8_t { Additive, Alpha };
+enum class ParticleSpace : uint8_t { World, Local };
+
+// CPU particles (engine/fx/particles.h): emitted at the object, drawn as
+// camera-facing quads. Cone and Box particles fly along the object's -Z axis
+// (Cone spread by cone_angle); Sphere particles fly away from the center,
+// Point particles in any direction.
+struct ParticleEmitter {
+    float emission_rate = 20.0f;        // particles per second
+    int burst_count = 0;                // particles in one burst (0 = none)
+    float burst_interval = 0.0f;        // seconds between bursts; 0 = one burst when playing starts
+    int max_particles = 200;            // alive at once; emission waits when the pool is full
+    float lifetime_min = 1.0f;          // seconds
+    float lifetime_max = 2.0f;
+    float speed_min = 1.0f;             // m/s at birth
+    float speed_max = 3.0f;
+    EmitShape shape = EmitShape::Cone;
+    float shape_radius = 0.1f;          // Sphere, Cone: where particles start
+    Vec3 box_size = Vec3(1, 1, 1);      // Box: full extents
+    float cone_angle = 25.0f;           // Cone: half angle, degrees
+    float gravity = 0.0f;               // times the world gravity (1 = falls like a rock, -0.2 = rises)
+    float drag = 0.0f;                  // 1/s: speed lost to the air
+    float size_start = 0.15f;           // meters
+    float size_end = 0.02f;
+    Vec3 color_start = Vec3(1.0f, 0.75f, 0.30f);
+    Vec3 color_end = Vec3(1.0f, 0.15f, 0.05f);
+    float alpha_start = 1.0f;
+    float alpha_end = 0.0f;
+    char texture[kPathMax] = {};        // empty = a soft round dot
+    ParticleBlend blend = ParticleBlend::Additive;
+    ParticleSpace space = ParticleSpace::World;     // Local: particles move with the object
+    bool play_on_start = true;
+    bool looping = true;
+    float duration = 5.0f;              // seconds of emission when not looping
+    bool prewarm = false;               // looping emitters start as if they ran for a while
+    int seed = 1;                       // the random sequence (the same seed gives the same particles)
+    bool playing = false;               // live: emitting now (scripts: play(), stop())
+    int particle_count = 0;             // live: particles alive
+};
+
+enum class JointType : uint8_t { Fixed, Hinge, Spring, BallSocket };
+
+// A constraint between this object's rigid body and another (or the world).
+// The anchor is a point on this object; the joint keeps it on the same point
+// of the connected body, as the two sit at the start of Play. A Spring is
+// different: it hangs from the anchor (a point of the connected body, or of
+// the world) to this object's origin, and rest_length is the distance between
+// those two. Hinge angle, motor speed and limits count this body turning
+// about its axis, relative to the connected one.
+struct Joint3D {
+    JointType type = JointType::Fixed;
+    ObjectLink connected = 0;           // the other body; none = fixed to the world
+    Vec3 anchor;                        // on this object, local space
+    Vec3 axis = Vec3(0, 1, 0);          // Hinge: the turning axis, local space
+    bool use_limits = false;            // Hinge
+    float limit_min = -45.0f;           // degrees, from the starting angle
+    float limit_max = 45.0f;
+    bool use_motor = false;             // Hinge: drives the turn
+    float motor_speed = 90.0f;          // degrees per second
+    float motor_torque = 50.0f;         // N m at most
+    float rest_length = 1.0f;           // Spring: distance between the anchors with no force
+    float stiffness = 50.0f;            // Spring: N/m
+    float damping = 2.0f;               // Spring: N s/m
+    float break_force = 0.0f;           // N; the joint breaks above it (0 = never)
+    bool collide_connected = false;     // the two bodies may touch each other
+    bool broken = false;                // live: set when it broke (scripts: break())
+    float angle = 0.0f;                 // live: Hinge angle in degrees
+    float force = 0.0f;                 // live: force the joint applied last step, N
+};
+
+// Plays a clip from an animation file (.fanim, docs/animation.md) on the
+// object and its children: tracks move, turn and scale named objects. (.mof
+// has no animation data yet, and the renderer has no skinning: this is
+// transform animation.) engine/fx/animator.h.
+struct Animator {
+    char source[kPathMax] = {};         // the .fanim file; empty = the object's model path with .fanim
+    char clip[kPathMax] = {};           // clip name; empty = the first one
+    float speed = 1.0f;
+    bool loop = true;
+    bool play_on_start = true;
+    float crossfade = 0.2f;             // seconds to blend from the clip it replaces
+    bool playing = false;               // live
+    float time = 0.0f;                  // live: seconds into the clip (writable: seeks)
+    float duration = 0.0f;              // live: length of the clip, seconds
+};
+
+enum class FieldShape : uint8_t { Box, Sphere };
+enum class FieldMode : uint8_t { Directional, Radial, Vortex };
+enum class FieldFalloff : uint8_t { None, Linear, Quadratic };
+
+// A volume that pushes rigid bodies and particles inside it (wind, a fan, a
+// vortex, an explosion's pull). The force on a body is `strength` newtons at
+// full effect.
+struct ForceField {
+    FieldShape shape = FieldShape::Box;
+    Vec3 size = Vec3(4, 4, 4);          // Box: full extents
+    float radius = 3.0f;                // Sphere
+    FieldMode mode = FieldMode::Directional;
+    float strength = 10.0f;             // N (negative: Radial pulls in, Vortex turns the other way)
+    Vec3 direction = Vec3(0, 0, -1);    // Directional: local space
+    FieldFalloff falloff = FieldFalloff::None;  // fades towards the edge of the volume
+    float turbulence = 0.0f;            // 0..1: how much the force varies in space and time
+    float turbulence_scale = 1.0f;      // meters per swirl
+    float turbulence_speed = 1.0f;
+    bool affect_bodies = true;
+    bool affect_particles = true;
+    bool enabled = true;
+    uint32_t layers = 0xFFFFFFFFu;      // bodies on these collision layers
+};
+
+// Makes copies of another object (engine/fx/spawner.h). The template stays in
+// the scene; hide it or park it away if it should not show.
+struct Spawner {
+    ObjectLink source = 0;              // the object to copy (with its children)
+    bool auto_spawn = true;
+    bool spawn_on_start = false;
+    float interval = 1.0f;              // seconds between copies
+    int max_alive = 20;                 // at most this many of its copies at once (the oldest goes first)
+    int total = 0;                      // stop after this many (0 = no end)
+    Vec3 offset = Vec3(0, 0, 0);        // random shift: each axis up to +- this
+    Vec3 velocity = Vec3(0, 0, 0);      // added to the copy's body velocity (spawner's local space)
+    float velocity_random = 0.0f;       // random extra speed, m/s
+    float inherit_velocity = 0.0f;      // fraction of the spawner's own motion given to the copy
+    float lifetime = 0.0f;              // seconds until a copy is destroyed (0 = never)
+    bool random_rotation = false;
+    int seed = 1;
+    int spawned = 0;                    // live: copies made so far
+    int alive = 0;                      // live: copies alive
+};
+
+// Changes how sounds sound inside its volume: a short echo tail and a muffled
+// top end. Only the listener's position matters (engine/audio).
+struct ReverbZone {
+    FieldShape shape = FieldShape::Box;
+    Vec3 size = Vec3(10, 5, 10);        // Box: full extents
+    float radius = 6.0f;                // Sphere
+    float wet = 0.35f;                  // 0..1: how much echo is mixed in
+    float room_size = 0.5f;             // 0..1: longer tail
+    float damping = 0.5f;               // 0..1: the tail loses its highs
+    float lowpass = 0.0f;               // 0..1: muffles everything (a sound behind a wall)
+    float fade_distance = 1.0f;         // meters outside the volume over which the effect fades out
+    bool enabled = true;
+};
+
+enum class BillboardMode : uint8_t { Full, Vertical };
+
+// A textured quad that faces the camera: icons, foliage cards, glow sprites
+// (engine/fx/sprites.h).
+struct Billboard {
+    char texture[kPathMax] = {};        // empty = a white square
+    Vec3 color = Vec3(1, 1, 1);
+    float alpha = 1.0f;
+    float width = 1.0f;                 // meters
+    float height = 1.0f;
+    BillboardMode mode = BillboardMode::Full;    // Vertical: turns around Y only (trees)
+    ParticleBlend blend = ParticleBlend::Alpha;
+    bool visible = true;
+};
+
+enum class TextAlign : uint8_t { Left, Center, Right };
+
+// A text label in the world, facing the camera (engine/fx/sprites.h).
+struct Text3D {
+    char text[kPathMax] = "Text";
+    Vec3 color = Vec3(1, 1, 1);
+    float size = 0.5f;                  // height of a line, meters
+    TextAlign align = TextAlign::Center;
+    bool outline = true;
+    bool visible = true;
+};
+
 // ---------------------------------------------------------------- special objects
 
 enum class Projection : uint8_t { Perspective, Orthographic };
@@ -161,6 +342,10 @@ struct SkyLight {
     Vec3 ground_color = Vec3(0.25f, 0.22f, 0.20f);
     float intensity = 0.6f;
     bool current = false;
+    // Probe GI (Settings > Graphics > GI = probes): how strongly the probe light replaces this hemisphere
+    // ambient, and how much of the light a surface got is re-emitted as bounce.
+    float gi_intensity = 1.0f;
+    float gi_bounce = 0.8f;
 };
 
 enum class SkyMode : uint8_t { Gradient, Color };
@@ -178,7 +363,7 @@ struct Sky {
     bool current = false;
 };
 
-enum class Tonemap : uint8_t { None, Reinhard, ACES };
+enum class Tonemap : uint8_t { None, Reinhard, ACES, AgX };
 
 // The look of the final image.
 struct PostProcess {
@@ -191,11 +376,28 @@ struct PostProcess {
     float bloom = 0.0f;                 // 0..1 strength
     float bloom_threshold = 1.0f;
     bool current = false;
+    // Color grading in display light, after tonemap, contrast and saturation:
+    // out = pow(max(c * gain + lift * (1 - c), 0), 1 / gamma).
+    Vec3 lift = Vec3(0, 0, 0);          // tints the shadows
+    Vec3 gamma = Vec3(1, 1, 1);         // mid tones: > 1 brightens
+    Vec3 gain = Vec3(1, 1, 1);          // tints / scales the highlights
+    float bloom_radius = 0.5f;          // 0..1: how far the glow spreads (weight of the wide levels)
+    float chromatic_aberration = 0.0f;  // 0..1: color fringes towards the edges (GPU tier)
+    float film_grain = 0.0f;            // 0..1
+    // Auto exposure: the image's average brightness is measured every frame
+    // and the exposure eases towards a mid grey (Exposure becomes a
+    // compensation on top).
+    bool auto_exposure = false;
+    float exposure_speed = 2.0f;        // adaptation rate, 1 / seconds
+    float auto_exposure_min = -3.0f;    // EV range of the automatic part
+    float auto_exposure_max = 3.0f;
 };
 
 // ---------------------------------------------------------------- reflection
 
-enum class FieldType : uint8_t { Float, Int, Bool, Enum, Color, Vec3, Path, Bits };
+// Object: a link to another object (an ObjectLink, 32 bits, 0 = none).
+// Text: free text in a char[kPathMax] (like Path, but not a file).
+enum class FieldType : uint8_t { Float, Int, Bool, Enum, Color, Vec3, Path, Bits, Object, Text };
 
 struct FieldInfo {
     const char* name;                   // "intensity" (also the Lua name)
@@ -254,6 +456,14 @@ struct ModuleSet {
     AudioStream audio_stream;
     AudioSampler audio_sampler;
     Light light;
+    ParticleEmitter particles;
+    Joint3D joint3d;
+    Animator animator;
+    ForceField force_field;
+    Spawner spawner;
+    ReverbZone reverb_zone;
+    Billboard billboard;
+    Text3D text3d;
     Camera camera;
     SkyLight sky_light;
     Sky sky;

@@ -274,11 +274,23 @@ void pump(uint32_t timeout_ms) {
 }
 }  // namespace
 
+namespace {
+const char* g_title = "Farcade Editor";
+char g_title_buf[64];
+int g_opt_w, g_opt_h;
+}
+
+void set_window_options(const char* title, int width, int height) {
+    if (title && *title) { snprintf(g_title_buf, sizeof g_title_buf, "%s", title); g_title = g_title_buf; }
+    g_opt_w = width;
+    g_opt_h = height;
+}
+
 bool init(int width, int height) {
     if (mos_graphics_acquire() != 0) {
         // The desktop owns the screen: open a window instead.
-        int w = width > 0 ? width : 1180, h = height > 0 ? height : 740;
-        g_window = mos_window_create(0, 50, 40, (uint32_t)w, (uint32_t)h, "Farcade Editor");
+        int w = width > 0 ? width : (g_opt_w > 0 ? g_opt_w : 1180), h = height > 0 ? height : (g_opt_h > 0 ? g_opt_h : 740);
+        g_window = mos_window_create(0, 50, 40, (uint32_t)w, (uint32_t)h, g_title);
         if (!g_window) {
             printf("farcade: the screen is in use and no window could be opened\n");
             return false;
@@ -325,8 +337,19 @@ bool windowed() { return g_window != 0; }
 
 bool toggle_fullscreen() {
     if (!g_window) return true;
-    bool enabled = !g_fullscreen;
-    if (mos_window_set_fullscreen(g_window, enabled) != SYS_SUCCESS) return false;
+    syscall_window_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (mos_window_get_info(g_window, &info) != SYS_SUCCESS) return false;
+    // The window manager may have changed the mode (its title-bar buttons):
+    // toggle from what the window is now, not from what we last asked for.
+    bool enabled = !(info.flags & SYSCALL_WINDOW_FULLSCREEN);
+    // Written by hand rather than with mos_window_set_fullscreen: older SDK
+    // helpers sent the focus bit back, which the kernel refuses from a
+    // program, so F11 in the (focused) editor window always failed.
+    uint32_t flags = info.flags & ~(SYSCALL_WINDOW_FOCUSED | SYSCALL_WINDOW_FULLSCREEN | SYSCALL_WINDOW_MAXIMIZED |
+                                    SYSCALL_WINDOW_MINIMIZED);
+    if (enabled) flags |= SYSCALL_WINDOW_FULLSCREEN;
+    if (mos_window_set_flags(g_window, flags) != SYS_SUCCESS) return false;
     g_fullscreen = enabled;
     return true;
 }
@@ -466,6 +489,30 @@ bool copy_file(const char* from, const char* to) {
 
 bool make_dir(const char* path) { return mos_mkdir(path) == 0 || file_exists(path); }
 
+void* open_read(const char* path, uint64_t* size) {
+    syscall_stat_t st;
+    if (mos_stat(path, &st) != 0 || st.type != SYS_STAT_FILE) return nullptr;
+    long fd = mos_open(path, SYS_O_RDONLY);
+    if (fd < 0) return nullptr;
+    if (size) *size = st.size;
+    return (void*)(intptr_t)fd;
+}
+
+bool read_at(void* handle, uint64_t offset, void* dst, size_t n) {
+    long fd = (long)(intptr_t)handle;
+    if (mos_seek(fd, (long)offset) < 0) return false;
+    uint8_t* p = (uint8_t*)dst;
+    size_t got = 0;
+    while (got < n) {
+        long r = mos_read(fd, p + got, n - got);
+        if (r <= 0) return false;
+        got += (size_t)r;
+    }
+    return true;
+}
+
+void close_file(void* handle) { mos_close((long)(intptr_t)handle); }
+
 const char* default_project_root() {
     make_dir("0:/projects");
     return "0:/projects";
@@ -476,6 +523,15 @@ const char* default_project_root() {
 bool open_with(const char* program, const char* file) {
     const char* argv[3] = { program, file, nullptr };
     return mos_spawn(program, argv) > 0;
+}
+
+int run_program(const char* program, const char* const* argv, bool wait) {
+    long pid = mos_spawn(program, argv);
+    if (pid <= 0) return -1;
+    if (!wait) return (int)pid;
+    mos_wait_result_t r;
+    if (mos_waitpid(pid, 0, &r) < 0) return -1;
+    return r.crashed ? 0xFF : r.exit_code;
 }
 
 bool reveal_in_file_manager(const char*) { return false; }

@@ -6,6 +6,8 @@
 #include "script/runtime.h"
 #include "audio/audio.h"
 #include "scene_io.h"
+#include "fx_bridge.h"
+#include "fx/fx.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -22,6 +24,7 @@ using namespace fe;
 static int g_checks, g_failed;
 #define CHECK(cond, ...) do { g_checks++; if (!(cond)) { g_failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+static float absf_(float x) { return x < 0 ? -x : x; }
 static Editor* E;
 static double g_time;
 
@@ -243,7 +246,7 @@ int main() {
     CHECK(ed.tool == Tool::Scale, "R selects the scale tool");
 
     // ---- hierarchy: click and shift-click rows
-    ImGuiWindow* hw = ImGui::FindWindowByName("Hierarchy");
+    ImGuiWindow* hw = ImGui::FindWindowByName("###Hierarchy");
     CHECK(hw != nullptr, "hierarchy window exists");
     {
         ed.scene.clear_selection();
@@ -551,7 +554,7 @@ int main() {
 
     // ---- console chips filter by level
     {
-        ImGuiWindow* cw = ImGui::FindWindowByName("Console");
+        ImGuiWindow* cw = ImGui::FindWindowByName("###Console");
         if (cw && cw->DockNode && cw->DockNode->TabBar) {
             ImGuiTabItem* t = ImGui::TabBarFindTabByID(cw->DockNode->TabBar, cw->TabId);
             if (t) click(cw->DockNode->TabBar->BarRect.Min.x + t->Offset + t->Width * 0.5f, cw->DockNode->TabBar->BarRect.GetCenter().y);
@@ -689,7 +692,7 @@ int main() {
         ed.scene.select_only(lever);
         // Scroll the Inspector down so the scripts are in view.
         frames(2);
-        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
         if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
         frames(2);
         if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
@@ -807,7 +810,7 @@ int main() {
         frames(2);
         CHECK(click_ui("addmodule:light") && ed.scene.get(c3)->modules.has(ModuleKind::Light), "Add module > Light adds a light");
         frames(3);
-        ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw2 = ImGui::FindWindowByName("###Inspector");
         if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
         CHECK(ui("module:light:intensity") && !ui("module:light:spot_angle"), "a point light shows intensity, not the spot angle");
         CHECK(click_ui("module:light:remove") && !ed.scene.get(c3)->modules.has(ModuleKind::Light), "the trash button removes the module");
@@ -1266,10 +1269,12 @@ int main() {
                     case FieldType::Float: { float v; memcpy(&v, p, 4); v = v * 1.5f + 0.3125f; memcpy(p, &v, 4); break; }
                     case FieldType::Int: { int32_t v; memcpy(&v, p, 4); v += 3; memcpy(p, &v, 4); break; }
                     case FieldType::Bits: { uint32_t v; memcpy(&v, p, 4); v ^= 0x80000010u; memcpy(p, &v, 4); break; }
+                    case FieldType::Object: { uint32_t v = 7; memcpy(p, &v, 4); break; }
                     case FieldType::Bool: *(bool*)p = !*(bool*)p; break;
                     case FieldType::Enum: { int n = 0; while (fi.enum_names[n]) n++; *p = (uint8_t)((*p + 1) % n); break; }
                     case FieldType::Color:
                     case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
+                    case FieldType::Text:
                     case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
                     }
                 }
@@ -1289,7 +1294,7 @@ int main() {
                 const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
                 for (int f = 0; f < mi.field_count; f++) {
                     const FieldInfo& fi = mi.fields[f];
-                    size_t sz = fi.type == FieldType::Path ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
+                    size_t sz = fi.type == FieldType::Path || fi.type == FieldType::Text ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
                               : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
                     if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
                 }
@@ -1361,6 +1366,72 @@ int main() {
         frames(2);
         CHECK(platform::file_exists("build/host/test-project/scenes/level2.fscene") && strstr(ed.scene_path, "level2.fscene"),
               "Save scene as writes scenes/level2.fscene (%s)", ed.scene_path);
+        ed.new_scene();
+        frames(2);
+    }
+
+    // ---- project settings and export
+    {
+        ed.project = ProjectSettings();
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Project settings..."), "Project settings... opens a dialog");
+        frames(2);
+        snprintf(ed.project.name, sizeof ed.project.name, "Test Game");
+        snprintf(ed.project.entry_scene, sizeof ed.project.entry_scene, "scenes/level2.fscene");
+        ed.project.window_width = 800;
+        frames(1);
+        CHECK(click_ui("project:save"), "the dialog's Save button");
+        frames(2);
+        CHECK(platform::file_exists("build/host/test-project/project.fe"), "project.fe is written");
+        ProjectSettings back = ed.project;
+        ed.project = ProjectSettings();
+        CHECK(ed.load_project() && !strcmp(ed.project.name, "Test Game") && ed.project.window_width == 800 &&
+                  !strcmp(ed.project.entry_scene, "scenes/level2.fscene") && !strcmp(back.name, "Test Game"),
+              "project.fe reads back (%s)", ed.project.name);
+        // File > Export game...
+        CHECK(click_ui("menubar:File"), "File menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Export game..."), "Export game... opens a dialog");
+        frames(2);
+        CHECK(!strcmp(ed.export_name, "Test Game") && !strcmp(ed.export_scene, "scenes/level2.fscene"), "the dialog starts from the project settings");
+        snprintf(ed.export_out, sizeof ed.export_out, "build/host/test-export");
+        frames(1);
+        CHECK(click_ui("export:go"), "the dialog's Export button");
+        frames(2);
+        CHECK(!strncmp(ed.export_status, "Exported", 8), "export succeeded (%s)", ed.export_status);
+        CHECK(platform::file_exists("build/host/test-export/Test_Game.fepak") && platform::file_exists("build/host/test-export/Test_Game"),
+              "the package and the player are in the output folder");
+        CHECK(click_ui("export:close"), "Close");
+        frames(2);
+    }
+
+    // ---- importing a model
+    {
+        ed.new_scene();
+        frames(2);
+        const char* obj = "o quad\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\nf 2//1 4//1 3//1\n";
+        platform::make_dir("build/host/test-project/models");
+        platform::write_file("build/host/test-project/models/quad.obj", obj, strlen(obj));
+        int before = ed.scene.count();
+        CHECK(click_ui("menubar:Create"), "Create menu opens");
+        frames(2);
+        CHECK(click_ui("menu:Import model..."), "Create > Import model... opens a prompt");
+        frames(2);
+        for (const char* c = "models/quad.obj"; *c; c++) {
+            platform::Event e;
+            e.type = platform::EventType::Text;
+            e.codepoint = (uint32_t)*c;
+            platform::headless_push(e);
+        }
+        frames(2);
+        CHECK(click_ui("import:go"), "the prompt's Import button");
+        frames(2);
+        CHECK(ed.scene.count() == before + 1, "the model is in the scene");
+        Object* mo = ed.scene.get(ed.scene.active());
+        CHECK(mo && mo->mesh == MeshKind::Model && strstr(mo->model_path, "quad.mof"), "the object uses the converted .mof (%s)", mo ? mo->model_path : "");
+        CHECK(mo && Scene::mesh_for(*mo).vertex_count == 6 && Scene::model_for(*mo), "the real mesh is used, not the cube");
+        CHECK(platform::file_exists("build/host/test-project/models/quad.mof"), "quad.mof was written next to the source");
         ed.new_scene();
         frames(2);
     }
@@ -1474,8 +1545,117 @@ int main() {
         frames(2);
     }
 
+    // ---- effects modules in the editor: preview, Play, Lua
+    {
+        ed.new_scene();
+        frames(2);
+        ObjectId em = ed.create_object("Fire", MeshKind::Cube, Vec3(0, 1, 0));
+        CHECK(ed.scene.add_module(em, ModuleKind::ParticleEmitter), "Particle Emitter can be added");
+        ed.scene.get(em)->modules.particles.emission_rate = 60;
+        ed.scene.get(em)->modules.particles.lifetime_min = ed.scene.get(em)->modules.particles.lifetime_max = 5;
+        ed.scene.select_only(em);
+        frames(40);
+        CHECK(ed.fx()->preview_emitters() == 1 && ed.fx()->last_particles > 5, "a selected emitter previews in the viewport (%d drawn)", ed.fx()->last_particles);
+        ed.scene.clear_selection();
+        frames(3);
+        CHECK(ed.fx()->preview_emitters() == 0, "deselected: the preview stops");
+        ed.scene.select_only(em);
+        ObjectId hang = ed.create_object("Hang", MeshKind::Cube, Vec3(5, 6, 0));
+        ed.scene.add_module(hang, ModuleKind::RigidBody3D);
+        ed.scene.add_module(hang, ModuleKind::Joint3D);       // fixed to the world
+        ed.scene.get(hang)->modules.rigidbody3d.mass = 2;
+        ed.play();
+        frames(40);
+        CHECK(ed.fx()->world() != nullptr && ed.scene.get(em)->modules.particles.particle_count > 20 && ed.scene.get(em)->modules.particles.playing,
+              "Play runs the emitter (%d alive)", ed.scene.get(em)->modules.particles.particle_count);
+        CHECK(ed.fx()->last_particles > 5, "and the viewport draws its particles (%d)", ed.fx()->last_particles);
+        ed.play_scripts()->run("local f = fe.find('Fire'); f.particles:stop(); f.particles:clear(); f.particles:emit(12)");
+        frames(1);
+        CHECK(ed.scene.get(em)->modules.particles.particle_count == 12 && !ed.scene.get(em)->modules.particles.playing, "Lua: stop(), clear(), emit(12) (%d alive)", ed.scene.get(em)->modules.particles.particle_count);
+        ed.play_scripts()->run("fe.find('Fire').particles:play()");
+        frames(10);
+        CHECK(ed.scene.get(em)->modules.particles.playing && ed.scene.get(em)->modules.particles.particle_count > 12, "Lua: play()");
+        CHECK(absf_(ed.scene.get(hang)->position.y - 6.0f) < 0.05f, "a body fixed to the world with Joint 3D hangs in the air (%.2f)", ed.scene.get(hang)->position.y);
+        ed.play_scripts()->run("fe.find('Hang').joint3d:snap()");
+        frames(60);
+        CHECK(ed.scene.get(hang)->modules.joint3d.broken && ed.scene.get(hang)->position.y < 4.0f, "Lua: joint3d:snap() lets it fall (%.2f)", ed.scene.get(hang)->position.y);
+        // Spawner: copies of a ball with a body, a lifetime, Lua spawn() and clear().
+        ed.stop();
+        frames(2);
+        ObjectId ball = ed.create_object("Ball", MeshKind::Sphere, Vec3(0, 20, 0));
+        ed.scene.add_module(ball, ModuleKind::RigidBody3D);
+        ObjectId sp = ed.create_object("Fountain", MeshKind::Cube, Vec3(0, 3, 0));
+        ed.scene.add_module(sp, ModuleKind::Spawner);
+        {
+            Spawner& m = ed.scene.get(sp)->modules.spawner;
+            m.source = ball; m.interval = 0.25f; m.max_alive = 5; m.lifetime = 0; m.velocity = Vec3(0, 4, 0);
+        }
+        int objects_before = ed.scene.count();
+        ed.play();
+        frames(150);
+        CHECK(ed.scene.count() > objects_before && ed.scene.count() <= objects_before + 5, "a spawner adds copies to the play scene, at most max_alive (%d -> %d)", objects_before, ed.scene.count());
+        CHECK(ed.scene.get(sp)->modules.spawner.spawned >= 8 && ed.scene.get(sp)->modules.spawner.alive == 5, "spawned %d, alive %d", ed.scene.get(sp)->modules.spawner.spawned, ed.scene.get(sp)->modules.spawner.alive);
+        ed.play_scripts()->run("local s = fe.find('Fountain'); s.spawner.auto_spawn = false; s.spawner.interval = 1; s.spawner:clear()");
+        frames(2);
+        CHECK(ed.scene.count() == objects_before, "clear() removes the copies from the scene too (%d)", ed.scene.count());
+        ed.play_scripts()->run("local s = fe.find('Fountain'); s.spawner:spawn(); s.spawner:spawn()");
+        frames(2);
+        CHECK(ed.scene.get(sp)->modules.spawner.alive == 2 && ed.scene.count() == objects_before + 2, "Lua spawn() x2 (%d)", ed.scene.count());
+        ed.stop();
+        frames(2);
+        CHECK(ed.scene.count() == objects_before, "Stop puts the scene back");
+        ed.scene.remove(ball);
+        ed.scene.remove(sp);
+        // Animator: a clip file in the project moves the object in Play; Lua picks clips.
+        const char* anim = "fanim 1\nclip slide 2\n track . position\n  key 0 0 1 0\n  key 2 6 1 0\nclip rise 1\n track . position\n  key 0 0 1 0\n  key 1 0 5 0\n";
+        platform::write_file("build/host/test-project/box.fanim", anim, strlen(anim));
+        ObjectId mv = ed.create_object("Mover", MeshKind::Cube, Vec3(0, 1, 0));
+        ed.scene.add_module(mv, ModuleKind::Animator);
+        snprintf(ed.scene.get(mv)->modules.animator.source, kPathMax, "box.fanim");
+        snprintf(ed.scene.get(mv)->modules.animator.clip, kPathMax, "slide");
+        ed.play();
+        frames(60);
+        CHECK(ed.scene.get(mv)->position.x > 2.0f && ed.scene.get(mv)->modules.animator.playing, "an Animator plays its clip in Play (x %.2f)", ed.scene.get(mv)->position.x);
+        ed.play_scripts()->run("local m = fe.find('Mover'); m.animator:play('rise', 0); m.animator.speed = 1");
+        frames(30);
+        CHECK(absf_(ed.scene.get(mv)->position.y - 3.0f) < 0.5f && !strcmp(ed.scene.get(mv)->modules.animator.clip, "rise"), "Lua: animator:play('rise') (y %.2f)", ed.scene.get(mv)->position.y);
+        ed.stop();
+        frames(2);
+        CHECK(ed.scene.get(mv)->position.x == 0.0f, "Stop puts it back");
+        ed.scene.remove(mv);
+        // Billboard and Text 3D show in the viewport; the quality switch hides them.
+        ObjectId bb = ed.create_object("Icon", MeshKind::Cube, Vec3(0, 1, 0));
+        ed.scene.add_module(bb, ModuleKind::Billboard);
+        ObjectId tx = ed.create_object("Sign", MeshKind::Cube, Vec3(0, 2, 0));
+        ed.scene.add_module(tx, ModuleKind::Text3D);
+        snprintf(ed.scene.get(tx)->modules.text3d.text, kPathMax, "Hello");
+        ed.scene.get(tx)->modules.text3d.size = 0.8f;
+        frames(3);
+        CHECK(ed.fx()->last_sprites == 2, "a billboard and a label are drawn (%d)", ed.fx()->last_sprites);
+        ed.settings.graphics.fx_sprites = false;
+        frames(2);
+        CHECK(ed.fx()->last_sprites == 0, "Effects > sprites off draws none");
+        ed.settings.graphics.fx_sprites = true;
+        ed.play();
+        frames(2);
+        ed.play_scripts()->run("local s = fe.find('Sign'); s.text3d.text = 'Score 10'; s.text3d.size = 1.0; fe.find('Icon').billboard.alpha = 0.5");
+        frames(2);
+        CHECK(!strcmp(ed.scene.get(tx)->modules.text3d.text, "Score 10") && ed.scene.get(bb)->modules.billboard.alpha == 0.5f, "Lua reaches the text and the billboard");
+        ed.stop();
+        frames(2);
+        ed.scene.remove(bb);
+        ed.scene.remove(tx);
+        ed.play();
+        frames(2);
+        ed.stop();
+        frames(2);
+        CHECK(ed.fx()->world() == nullptr && ed.scene.get(em)->modules.particles.particle_count == 0, "Stop puts the scene back");
+        ed.new_scene();
+        frames(2);
+    }
+
     // ---- panels can be dragged out of the dock
-    ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+    ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");
     if (iw && iw->DockNode && iw->DockNode->TabBar) {
         ImGuiTabItem* t = ImGui::TabBarFindTabByID(iw->DockNode->TabBar, iw->TabId);

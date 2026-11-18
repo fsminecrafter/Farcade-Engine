@@ -6,9 +6,11 @@
 // gizmos stay.
 #include "editor.h"
 #include "render_bridge.h"
+#include "model_cache.h"
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
+#include "fx_bridge.h"
 #include "view_quality.h"
 #include "platform/platform.h"
 
@@ -375,8 +377,9 @@ void Editor::panel_viewport() {
         int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
         if (ok) {
             bridge.build(scene, v.view, v.proj, eye, znear, zfar);
-            bridge.scene.read_asset = read_render_asset;
-            bridge.scene.asset_user = this;
+            static ModelAssetReader assets{ read_render_asset, this };
+            bridge.scene.read_asset = model_asset_reader;
+            bridge.scene.asset_user = &assets;
             bridge.scene.draft = false;
             ok = fgl.render_rows(bridge.scene, y, band_rows, disp + (size_t)y * full_w);
         }
@@ -411,8 +414,9 @@ void Editor::panel_viewport() {
             if (ok) {
                 fgl.set_settings(settings.graphics);
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
-                bridge.scene.read_asset = read_render_asset;
-                bridge.scene.asset_user = this;
+                static ModelAssetReader assets{ read_render_asset, this };
+                bridge.scene.read_asset = model_asset_reader;
+                bridge.scene.asset_user = &assets;
                 bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
                 ok = fgl.render(bridge.scene);
                 // What runs, for Settings > Graphics.
@@ -423,6 +427,7 @@ void Editor::panel_viewport() {
                 rgba = fgl.pixels();
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
+                if (const char* w = fgl.take_warning()) log(LogLevel::Warning, "FarcadeGL: %s", w);
             } else {
                 log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
                 fgl_failed = true;
@@ -466,6 +471,8 @@ void Editor::panel_viewport() {
         fgl_tex.pixels = use_fgl ? (const uint8_t*)rgba : nullptr;     // "there is an image" marker
     }
     if (shown_tex.pixels) dl->AddImage((ImTextureID)SwRenderer::texture_id(&shown_tex), v.pos, ImVec2(v.pos.x + shown_tex.width, v.pos.y + shown_tex.height));
+    // Particles, billboards, text and the gizmos of the effects modules.
+    fx()->draw_overlay(*this, dl, v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y, eye);
     // Icons for objects without a mesh (cameras, lights, sky ...), where
     // they are: they are picked by clicking near them.
     {

@@ -22,7 +22,8 @@ typedef uint64_t Entity;    // a flecs id; 0 = none / the root
 
 // A value read from or written to a module field by name.
 // Float, Int, Bool, Enum (i = index; on read s = the constant's name), Color
-// and Vec3 (v), Path (s), Bits (i = the bits).
+// and Vec3 (v), Path (s), Bits (i = the bits), Object (i = the ObjectLink;
+// World::link_entity turns it into an entity).
 struct FieldValue {
     FieldType type = FieldType::Float;
     float f = 0;
@@ -38,6 +39,7 @@ struct FieldValue {
     static FieldValue from_bits(uint32_t x) { FieldValue r; r.type = FieldType::Bits; r.i = (int32_t)x; return r; }
     static FieldValue from_vec3(const Vec3& x) { FieldValue r; r.type = FieldType::Vec3; r.v = x; return r; }
     static FieldValue from_color(const Vec3& x) { FieldValue r; r.type = FieldType::Color; r.v = x; return r; }
+    static FieldValue from_link(uint32_t x) { FieldValue r; r.type = FieldType::Object; r.i = (int32_t)x; return r; }
     static FieldValue from_string(const char* x) { FieldValue r; r.type = FieldType::Path; r.s = x; return r; }
 };
 
@@ -129,6 +131,16 @@ public:
     // field, a value of the wrong kind or an out of range enum.
     bool get_field(Entity e, ModuleKind k, const char* field, FieldValue* out) const;
     bool set_field(Entity e, ModuleKind k, const char* field, const FieldValue& v);
+
+    // ---- links between objects (ObjectLink fields: Joint3D.connected, Spawner.source)
+    // A module stores the editor's object id; the host (the editor's Play,
+    // a game player) says which entity each id is with bind_link, and
+    // systems turn a field into an entity with link_entity (0 when the id is
+    // 0, unknown, or its entity is gone). link_of is the other way (0 =
+    // unbound).
+    void bind_link(uint32_t link, Entity e);
+    Entity link_entity(uint32_t link) const;
+    uint32_t link_of(Entity e) const;
 
     // ---- the "current" rule (Camera, SkyLight, Sky, PostProcess, AudioListener):
     // at most one entity per kind has the flag; the one set last wins, whether

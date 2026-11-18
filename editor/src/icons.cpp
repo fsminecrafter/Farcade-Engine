@@ -1,11 +1,57 @@
 #include "icons.h"
+#include "icon_font.h"
+#include "imgui/imgui_internal.h"
 
 #include "core/math.h"
 #include "widgets.h"
 
 namespace fe {
 
+// The vector icon (editor/icons/<name>.svg) for each Icon, in enum order.
+static const char* const kIconFile[] = {
+    "pointer", "move", "rotate", "scale", "world", "local",
+    "magnet", "grid", "play", "pause", "folder", "file",
+    "image", "model", "script", "cube", "sphere", "cylinder",
+    "plane", "up", "refresh", "trash", "info", "warning",
+    "error", "stop", "eye", "eye_off", "plus", "search",
+    "gear", "chevron_down", "chevron_right", "close", "sun", "monitor",
+    "layers", "camera", "bulb", "cloud", "speaker", "wave",
+    "body", "collider", "ear", "wand", "empty", "star",
+    "sparks", "joint", "clip", "wind", "spawn", "reverb",
+    "sprite", "text_t",
+};
+static_assert(sizeof(kIconFile) / sizeof(kIconFile[0]) == (size_t)Icon::TextT + 1, "one file per Icon");
+
+// The icon's character in the vector icon font; 0 = none (draw the lines below).
+static unsigned icon_glyph(Icon icon) {
+    static unsigned cps[(size_t)Icon::TextT + 1];
+    static bool done = false;
+    if (!done) {
+        for (size_t i = 0; i <= (size_t)Icon::TextT; i++) cps[i] = icon_codepoint(kIconFile[i]);
+        done = true;
+    }
+    return (size_t)icon <= (size_t)Icon::TextT ? cps[(size_t)icon] : 0;
+}
+
+static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c);
+
 void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
+    unsigned cp = icon_glyph(icon);
+    ImFont* font = icon_box_font();
+    if (cp && font && s >= 4.0f) {
+        // Whole pixels and a whole size: the glyph is rasterized for exactly this box.
+        char utf8[5] = {};
+        ImTextCharToUtf8(utf8, cp);
+        float size = (float)(int)(s + 0.5f);
+        ImVec2 at((float)(int)(p.x + (s - size) * 0.5f + 0.5f), (float)(int)(p.y + (s - size) * 0.5f + 0.5f));
+        dl->AddText(font, size, at, c, utf8);
+        return;
+    }
+    draw_icon_lines(dl, icon, p, s, c);
+}
+
+// The original line drawings: used when the icon font is not there.
+static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
     // Work in a 16x16 design grid scaled to the box.
     float k = s / 16.0f;
     float t = 1.5f * k;     // stroke width
@@ -258,6 +304,48 @@ void draw_icon(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c) {
             dl->AddLine(P(2, 8), P(14, 8), c, t);
             dl->AddCircle(P(8, 8), 3.0f * k, c, 12, t);
             break;
+        case Icon::Sparks: {
+            static const float pts[7][3] = { { 8, 3, 1.4f }, { 4, 7, 1.0f }, { 12, 6, 1.1f }, { 6, 11, 1.2f }, { 11, 11, 0.9f }, { 8, 14, 0.8f }, { 2.5f, 3.5f, 0.7f } };
+            for (auto& q : pts) dl->AddCircleFilled(P(q[0], q[1]), q[2] * k, c, 8);
+            break;
+        }
+        case Icon::Joint:
+            dl->AddCircle(P(4, 8), 2.6f * k, c, 12, t);
+            dl->AddCircle(P(12, 8), 2.6f * k, c, 12, t);
+            dl->AddLine(P(6.6f, 8), P(9.4f, 8), c, t);
+            break;
+        case Icon::Clip:
+            dl->AddRect(P(2, 3), P(14, 13), c, 1.5f * k, 0, t);
+            dl->AddTriangleFilled(P(6.5f, 5.5f), P(6.5f, 10.5f), P(10.8f, 8), c);
+            break;
+        case Icon::Wind:
+            for (int i = 0; i < 3; i++) {
+                float y = 4.5f + i * 3.5f;
+                dl->AddLine(P(2, y), P(11 - i * 1.5f, y), c, t);
+                dl->PathArcTo(P(11 - i * 1.5f, y - 1.6f), 1.6f * k, radians(90), radians(-90), 8);
+                dl->PathStroke(c, 0, t);
+            }
+            break;
+        case Icon::Spawn:
+            dl->AddRect(P(2, 7), P(9, 14), c, 1.0f * k, 0, t);
+            dl->AddRect(P(7, 2), P(14, 9), c, 1.0f * k, 0, t);
+            break;
+        case Icon::Reverb:
+            for (int i = 0; i < 3; i++) {
+                dl->PathArcTo(P(3, 8), (3.5f + i * 3.0f) * k, radians(-55), radians(55), 10);
+                dl->PathStroke(c, 0, t);
+            }
+            dl->AddCircleFilled(P(3, 8), 1.4f * k, c, 8);
+            break;
+        case Icon::Sprite:
+            dl->AddRect(P(2, 2), P(14, 14), c, 1.5f * k, 0, t);
+            dl->AddTriangleFilled(P(4, 12), P(8, 6), P(12, 12), c);
+            dl->AddCircleFilled(P(11.2f, 5), 1.3f * k, c, 8);
+            break;
+        case Icon::TextT:
+            dl->AddLine(P(3, 3.5f), P(13, 3.5f), c, t);
+            dl->AddLine(P(8, 3.5f), P(8, 13.5f), c, t);
+            break;
         case Icon::Star: {
             ImVec2 st[10];
             for (int i = 0; i < 10; i++) {
@@ -321,6 +409,15 @@ bool icon_button(Icon icon, const char* tooltip, bool active, float size, uint32
 }
 
 void draw_logo(ImDrawList* dl, ImVec2 p, float s, ImU32 accent) {
+    // The vector logo (docs/logo/farcade-logo.svg) in its own colors.
+    ImFont* font = icon_box_font();
+    if (font && icon_codepoint("logo") && s >= 4.0f) {
+        char utf8[5] = {};
+        ImTextCharToUtf8(utf8, icon_codepoint("logo"));
+        float size = (float)(int)(s + 0.5f);
+        dl->AddText(font, size, ImVec2((float)(int)(p.x + 0.5f), (float)(int)(p.y + 0.5f)), IM_COL32_WHITE, utf8);
+        return;
+    }
     float k = s / 16.0f;
     auto P = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
     dl->AddRectFilled(P(0, 0), P(16, 16), accent, 4.0f * k);

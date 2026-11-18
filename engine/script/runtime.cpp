@@ -7,6 +7,7 @@
 #include "script/runtime.h"
 #include "script/internal.h"
 #include "script/lua_api.h"
+#include "script/lua_graphics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,13 +83,36 @@ struct ScriptRuntime::Impl {
     Entity* pending = nullptr;          // destroy requests
     int npending = 0, cap_pending = 0;
 
+    ScriptGraphics graphics;            // fe.graphics (lua_graphics.h)
+
     int depth = 0;                      // running callbacks / entry points
     ScriptStats stats;
 
     // Methods on module proxies (add_module_method).
-    struct Method { int kind; char name[32]; ScriptRuntime::ModuleMethod fn; void* user; };
-    Method methods[32];
+    struct Method { int kind; char name[32]; ScriptRuntime::ModuleMethod fn; ScriptRuntime::ModuleMethodEx fnx; void* user; };
+    Method methods[64];
     int method_count = 0;
+
+    // Input from the host (key_event / mouse_*): fe.key_down("w"), fe.mouse_x() ...
+    struct KeyState { char name[16]; bool down, pressed, released; };
+    KeyState keys[96];
+    int key_count = 0;
+    float mouse_x = 0, mouse_y = 0, mouse_wheel = 0;
+    uint8_t mouse_down = 0, mouse_pressed = 0, mouse_released = 0;
+    KeyState* key_slot(const char* name, bool create) {
+        for (int i = 0; i < key_count; i++)
+            if (strcmp(keys[i].name, name) == 0) return &keys[i];
+        if (!create || key_count == 96 || strlen(name) >= sizeof keys[0].name) return nullptr;
+        KeyState* k = &keys[key_count++];
+        memset(k, 0, sizeof *k);
+        strcpy(k->name, name);
+        return k;
+    }
+    void end_input_frame() {
+        for (int i = 0; i < key_count; i++) keys[i].pressed = keys[i].released = false;
+        mouse_pressed = mouse_released = 0;
+        mouse_wheel = 0;
+    }
 
     // ---- entity hash
     int bucket_of(Entity e) const {
@@ -334,6 +358,7 @@ struct ScriptRuntime::Impl {
         }
         stats.update_ms = (now_seconds() - t) * 1000.0;
         stats.instances = live;
+        end_input_frame();
         lua_gc(L, LUA_GCSTEP, 0);
     }
 
@@ -749,6 +774,25 @@ int mod_method_call(lua_State* L) {
     const Impl::Method& md = I->methods[idx];
     if (md.kind != m->kind) return luaL_error(L, "%s is not a method of %s", md.name, module_info((ModuleKind)m->kind).name);
     if (I->dead(m->e)) return luaL_error(L, "cannot call %s: the object no longer exists", md.name);
+    if (md.fnx) {
+        ScriptRuntime::MethodCall call;
+        int top = lua_gettop(L);
+        for (int i = 2; i <= top && call.argc < 4; i++, call.argc++) {
+            int t = lua_type(L, i);
+            if (t == LUA_TNUMBER) call.num[call.argc] = lua_tonumber(L, i);
+            else if (t == LUA_TBOOLEAN) call.num[call.argc] = lua_toboolean(L, i) ? 1.0 : 0.0;
+            else if (t == LUA_TSTRING) call.str[call.argc] = lua_tostring(L, i);
+        }
+        ScriptRuntime::MethodResult res;
+        md.fnx(m->e, call, &res, md.user);
+        switch (res.type) {
+        case ScriptRuntime::MethodResult::Number: lua_pushnumber(L, res.n); break;
+        case ScriptRuntime::MethodResult::String: lua_pushstring(L, res.s ? res.s : ""); break;
+        case ScriptRuntime::MethodResult::Nothing: return 0;
+        default: lua_pushboolean(L, res.b); break;
+        }
+        return 1;
+    }
     lua_pushboolean(L, md.fn(m->e, md.user) != 0);
     return 1;
 }
@@ -776,8 +820,14 @@ int mod_index(lua_State* L) {
     case FieldType::Enum: if (v.s) lua_pushstring(L, v.s); else lua_pushinteger(L, v.i); break;
     case FieldType::Color:
     case FieldType::Vec3: push_vec3(L, v.v); break;
+    case FieldType::Text:
     case FieldType::Path: lua_pushstring(L, v.s ? v.s : ""); break;
     case FieldType::Bits: lua_pushinteger(L, (lua_Integer)(uint32_t)v.i); break;
+    case FieldType::Object: {
+        Entity t = I->world->link_entity((uint32_t)v.i);
+        if (t) push_object(L, t); else lua_pushnil(L);
+        break;
+    }
     }
     return 1;
 }
@@ -820,6 +870,7 @@ int mod_newindex(lua_State* L) {
         v = f->type == FieldType::Color ? FieldValue::from_color(x) : FieldValue::from_vec3(x);
         break;
     }
+    case FieldType::Text:
     case FieldType::Path:
         if (t != LUA_TSTRING) return luaL_error(L, "%s.%s expects a string, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_string(lua_tostring(L, 3));
@@ -827,6 +878,15 @@ int mod_newindex(lua_State* L) {
     case FieldType::Bits:
         if (t != LUA_TNUMBER) return luaL_error(L, "%s.%s expects a number, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_bits((uint32_t)(int64_t)lua_tonumber(L, 3));
+        break;
+    case FieldType::Object:
+        if (t == LUA_TNIL) v = FieldValue::from_link(0);
+        else if (t == LUA_TUSERDATA) {
+            Entity target = live_entity(L, 3);
+            uint32_t link = I->world->link_of(target);
+            if (!link) return luaL_error(L, "%s.%s: that object has no link id (it was not part of the scene)", mi.name, key);
+            v = FieldValue::from_link(link);
+        } else return luaL_error(L, "%s.%s expects an object or nil, got %s", mi.name, key, luaL_typename(L, 3));
         break;
     }
     if (!I->world->set_field(m->e, (ModuleKind)m->kind, key, v)) {
@@ -876,6 +936,34 @@ int f_broadcast(lua_State* L) {
     if (strlen(event) > 80) return luaL_error(L, "event name too long");
     I->broadcast(L, event, 2, lua_gettop(L) - 1);
     return 0;
+}
+
+// Input: fe.key_down(name), fe.key_pressed(name), fe.key_released(name) (pressed
+// and released are true for the frame after the event), fe.mouse_x(),
+// fe.mouse_y(), fe.mouse_down(button), fe.mouse_pressed(button), fe.mouse_wheel().
+// Key names: "a".."z", "0".."9", "space", "enter", "escape", "tab", "backspace",
+// "left", "right", "up", "down", "shift", "ctrl", "alt", "f1".."f12"; buttons 0 left, 1 right, 2 middle.
+int key_query(lua_State* L, int which) {
+    Impl* I = impl_of(L);
+    Impl::KeyState* k = I->key_slot(luaL_checkstring(L, 1), false);
+    lua_pushboolean(L, k && (which == 0 ? k->down : which == 1 ? k->pressed : k->released));
+    return 1;
+}
+int f_key_down(lua_State* L) { return key_query(L, 0); }
+int f_key_pressed(lua_State* L) { return key_query(L, 1); }
+int f_key_released(lua_State* L) { return key_query(L, 2); }
+int f_mouse_x(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_x); return 1; }
+int f_mouse_y(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_y); return 1; }
+int f_mouse_wheel(lua_State* L) { lua_pushnumber(L, impl_of(L)->mouse_wheel); return 1; }
+int f_mouse_down(lua_State* L) {
+    int b = (int)luaL_optinteger(L, 1, 0);
+    lua_pushboolean(L, b >= 0 && b < 8 && (impl_of(L)->mouse_down >> b & 1));
+    return 1;
+}
+int f_mouse_pressed(lua_State* L) {
+    int b = (int)luaL_optinteger(L, 1, 0);
+    lua_pushboolean(L, b >= 0 && b < 8 && (impl_of(L)->mouse_pressed >> b & 1));
+    return 1;
 }
 
 int f_time(lua_State* L) {
@@ -1026,13 +1114,18 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     lua_newtable(L);                                    // fe
     static const luaL_Reg fe_funcs[] = {
         { "vec3", f_vec3 }, { "dot", f_dot }, { "cross", f_cross }, { "find", f_find }, { "current", f_current },
-        { "broadcast", f_broadcast }, { "time", f_time }, { nullptr, nullptr } };
+        { "broadcast", f_broadcast }, { "time", f_time },
+        { "key_down", f_key_down }, { "key_pressed", f_key_pressed }, { "key_released", f_key_released },
+        { "mouse_x", f_mouse_x }, { "mouse_y", f_mouse_y }, { "mouse_wheel", f_mouse_wheel },
+        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { nullptr, nullptr } };
     luaL_setfuncs(L, fe_funcs, 0);
     set_funcs_with_upvalue(L, "log", f_print, (int)ScriptLogLevel::Info);
     set_funcs_with_upvalue(L, "warn", f_print, (int)ScriptLogLevel::Warning);
     set_funcs_with_upvalue(L, "error", f_print, (int)ScriptLogLevel::Error);
     lua_pushnumber(L, 0);
     lua_setfield(L, -2, "dt");
+    script_push_graphics_table(L, &I->graphics);
+    lua_setfield(L, -2, "graphics");
     lua_pushvalue(L, -1);
     I->fe_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_getfield(L, -1, "vec3");
@@ -1192,6 +1285,32 @@ void ScriptRuntime::remove_instances(Entity e) {
     if (I->depth == 0) I->flush();
 }
 
+void ScriptRuntime::key_event(const char* name, bool down) {
+    if (!impl_ || !name) return;
+    Impl::KeyState* k = impl_->key_slot(name, true);
+    if (!k || k->down == down) return;
+    k->down = down;
+    (down ? k->pressed : k->released) = true;
+}
+
+void ScriptRuntime::mouse_move(float x, float y) {
+    if (!impl_) return;
+    impl_->mouse_x = x;
+    impl_->mouse_y = y;
+}
+
+void ScriptRuntime::mouse_button(int button, bool down) {
+    if (!impl_ || button < 0 || button > 7) return;
+    uint8_t bit = (uint8_t)(1u << button);
+    if (((impl_->mouse_down & bit) != 0) == down) return;
+    if (down) { impl_->mouse_down |= bit; impl_->mouse_pressed |= bit; }
+    else { impl_->mouse_down &= (uint8_t)~bit; impl_->mouse_released |= bit; }
+}
+
+void ScriptRuntime::mouse_wheel(float dy) {
+    if (impl_) impl_->mouse_wheel += dy;
+}
+
 void ScriptRuntime::send(Entity target, const char* event) {
     Impl* I = impl_;
     if (!I || !event || I->dead(target)) return;
@@ -1287,15 +1406,41 @@ bool ScriptRuntime::add_module_method(ModuleKind kind, const char* name, ModuleM
     for (int i = 0; i < I->method_count; i++)
         if (I->methods[i].kind == (int)kind && strcmp(I->methods[i].name, name) == 0) slot = i;
     if (slot == I->method_count) {
-        if (I->method_count >= 32) return false;
+        if (I->method_count >= 64) return false;
         I->method_count++;
     }
     Impl::Method& m = I->methods[slot];
     m.kind = (int)kind;
     strcpy(m.name, name);
     m.fn = fn;
+    m.fnx = nullptr;
     m.user = user;
     return true;
+}
+
+bool ScriptRuntime::add_module_method_ex(ModuleKind kind, const char* name, ModuleMethodEx fn, void* user) {
+    if (!impl_ || !name || !fn || strlen(name) >= sizeof(impl_->methods[0].name)) return false;
+    Impl* I = impl_;
+    int slot = I->method_count;
+    for (int i = 0; i < I->method_count; i++)
+        if (I->methods[i].kind == (int)kind && strcmp(I->methods[i].name, name) == 0) slot = i;
+    if (slot == I->method_count) {
+        if (I->method_count >= 64) return false;
+        I->method_count++;
+    }
+    Impl::Method& m = I->methods[slot];
+    m.kind = (int)kind;
+    strcpy(m.name, name);
+    m.fn = nullptr;
+    m.fnx = fn;
+    m.user = user;
+    return true;
+}
+
+void ScriptRuntime::set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed) {
+    if (!impl_) return;
+    impl_->graphics.settings = settings;
+    impl_->graphics.changed = changed;
 }
 
 bool ScriptRuntime::run(const char* code) {

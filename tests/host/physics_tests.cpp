@@ -42,6 +42,253 @@ static void run(World& w, float seconds) {
     for (float t = 0; t < seconds; t += 1.0f / 60.0f) w.progress(1.0f / 60.0f);
 }
 
+
+// ---- joints and force fields
+
+static Entity jbody(World& w, PhysicsWorld& p, const char* name, Vec3 pos, float mass = 1.0f, bool gravity = true) {
+    Entity e = make(w, name, pos);
+    w.add(e, ModuleKind::RigidBody3D);
+    RigidBody3D* rb = (RigidBody3D*)w.get_mut(e, ModuleKind::RigidBody3D);
+    rb->mass = mass;
+    rb->use_gravity = gravity;
+    rb->linear_damping = 0;
+    rb->angular_damping = 0;
+    p.add(e);
+    return e;
+}
+
+static Joint3D* joint(World& w, PhysicsWorld& p, Entity e, JointType type, Vec3 anchor) {
+    w.add(e, ModuleKind::Joint3D);
+    Joint3D* j = (Joint3D*)w.get_mut(e, ModuleKind::Joint3D);
+    j->type = type;
+    j->anchor = anchor;
+    p.add(e);
+    return j;
+}
+
+static Vec3 pos_of(World& w, Entity e) { return w.transform(e)->position; }
+
+static void joint_tests() {
+    // ---- a hinge pendulum keeps its anchor and its axis
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Pendulum", Vec3(2, 5, 0));
+        Joint3D* j = joint(w, p, b, JointType::Hinge, Vec3(-2, 0, 0));
+        j->axis = Vec3(0, 0, 1);
+        float worst = 0, drift_z = 0, lowest = 99;
+        for (int i = 0; i < 180; i++) {
+            w.progress(1.0f / 60.0f);
+            Vec3 d = pos_of(w, b) - Vec3(0, 5, 0);
+            float err = absf_(length(d) - 2.0f);
+            if (err > worst) worst = err;
+            if (absf_(d.z) > drift_z) drift_z = absf_(d.z);
+            if (pos_of(w, b).y < lowest) lowest = pos_of(w, b).y;
+        }
+        CHECK(worst < 0.08f, "the pendulum stays 2 m from its pivot (worst error %.3f)", worst);
+        CHECK(drift_z < 0.02f, "and in its plane (z drift %.3f)", drift_z);
+        CHECK(lowest < 3.2f, "it swings down (lowest y %.2f)", lowest);
+        const RigidBody3D* rb = (const RigidBody3D*)w.get(b, ModuleKind::RigidBody3D);
+        CHECK(absf_(rb->angular_velocity.x) < 0.05f && absf_(rb->angular_velocity.y) < 0.05f, "no spin about the other axes (%.3f %.3f)", rb->angular_velocity.x, rb->angular_velocity.y);
+        CHECK(((const Joint3D*)w.get(b, ModuleKind::Joint3D))->force > 1.0f, "the joint reports a force (%.1f N)", ((const Joint3D*)w.get(b, ModuleKind::Joint3D))->force);
+        w.shutdown();
+    }
+    // ---- hinge limits stop the swing
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Door", Vec3(2, 5, 0));
+        Joint3D* j = joint(w, p, b, JointType::Hinge, Vec3(-2, 0, 0));
+        j->axis = Vec3(0, 0, 1);
+        j->use_limits = true; j->limit_min = -30; j->limit_max = 30;
+        float lowest = 0;
+        for (int i = 0; i < 240; i++) {
+            w.progress(1.0f / 60.0f);
+            float a = ((const Joint3D*)w.get(b, ModuleKind::Joint3D))->angle;
+            if (a < lowest) lowest = a;
+        }
+        float a = ((const Joint3D*)w.get(b, ModuleKind::Joint3D))->angle;
+        CHECK(lowest > -36.0f && a < -25.0f, "limited to -30 degrees: angle %.1f (lowest %.1f)", a, lowest);
+        w.shutdown();
+    }
+    // ---- a hinge motor turns at its speed
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Wheel", Vec3(0, 3, 0), 1.0f, false);
+        Joint3D* j = joint(w, p, b, JointType::Hinge, Vec3(0, 0, 0));
+        j->axis = Vec3(0, 1, 0);
+        j->use_motor = true; j->motor_speed = 90; j->motor_torque = 1000;
+        run(w, 1.0f);
+        const RigidBody3D* rb = (const RigidBody3D*)w.get(b, ModuleKind::RigidBody3D);
+        float a = ((const Joint3D*)w.get(b, ModuleKind::Joint3D))->angle;
+        CHECK(absf_(rb->angular_velocity.y - 1.5708f) < 0.1f, "motor: 90 deg/s = 1.57 rad/s (%.2f)", rb->angular_velocity.y);
+        CHECK(a > 75 && a < 100, "motor: about 90 degrees after a second (%.1f)", a);
+        // a weak motor cannot hold against the load
+        World w2; w2.init();
+        PhysicsWorld p2; p2.init(&w2, PhysicsEvents());
+        Entity b2 = jbody(w2, p2, "Weak", Vec3(2, 5, 0), 1.0f, true);
+        Joint3D* j2 = joint(w2, p2, b2, JointType::Hinge, Vec3(-2, 0, 0));
+        j2->axis = Vec3(0, 0, 1);
+        j2->use_motor = true; j2->motor_speed = 0; j2->motor_torque = 0.5f;
+        run(w2, 1.0f);
+        CHECK(pos_of(w2, b2).y < 4.0f, "a weak motor (0.5 N m) does not hold 2 m of arm (y %.2f)", pos_of(w2, b2).y);
+        j2 = (Joint3D*)w2.get_mut(b2, ModuleKind::Joint3D);
+        w2.shutdown();
+        w.shutdown();
+    }
+    // ---- fixed to the world holds; a chain of fixed joints holds
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity a = jbody(w, p, "A", Vec3(0, 5, 0));
+        joint(w, p, a, JointType::Fixed, Vec3(0, 0, 0));
+        Entity b = jbody(w, p, "B", Vec3(2, 5, 0));
+        w.bind_link(11, a);
+        Joint3D* jb = joint(w, p, b, JointType::Fixed, Vec3(-1, 0, 0));
+        jb->connected = 11;
+        run(w, 3.0f);
+        CHECK(absf_(pos_of(w, a).y - 5.0f) < 0.03f, "fixed to the world: no sag (%.3f)", pos_of(w, a).y);
+        CHECK(absf_(pos_of(w, b).y - 5.0f) < 0.2f && absf_(pos_of(w, b).x - 2.0f) < 0.2f, "a body fixed to it keeps its place (%.2f %.2f)", pos_of(w, b).x, pos_of(w, b).y);
+        w.shutdown();
+    }
+    // ---- ball socket: swings in any plane, keeps the distance
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Ball", Vec3(1.5f, 5, 1.5f));
+        RigidBody3D* rb = (RigidBody3D*)w.get_mut(b, ModuleKind::RigidBody3D);
+        rb->velocity = Vec3(0, 0, 1);
+        joint(w, p, b, JointType::BallSocket, Vec3(-1.5f, 0, -1.5f));
+        float worst = 0, zmax = 0;
+        for (int i = 0; i < 180; i++) {
+            w.progress(1.0f / 60.0f);
+            Vec3 d = pos_of(w, b) - Vec3(0, 5, 0);
+            float err = absf_(length(d) - length(Vec3(1.5f, 0, 1.5f)));
+            if (err > worst) worst = err;
+            if (absf_(d.z) > zmax) zmax = absf_(d.z);
+        }
+        CHECK(worst < 0.1f, "ball socket keeps the distance (%.3f)", worst);
+        CHECK(pos_of(w, b).y < 4.0f, "and swings down (y %.2f)", pos_of(w, b).y);
+        w.shutdown();
+    }
+    // ---- spring: hangs at the stretched length and settles
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Weight", Vec3(0, 3, 0));
+        Joint3D* j = joint(w, p, b, JointType::Spring, Vec3(0, 1, 0));      // anchor at world (0, 4, 0)
+        j->rest_length = 1.0f; j->stiffness = 100; j->damping = 5;
+        run(w, 6.0f);
+        float y = pos_of(w, b).y;
+        CHECK(y > 2.88f && y < 2.93f, "spring: m g / k = 0.098 m of stretch (y %.3f)", y);
+        // A stiff spring stays stable.
+        Entity s = jbody(w, p, "Stiff", Vec3(5, 3, 0));
+        Joint3D* js = joint(w, p, s, JointType::Spring, Vec3(0, 1, 0));
+        js->rest_length = 1.0f; js->stiffness = 20000; js->damping = 50;
+        run(w, 3.0f);
+        CHECK(absf_(pos_of(w, s).y - 2.9995f) < 0.01f || (pos_of(w, s).y > 2.98f && pos_of(w, s).y < 3.01f), "a stiff spring is stable (y %.4f)", pos_of(w, s).y);
+        w.shutdown();
+    }
+    // ---- break force, break_joint
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity b = jbody(w, p, "Heavy", Vec3(0, 5, 0), 5.0f);
+        Joint3D* j = joint(w, p, b, JointType::Fixed, Vec3(0, 0, 0));
+        j->break_force = 20;
+        run(w, 1.0f);
+        CHECK(((const Joint3D*)w.get(b, ModuleKind::Joint3D))->broken, "49 N of weight breaks a 20 N joint");
+        CHECK(pos_of(w, b).y < 3.0f, "and the body falls (y %.2f)", pos_of(w, b).y);
+        Entity c = jbody(w, p, "Held", Vec3(10, 5, 0), 1.0f);
+        Joint3D* jc = joint(w, p, c, JointType::Fixed, Vec3(0, 0, 0));
+        jc->break_force = 1000;
+        run(w, 1.0f);
+        CHECK(!((const Joint3D*)w.get(c, ModuleKind::Joint3D))->broken && absf_(pos_of(w, c).y - 5.0f) < 0.03f, "below its break force it holds");
+        CHECK(p.break_joint(c), "break_joint");
+        run(w, 1.0f);
+        CHECK(pos_of(w, c).y < 3.0f, "after break_joint the body falls (y %.2f)", pos_of(w, c).y);
+        w.shutdown();
+    }
+    // ---- connected bodies do not collide unless asked
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity a = jbody(w, p, "A", Vec3(0, 5, 0), 1.0f, false);
+        w.add(a, ModuleKind::Collider3D);
+        Entity b = jbody(w, p, "B", Vec3(0.3f, 5, 0), 1.0f, false);
+        w.add(b, ModuleKind::Collider3D);
+        p.add(a); p.add(b);
+        w.bind_link(21, a);
+        Joint3D* jb = joint(w, p, b, JointType::Fixed, Vec3(0, 0, 0));
+        jb->connected = 21;
+        run(w, 0.5f);
+        CHECK(absf_(pos_of(w, b).x - 0.3f) < 0.02f, "overlapping connected bodies are not pushed apart (%.3f)", pos_of(w, b).x);
+        ((Joint3D*)w.get_mut(b, ModuleKind::Joint3D))->collide_connected = true;
+        w.shutdown();
+    }
+    // ---- a destroyed partner breaks the joint
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity a = jbody(w, p, "A", Vec3(0, 5, 0), 1.0f, false);
+        Entity b = jbody(w, p, "B", Vec3(2, 5, 0));
+        w.bind_link(31, a);
+        Joint3D* jb = joint(w, p, b, JointType::Fixed, Vec3(0, 0, 0));
+        jb->connected = 31;
+        run(w, 0.3f);
+        w.destroy(a);
+        run(w, 0.3f);
+        CHECK(((const Joint3D*)w.get(b, ModuleKind::Joint3D))->broken, "the joint breaks when the other body is destroyed");
+        w.shutdown();
+    }
+}
+
+static void field_body_tests() {
+    // ---- a force field pushes dynamic bodies inside it
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity ball = jbody(w, p, "Ball", Vec3(0, 0, 0), 2.0f, false);
+        w.add(ball, ModuleKind::Collider3D);
+        p.add(ball);
+        Entity f = make(w, "Wind", Vec3(0, 0, 0));
+        w.add(f, ModuleKind::ForceField);
+        ForceField* ff = (ForceField*)w.get_mut(f, ModuleKind::ForceField);
+        ff->size = Vec3(100, 100, 100); ff->direction = Vec3(1, 0, 0); ff->strength = 6;
+        p.add(f);
+        run(w, 1.0f);
+        float vx = ((const RigidBody3D*)w.get(ball, ModuleKind::RigidBody3D))->velocity.x;
+        CHECK(absf_(vx - 3.0f) < 0.15f, "6 N on 2 kg: 3 m/s after a second (%.2f)", vx);
+        // Turned off, or a body off its layers, feels nothing more.
+        ((ForceField*)w.get_mut(f, ModuleKind::ForceField))->enabled = false;
+        run(w, 0.5f);
+        CHECK(absf_(((const RigidBody3D*)w.get(ball, ModuleKind::RigidBody3D))->velocity.x - vx) < 0.01f, "disabled: no push");
+        ((ForceField*)w.get_mut(f, ModuleKind::ForceField))->enabled = true;
+        ((ForceField*)w.get_mut(f, ModuleKind::ForceField))->layers = 2;       // the ball's collider is on layer 1
+        float v1 = ((const RigidBody3D*)w.get(ball, ModuleKind::RigidBody3D))->velocity.x;
+        run(w, 0.5f);
+        CHECK(absf_(((const RigidBody3D*)w.get(ball, ModuleKind::RigidBody3D))->velocity.x - v1) < 0.01f, "another layer: no push");
+        w.shutdown();
+    }
+    // ---- radial pulls in, a small volume only reaches what is inside
+    {
+        World w; w.init();
+        PhysicsWorld p; p.init(&w, PhysicsEvents());
+        Entity in = jbody(w, p, "In", Vec3(2, 0, 0), 1.0f, false);
+        Entity out = jbody(w, p, "Out", Vec3(20, 0, 0), 1.0f, false);
+        Entity f = make(w, "Well", Vec3(0, 0, 0));
+        w.add(f, ModuleKind::ForceField);
+        ForceField* ff = (ForceField*)w.get_mut(f, ModuleKind::ForceField);
+        ff->shape = FieldShape::Sphere; ff->radius = 5; ff->mode = FieldMode::Radial; ff->strength = -4;
+        p.add(f);
+        run(w, 0.5f);
+        CHECK(((const RigidBody3D*)w.get(in, ModuleKind::RigidBody3D))->velocity.x < -1.5f, "a negative radial field pulls the body in (%.2f)", ((const RigidBody3D*)w.get(in, ModuleKind::RigidBody3D))->velocity.x);
+        CHECK(absf_(((const RigidBody3D*)w.get(out, ModuleKind::RigidBody3D))->velocity.x) < 0.001f, "outside the sphere: nothing");
+        w.shutdown();
+    }
+}
+
 int main() {
     // ---- a dynamic sphere falls and comes to rest on a static box
     {
@@ -605,6 +852,8 @@ int main() {
         printf("physics: 300 bodies, %d contacts in the last step\n", p.stats().contacts);
     }
 
+    joint_tests();
+    field_body_tests();
     printf("physics_tests: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

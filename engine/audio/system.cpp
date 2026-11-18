@@ -261,6 +261,36 @@ void AudioSystem::update(float dt) {
     }
     mixer_.master = master;
 
+    // Audio Reverb Zones: the one the listener is most inside of sets the reverb and muffling.
+    {
+        Mixer::ReverbParams rp;
+        float best = 0;
+        if (I->have_listener && reverb_enabled) {
+            int nz = audio_scan(w, ModuleKind::ReverbZone, &I->scan, &I->scan_cap);
+            for (int i = 0; i < nz; i++) {
+                const ReverbZone* z = (const ReverbZone*)w.get(I->scan[i], ModuleKind::ReverbZone);
+                const WorldTransform* wt = w.world_transform(I->scan[i]);
+                Mat4 inv;
+                if (!z || !z->enabled || !wt || !invert(wt->matrix, &inv)) continue;
+                Vec3 p = transform_point(inv, I->lpos);
+                float outside;
+                if (z->shape == FieldShape::Sphere) outside = length(p) - z->radius;
+                else {
+                    Vec3 q(fabsf_(p.x) - z->size.x * 0.5f, fabsf_(p.y) - z->size.y * 0.5f, fabsf_(p.z) - z->size.z * 0.5f);
+                    outside = length(Vec3(fmaxf_(q.x, 0), fmaxf_(q.y, 0), fmaxf_(q.z, 0)));
+                }
+                float wgt = outside <= 0 ? 1.0f : (z->fade_distance > 0.001f ? 1.0f - outside / z->fade_distance : 0.0f);
+                if (wgt <= best) continue;
+                best = wgt;
+                rp.wet = z->wet * wgt;
+                rp.room = z->room_size;
+                rp.damping = z->damping;
+                rp.lowpass = z->lowpass * wgt;
+            }
+        }
+        mixer_.set_reverb(rp);
+    }
+
     int n = audio_scan(w, ModuleKind::AudioStream, &I->scan, &I->scan_cap);
     for (int i = 0; i < n; i++) {
         Entry* x = I->get(I->scan[i]);

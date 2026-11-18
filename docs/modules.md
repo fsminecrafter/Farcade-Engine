@@ -20,6 +20,14 @@ you add one with **Add module** and remove it with its trash button.
 | Audio Stream | `audio_stream` | A long sound streamed from a file (music, ambience), optionally positioned in 3D |
 | Audio Sampler | `audio_sampler` | Short sounds held in memory and played by scripts, several at once |
 | Light | `light` | Directional, point or spot light |
+| Particle Emitter | `particles` | CPU particles: rate, bursts, shapes (point, sphere, cone, box), lifetime, speed, gravity, drag, size/color/alpha over life, texture, additive or alpha blend, world or local space, loop or duration, prewarm, seed. Methods `play()`, `stop()`, `clear()`, `emit(n)` |
+| Joint 3D | `joint3d` | Fixed, hinge (limits, motor), spring or ball-socket joint between this body and another body or the world; break force. Method `snap()` |
+| Animator | `animator` | Plays clips of a `.fanim` file on the object and its children (docs/animation.md). Methods `play(name, fade)`, `stop()` |
+| Force Field | `force_field` | A box or sphere that pushes bodies and particles inside it: directional, radial or vortex, with falloff and turbulence |
+| Spawner | `spawner` | Makes copies of another object every so often (or by `spawn()`), with a random offset, velocity, lifetime and a limit. Methods `spawn()`, `clear()` |
+| Audio Reverb Zone | `reverb_zone` | Echo and muffling for the listener inside a box or sphere |
+| Billboard | `billboard` | A quad that always faces the camera (icons, foliage cards, glows) |
+| Text 3D | `text3d` | A text label in the world, facing the camera |
 
 Scripts steer a character controller by setting its world-space velocity in
 meters per second. Its capsule collides with the existing physics bodies;
@@ -29,6 +37,54 @@ meters per second. Its capsule collides with the existing physics bodies;
 local controller = self.object.character_controller3d
 controller.velocity = fe.vec3(3, controller.grounded and 0 or controller.velocity.y, 0)
 ```
+
+## Effects and gameplay modules
+
+All parameters are fields: they are in the Inspector, in the `.fscene` file, and
+in Lua as `obj.<module>.<field>` (`obj.particles.emission_rate = 80`,
+`obj.joint3d.motor_speed = -90`, `obj.text3d.text = "Score " .. n`); methods are
+called with a colon (`obj.particles:emit(20)`). Fields marked *live* are written
+by the systems while playing (`particles.playing`, `particles.particle_count`,
+`joint3d.angle`, `joint3d.force`, `joint3d.broken`, `animator.time`,
+`spawner.alive` ...) and some are controls too (`particles.playing`,
+`animator.clip`, `animator.time`). A link field (`joint3d.connected`,
+`spawner.source`) is an object or nil in Lua.
+
+- **Particle Emitter** (`engine/fx/particles.cpp`): a pool of at most 2000
+  particles per emitter, one seeded random sequence per emitter, so the same
+  seed gives the same particles. Cone and Box particles fly along the object's
+  -Z, Sphere particles away from the center, Point particles anywhere. In the
+  editor the selected emitters preview in the viewport and during Play all of
+  them run; the game renderer draws them over the image (alpha or additive,
+  hidden by meshes, `engine/gfx/particles.cpp`), the editor draws them with
+  ImGui over the viewport.
+- **Joint 3D** (`engine/physics`): rows of the sequential impulse solver. The
+  object needs a Rigidbody 3D. The anchor is a point on this object that the
+  joint keeps on the connected body (or in the world); a Spring hangs from the
+  anchor to this object's origin. Hinge angle, speed and limits count this body
+  turning about its axis. Connected bodies do not collide unless asked.
+- **Force Field**: a box or sphere (its object's scale sizes it). Directional
+  pushes along the field's direction, Radial away from (negative: towards) the
+  center, Vortex around the object's Y axis. The force is in newtons on
+  rigidbodies (mass 1 for particles); Linear and Quadratic falloff fade it to
+  zero at the edge; Turbulence varies it in space and time. Layers select which
+  collision layers of bodies it pushes.
+- **Spawner**: copies the template object and its children into the running
+  scene (the template stays: hide or park it). Copies appear at the spawner
+  with the template's scale, get the added velocity (spawner's local space), a
+  share of the spawner's own motion, and are destroyed after `lifetime` or when
+  more than `max_alive` exist (the oldest first).
+- **Animator**: see docs/animation.md. `.mof` has no animation data and the
+  renderer has no skinning; clips animate transforms.
+- **Audio Reverb Zone**: inside the zone (fading out over Fade distance
+  outside) the whole mix gets a short reverb (Wet, Room size, Damping) and
+  optionally a low-pass (Muffle). It is one effect on the master bus.
+- **Billboard / Text 3D**: pictures that face the camera. Text uses a built-in
+  5x7 bitmap font in the game renderer (ASCII). The editor shows a billboard
+  as a tinted rectangle (textures show in the game).
+
+Options to make them cheaper or turn them off: Settings > Graphics > Effects (graphics.cfg: particles, particle_density, particle_depth_test, sprites, audio_reverb; fe.graphics too)
+(particles on/off, density, depth test, sprites, reverb), `FxQuality` in C++.
 
 ## Scene objects
 
@@ -93,7 +149,8 @@ end
   - Mesh colliders use the convex hull of the points given to `PhysicsWorld::set_mesh` (the editor calls it with the object's mesh vertices when play starts); without points a mesh collider is its `size` box. Concave triangle meshes are not done.
   - Triggers report objects entering and leaving them, and first contacts are reported as hits. Scripts get them as `on_trigger_enter`, `on_trigger_exit` and `on_collision`, and the console logs them too.
   - `rigidbody3d.velocity` and `rigidbody3d.angular_velocity` are live.
-  - Not done: joints, continuous collision (very fast small bodies can tunnel through thin colliders), sleeping, concave meshes.
+  - Joints and Force Fields run in the same step (see Effects and gameplay modules).
+  - Not done: continuous collision (very fast small bodies can tunnel through thin colliders), sleeping, concave meshes.
   - A new collider starts fitted to the object's mesh: a sphere for spheres, a thin box for planes.
 - **Audio:** Audio settings are saved, but nothing plays them yet (plan C6: the engine's mixer over `SYS_AUDIO_STREAM`).
 - **Rendering:** the editor's CPU preview does not use lights, sky, sky light or post processing. The FarcadeGL renderer (`engine/gfx`, in progress) does.

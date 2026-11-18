@@ -1,6 +1,8 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
+#include "icon_glyphs.h"
 #include "icons.h"
+#include "model_import.h"
 #include "widgets.h"
 #include "platform/platform.h"
 
@@ -27,6 +29,13 @@ Icon object_icon(const Object& o) {
             if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
             if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
             if (o.modules.has(ModuleKind::AudioListener)) return Icon::Ear;
+            if (o.modules.has(ModuleKind::ReverbZone)) return Icon::Reverb;
+            if (o.modules.has(ModuleKind::ParticleEmitter)) return Icon::Sparks;
+            if (o.modules.has(ModuleKind::ForceField)) return Icon::Wind;
+            if (o.modules.has(ModuleKind::Spawner)) return Icon::Spawn;
+            if (o.modules.has(ModuleKind::Billboard)) return Icon::Sprite;
+            if (o.modules.has(ModuleKind::Text3D)) return Icon::TextT;
+            if (o.modules.has(ModuleKind::Joint3D)) return Icon::Joint;
             return Icon::Empty;
         default: return mesh_icon(o.mesh);
     }
@@ -41,6 +50,14 @@ Icon module_icon(ModuleKind k) {
         case ModuleKind::AudioStream: return Icon::Wave;
         case ModuleKind::AudioSampler: return Icon::Speaker;
         case ModuleKind::Light: return Icon::Bulb;
+        case ModuleKind::ParticleEmitter: return Icon::Sparks;
+        case ModuleKind::Joint3D: return Icon::Joint;
+        case ModuleKind::Animator: return Icon::Clip;
+        case ModuleKind::ForceField: return Icon::Wind;
+        case ModuleKind::Spawner: return Icon::Spawn;
+        case ModuleKind::ReverbZone: return Icon::Reverb;
+        case ModuleKind::Billboard: return Icon::Sprite;
+        case ModuleKind::Text3D: return Icon::TextT;
         case ModuleKind::Camera: return Icon::Camera;
         case ModuleKind::SkyLight: return Icon::Sun;
         case ModuleKind::Sky: return Icon::Cloud;
@@ -90,7 +107,7 @@ static bool search_field(const char* id, const char* hint, char* buf, size_t cap
 // ---------------------------------------------------------------- Hierarchy
 
 void Editor::panel_hierarchy() {
-    ImGui::Begin("Hierarchy");
+    ImGui::Begin(FE_ICON_HIERARCHY "  Hierarchy###Hierarchy");
     const float bs = ImGui::GetFrameHeight();
     static char filter[64];
     search_field("##filter", "Filter objects", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
@@ -381,9 +398,55 @@ static void slot_field(const char* label, char* path, size_t cap, Editor* ed, bo
 
 // Whether a field means something with the other settings as they are
 // (a spot angle only for spot lights, a radius only for round colliders).
+static bool g_playing_inspector = false;     // live (read-only) fields show only while playing
+
 static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f) {
     const char* n = f.name;
     switch (kind) {
+        case ModuleKind::ParticleEmitter: {
+            const ParticleEmitter& e = *(const ParticleEmitter*)data;
+            if (!strcmp(n, "particle_count") || !strcmp(n, "playing")) return g_playing_inspector;
+            if (!strcmp(n, "shape_radius")) return e.shape == EmitShape::Sphere || e.shape == EmitShape::Cone;
+            if (!strcmp(n, "box_size")) return e.shape == EmitShape::Box;
+            if (!strcmp(n, "cone_angle")) return e.shape == EmitShape::Cone;
+            if (!strcmp(n, "burst_interval")) return e.burst_count > 0;
+            if (!strcmp(n, "duration")) return !e.looping;
+            if (!strcmp(n, "prewarm")) return e.looping;
+            return true;
+        }
+        case ModuleKind::Joint3D: {
+            const Joint3D& j = *(const Joint3D*)data;
+            bool hinge = j.type == JointType::Hinge;
+            if (!strcmp(n, "axis") || !strcmp(n, "use_limits") || !strcmp(n, "use_motor")) return hinge;
+            if (!strcmp(n, "limit_min") || !strcmp(n, "limit_max")) return hinge && j.use_limits;
+            if (!strcmp(n, "motor_speed") || !strcmp(n, "motor_torque")) return hinge && j.use_motor;
+            if (!strcmp(n, "rest_length") || !strcmp(n, "stiffness") || !strcmp(n, "damping")) return j.type == JointType::Spring;
+            if (!strcmp(n, "angle")) return g_playing_inspector && hinge;
+            if (!strcmp(n, "force") || !strcmp(n, "broken")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::Animator: {
+            if (!strcmp(n, "playing") || !strcmp(n, "time") || !strcmp(n, "duration")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::ForceField: {
+            const ForceField& ff = *(const ForceField*)data;
+            if (!strcmp(n, "size")) return ff.shape == FieldShape::Box;
+            if (!strcmp(n, "radius")) return ff.shape == FieldShape::Sphere;
+            if (!strcmp(n, "direction")) return ff.mode == FieldMode::Directional;
+            if (!strcmp(n, "turbulence_scale") || !strcmp(n, "turbulence_speed")) return ff.turbulence > 0;
+            return true;
+        }
+        case ModuleKind::Spawner: {
+            if (!strcmp(n, "spawned") || !strcmp(n, "alive")) return g_playing_inspector;
+            return true;
+        }
+        case ModuleKind::ReverbZone: {
+            const ReverbZone& r = *(const ReverbZone*)data;
+            if (!strcmp(n, "size")) return r.shape == FieldShape::Box;
+            if (!strcmp(n, "radius")) return r.shape == FieldShape::Sphere;
+            return true;
+        }
         case ModuleKind::Light: {
             const Light& l = *(const Light*)data;
             if (!strcmp(n, "range")) return l.type != LightType::Directional;
@@ -441,6 +504,7 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
     bool open = section_header(title, module_icon(kind));
     track(key);
     if (!open) return true;
+    g_playing_inspector = playing();
     ImGui::PushID(title);
     float bs = ImGui::GetFrameHeight();
     if (is_module(kind)) {
@@ -448,6 +512,9 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
         static const char* about[] = {
             "Physics: gravity, velocity, collisions.", "A shape that collides or triggers.", "An upright capsule driven by velocity.",
             "Where the game hears from.", "A long sound streamed from a file.", "Short sounds played on demand.", "Lights the scene.",
+            "Particles: sparks, smoke, fire, rain.", "Ties this body to another body or the world.", "Plays a clip from an animation file.",
+            "Wind, fans and vortices that push things.", "Makes copies of another object.", "Echo and muffling inside a volume.",
+            "A picture that always faces the camera.", "A text label in the world.",
         };
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         ImGui::AlignTextToFramePadding();
@@ -565,6 +632,52 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
                 ImGui::InputScalar("##v", ImGuiDataType_U32, fp, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
                 break;
             }
+            case FieldType::Text:
+                prop_label(f.label);
+                ImGui::InputText("##v", (char*)fp, kPathMax);
+                break;
+            case FieldType::Object: {
+                // A link to another object: pick from the list or drop a hierarchy row.
+                prop_label(f.label);
+                ObjectId* link = (ObjectId*)fp;
+                Object* t = scene.get(*link);
+                if (t && t == o) { *link = kNoObject; t = nullptr; }
+                float lw = ImGui::GetContentRegionAvail().x - (t ? bs + 4 : 0);
+                ImGui::SetNextItemWidth(lw);
+                const char* none = !strcmp(f.name, "connected") ? "The world (drop an object)" : "None (drop an object)";
+                if (!t) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+                bool combo = ImGui::BeginCombo("##v", t ? t->name : none);
+                if (!t) ImGui::PopStyleColor();
+                if (combo) {
+                    if (ImGui::Selectable("None", !t)) *link = kNoObject;
+                    for (int oi = 0; oi < scene.count(); oi++) {
+                        Object& c = scene.at(oi);
+                        if (c.id == o->id) continue;
+                        ImGui::PushID((int)c.id);
+                        if (ImGui::Selectable(c.name, c.id == *link)) *link = c.id;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("FE_OBJECT")) {
+                        ObjectId dropped = *(const ObjectId*)pl->Data;
+                        if (dropped != o->id) *link = dropped;
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                if (t) {
+                    ImGui::SameLine(0, 4);
+                    if (icon_button(Icon::Pointer, "Select it", false, bs)) {
+                        ObjectId target = t->id;
+                        ImGui::PopID();
+                        ImGui::PopID();
+                        scene.select_only(target);
+                        return false;
+                    }
+                }
+                break;
+            }
         }
         if (!tracked) track(key);
         ImGui::PopID();
@@ -595,10 +708,19 @@ void Editor::add_module_button(Object* o) {
     track("inspector:add_module");
     if (clicked) ImGui::OpenPopup("##add_module_menu");
     if (ImGui::BeginPopup("##add_module_menu")) {
-        static const char* groups[] = { "Physics", nullptr, nullptr, "Audio", nullptr, nullptr, "Rendering" };
-        for (int k = 0; k < kFirstObjectSettings; k++) {
-            ModuleKind mk = (ModuleKind)k;
-            if (groups[k]) { if (k) ImGui::Separator(); ImGui::TextDisabled("%s", groups[k]); }
+        static const struct { const char* group; ModuleKind kind; } menu[] = {
+            { "Physics", ModuleKind::RigidBody3D }, { nullptr, ModuleKind::Collider3D }, { nullptr, ModuleKind::CharacterController3D },
+            { nullptr, ModuleKind::Joint3D }, { nullptr, ModuleKind::ForceField },
+            { "Audio", ModuleKind::AudioListener }, { nullptr, ModuleKind::AudioStream }, { nullptr, ModuleKind::AudioSampler },
+            { nullptr, ModuleKind::ReverbZone },
+            { "Rendering", ModuleKind::Light }, { nullptr, ModuleKind::ParticleEmitter }, { nullptr, ModuleKind::Billboard },
+            { nullptr, ModuleKind::Text3D },
+            { "Gameplay", ModuleKind::Animator }, { nullptr, ModuleKind::Spawner },
+        };
+        bool first_group = true;
+        for (auto& it : menu) {
+            ModuleKind mk = it.kind;
+            if (it.group) { if (!first_group) ImGui::Separator(); first_group = false; ImGui::TextDisabled("%s", it.group); }
             const ModuleInfo& mi = module_info(mk);
             bool have = o->modules.has(mk);
             ImVec2 ip = ImGui::GetCursorScreenPos();
@@ -847,6 +969,38 @@ void Editor::settings_graphics() {
         ImGui::AlignTextToFramePadding();
         if (fgl_backend[0]) ImGui::Text("%s  (%s)", fgl_backend, gpu ? "graphics card" : "CPU");
         else ImGui::TextDisabled("not started yet: switch the viewport to FarcadeGL");
+        static const char* levels[] = { "Auto", "FL0", "FL1-ready", "GPU tier" };
+        int lm = (int)g.feature_level;
+        prop_label("Feature level");
+        if (ImGui::Combo("##flevel", &lm, levels, 4)) g.feature_level = (gfx::FeatureLevelMode)lm;
+        track("gfx:level");
+        if (fgl_backend[0]) {
+            prop_label("  Running");
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%s%s%s", gfx::feature_level_name(fgl_features.level), fgl_features.level_forced ? " (forced)" : "",
+                        fgl_features.level_clamped ? " (the device lacks what the request needs)" : "");
+            const gfx::PassCaps& pc = fgl_features.pass_caps;
+            char caps[96];
+            snprintf(caps, sizeof(caps), "Device: scissor %s, mipmaps %s, 16 texture units %s, multiple targets %s",
+                     pc.scissor ? "yes" : "no", pc.mipmaps ? "yes" : "no", pc.tex16 ? "yes" : "no", pc.mrt ? "yes" : "no");
+            faint(caps);
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Effects", Icon::Sparks)) {
+        prop_label("Particles");
+        toggle_switch("##fxp", &g.fx_particles);
+        track("gfx:particles");
+        prop_label("Density");
+        ImGui::SliderFloat("##fxd", &g.fx_particle_density, 0.1f, 1.0f, "%.2f");
+        track("gfx:particle_density");
+        prop_label("Hidden by meshes");
+        toggle_switch("##fxs", &g.fx_depth_test);
+        prop_label("Billboards and text");
+        toggle_switch("##fxb", &g.fx_sprites);
+        prop_label("Audio reverb zones");
+        toggle_switch("##fxr", &g.fx_reverb);
+        faint("Density scales every emitter's rate and max particles; the depth test is used by the FarcadeGL renderer and costs a coarse depth map.");
         ImGui::Dummy(ImVec2(0, 4));
     }
     if (section_header("Quality", Icon::Sun)) {
@@ -857,6 +1011,36 @@ void Editor::settings_graphics() {
         track("gfx:preset");
         prop_label("Render scale");
         ImGui::SliderFloat("##rscale", &g.render_scale, 0.25f, 1.0f, "%.2f");
+        track("gfx:rscale");
+        prop_label("Dynamic resolution");
+        toggle_switch("##dynres", &g.dynamic_resolution);
+        track("gfx:dynres");
+        if (g.dynamic_resolution) {
+            prop_label("  Target");
+            ImGui::SliderFloat("##dynms", &g.target_frame_ms, 8.0f, 100.0f, "%.0f ms");
+            prop_label("  Lowest scale");
+            ImGui::SliderFloat("##dynmin", &g.min_render_scale, 0.25f, 1.0f, "%.2f");
+        }
+        {
+            using namespace gfx;
+            static const char* gi_modes[] = { "Hemisphere ambient", "Probe GI" };
+            static const char* gi_density[] = { "Coarse (2 m)", "Normal (1 m)", "Fine (0.5 m)" };
+            static const char* gi_update[] = { "Slow", "Normal", "Fast" };
+            int gm = (int)g.gi_mode, gd = (int)g.gi_density, gu = (int)g.gi_update;
+            bool gchanged = false;
+            prop_label("Global illumination");
+            if (ImGui::Combo("##gimode", &gm, gi_modes, 2)) { g.gi_mode = (GiMode)gm; gchanged = true; }
+            track("gfx:gi");
+            if (g.gi_mode == GiMode::Probes) {
+                prop_label("  Probe density");
+                if (ImGui::Combo("##gidens", &gd, gi_density, 3)) { g.gi_density = (GiDensity)gd; gchanged = true; }
+                prop_label("  Update rate");
+                if (ImGui::Combo("##giupd", &gu, gi_update, 3)) { g.gi_update = (GiUpdate)gu; gchanged = true; }
+                faint("Voxels built from the scene and light probes updated on the CPU: bounce light and colour "
+                      "bleeding on every feature level, a few ms of one core. Strength and bounce are on the Sky Light.");
+            }
+            if (gchanged) g.preset = GraphicsPreset::Custom;
+        }
         faint("Fog is set on the Sky object.");
         ImGui::Dummy(ImVec2(0, 4));
     }
@@ -871,10 +1055,29 @@ void Editor::settings_graphics() {
         }
         ImGui::BeginDisabled(!active);
         bool changed = false;
-        prop_label("Shadows");
-        changed |= toggle_switch("##shadows", &g.shadows);
-        track("gfx:shadows");
+        // A combo over the named choices of a graphics property (graphics_settings.h); the older, cheaper
+        // technique stays in the list next to the newer ones.
+        auto choice = [&](const char* label, const char* id, const char* prop, const char* const* shown) {
+            using namespace gfx;
+            int pi = graphics_property_find(prop);
+            const GraphicsProperty& gp = graphics_property(pi);
+            char cur[40];
+            graphics_get_text(g, prop, cur, sizeof cur);
+            int ci = 0, n = 0;
+            for (; gp.choices[n]; n++) if (!strcmp(gp.choices[n], cur)) ci = n;
+            prop_label(label);
+            if (ImGui::Combo(id, &ci, shown, n)) { graphics_set_text(&g, prop, gp.choices[ci]); changed = true; }
+            track(id);
+        };
+        static const char* shadow_modes[] = { "Off", "Single map", "Cascades" };
+        choice("Shadows", "##shadowmode", "shadows", shadow_modes);
         if (g.shadows) {
+            if (g.shadow_cascades >= 2) {
+                prop_label("  Cascades");
+                changed |= ImGui::SliderInt("##casc", &g.shadow_cascades, 2, 3);
+                prop_label("  Cache far");
+                changed |= toggle_switch("##casccache", &g.cascade_cache);
+            }
             static const int sizes[] = { 512, 1024, 2048, 4096 };
             static const char* size_names[] = { "512", "1024", "2048", "4096" };
             int si = 0;
@@ -901,21 +1104,21 @@ void Editor::settings_graphics() {
             if (ImGui::Combo("##lsres", &ai, asize_names, 4)) { g.local_shadow_resolution = asizes[ai]; changed = true; }
             faint("A spot light takes one of 16 atlas tiles, a point light six.");
         }
-        prop_label("Ambient occlusion");
-        changed |= toggle_switch("##ao", &g.ambient_occlusion);
-        track("gfx:ao");
+        static const char* ao_modes[] = { "Off", "SSAO", "GTAO" };
+        choice("Ambient occlusion", "##aomode", "ao", ao_modes);
         if (g.ambient_occlusion) {
             prop_label("  Radius");
             changed |= ImGui::SliderFloat("##aor", &g.ao_radius, 0.1f, 2.0f, "%.2f m");
             prop_label("  Strength");
             changed |= ImGui::SliderFloat("##aos", &g.ao_strength, 0.0f, 2.0f, "%.2f");
         }
-        prop_label("Bloom");
-        changed |= toggle_switch("##bloom", &g.bloom);
-        track("gfx:bloom");
-        prop_label("Antialiasing");
-        changed |= toggle_switch("##aa", &g.antialiasing);
-        track("gfx:aa");
+        static const char* bloom_modes[] = { "Off", "Simple", "Chain" };
+        choice("Bloom", "##bloommode", "bloom", bloom_modes);
+        static const char* aa_modes[] = { "Off", "FXAA", "SMAA", "TAA" };
+        choice("Antialiasing", "##aamode", "aa", aa_modes);
+        if (g.antialiasing && g.aa_mode == gfx::AAMode::TAA) faint("TAA jitters the camera and keeps a history; with Render scale below 1 it also upscales. Moving objects can ghost a little. FXAA and SMAA stay available.");
+        static const char* ssr_modes[] = { "Off", "On" };
+        choice("Reflections (SSR)", "##ssrmode", "ssr", ssr_modes);
         prop_label("PBR shading");
         changed |= toggle_switch("##pbr", &g.pbr);
         track("gfx:pbr");
@@ -933,7 +1136,7 @@ void Editor::settings_graphics() {
 }
 
 void Editor::panel_inspector() {
-    ImGui::Begin("Inspector");
+    ImGui::Begin(FE_ICON_INSPECTOR "  Inspector###Inspector");
     int n = scene.selected_count();
     Object* o = scene.get(scene.active());
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -945,13 +1148,31 @@ void Editor::panel_inspector() {
         float cy = p.y + avail.y * 0.38f;
         draw_icon(dl, Icon::Cube, ImVec2(p.x + avail.x * 0.5f - 18, cy - 44), 36, pal.text_faint);
         const char* l1 = "Nothing selected";
-        const char* l2 = "Click an object in the viewport or the hierarchy.";
-        const char* l3 = "Shift-click adds to the selection.";
+        // Centered lines, wrapped to the panel so narrow panels do not cut them.
+        const char* lines[] = { "Click an object in the viewport or the hierarchy.", "Shift-click adds to the selection." };
         if (font_medium) ImGui::PushFont(font_medium, 0.0f);
         dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l1).x) * 0.5f, cy), pal.text_dim, l1);
         if (font_medium) ImGui::PopFont();
-        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l2).x) * 0.5f, cy + fs + 8), pal.text_faint, l2);
-        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l3).x) * 0.5f, cy + fs * 2 + 12), pal.text_faint, l3);
+        float y = cy + fs + 8, wrap = avail.x - 24.0f;
+        for (const char* text : lines) {
+            const char* t = text;
+            while (*t) {
+                // the longest run of words that fits
+                const char* end = t;
+                const char* fit = nullptr;
+                for (;;) {
+                    while (*end && *end != ' ') end++;
+                    if (ImGui::CalcTextSize(t, end).x > wrap && fit) break;
+                    fit = end;
+                    if (!*end) break;
+                    end++;
+                }
+                float lw = ImGui::CalcTextSize(t, fit).x;
+                dl->AddText(ImVec2(p.x + (avail.x - lw) * 0.5f, y), pal.text_faint, t, fit);
+                y += fs + 4;
+                t = *fit ? fit + 1 : fit;
+            }
+        }
         ImGui::End();
         return;
     }
@@ -1137,7 +1358,7 @@ ImU32 file_color(const platform::DirEntry& e) {
 }  // namespace
 
 void Editor::panel_files() {
-    ImGui::Begin("Files");
+    ImGui::Begin(FE_ICON_FILES "  Files###Files");
     if (!g_listing.valid || strcmp(g_listing.dir, files_dir)) refresh(files_dir);
     static char selected_file[512];
     static char filter[64];
@@ -1262,6 +1483,7 @@ void Editor::panel_files() {
                 if (!platform::reveal_in_file_manager(full)) log(LogLevel::Error, "Could not open the file manager");
             }
             if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
+            if (!e.is_dir && path_is_importable_model(e.name) && menu_item("Import as model")) import_model(full);
             if (menu_item("Copy path")) ImGui::SetClipboardText(full);
             ImGui::EndPopup();
         }
@@ -1304,7 +1526,7 @@ void Editor::panel_files() {
 // ---------------------------------------------------------------- Console
 
 void Editor::panel_console() {
-    ImGui::Begin("Console");
+    ImGui::Begin(FE_ICON_CONSOLE "  Console###Console");
     static bool show[3] = { true, true, true };
     static char filter[64];
     int counts[3] = { 0, 0, 0 };
@@ -1369,19 +1591,52 @@ void Editor::panel_console() {
 // ---------------------------------------------------------------- Settings
 
 void Editor::window_settings() {
-    ImGui::SetNextWindowSize(ImVec2(560, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-    if (!ImGui::Begin("Settings", &show_settings, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
-        ImGui::End();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(520, 320), ImVec2(FLT_MAX, FLT_MAX));
+    if (!begin_floating(FE_ICON_GEAR "  Settings###Settings", &show_settings, ImGuiWindowFlags_NoCollapse)) {
+        end_floating();
         return;
     }
-    // Tabs inside a window: the selected one gets a visible background.
-    ImGui::PushStyleColor(ImGuiCol_TabSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
-    ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
-    bool tabs = ImGui::BeginTabBar("##settings");
-    ImGui::PopStyleColor(2);
-    if (tabs) {
-        if (ImGui::BeginTabItem("General")) {
+    // A navigation column on the left, the page on the right.
+    struct Page { Icon icon; const char* name; const char* about; };
+    static const Page pages[] = {
+        { Icon::Gear, "General", "How the editor behaves." },
+        { Icon::Sun, "Appearance", "Theme and colors." },
+        { Icon::Grid, "Viewport", "Grid, snapping and the CPU preview." },
+        { Icon::Monitor, "Graphics", "FarcadeGL: presets, every technique as a choice, effects. Exported with games." },
+        { Icon::File, "File editors", "Programs that open files from the Files panel." },
+    };
+    const int page_count = (int)(sizeof(pages) / sizeof(pages[0]));
+    if (settings_page < 0 || settings_page >= page_count) settings_page = 0;
+    float nav_w = 184.0f * settings.ui_scale;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(pal.sidebar));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::BeginChild("##settings_nav", ImVec2(nav_w, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    for (int i = 0; i < page_count; i++) {
+        char id[32];
+        snprintf(id, sizeof(id), "##page%d", i);
+        if (nav_item(id, pages[i].icon, pages[i].name, settings_page == i)) settings_page = i;
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0, 14.0f);
+    ImGui::BeginChild("##settings_page", ImVec2(0, 0));
+    {
+        ImGui::PushFont(font_medium);
+        ImGui::SetWindowFontScale(1.25f);
+        ImGui::TextUnformatted(pages[settings_page].name);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_dim));
+        ImGui::TextWrapped("%s", pages[settings_page].about);
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 6));
+    }
+    {
+        if (settings_page == 0) {
             ImGui::Dummy(ImVec2(0, 4));
             prop_label("Invert scrolling");
             toggle_switch("##invert_scrolling", &settings.invert_scrolling);
@@ -1389,15 +1644,13 @@ void Editor::window_settings() {
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
             ImGui::TextWrapped("Reverse the mouse wheel direction for scrolling and viewport zoom.");
             ImGui::PopStyleColor();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Appearance")) {
+        if (settings_page == 1) {
             ImGui::Dummy(ImVec2(0, 4));
             prop_label("Dark theme");
             if (toggle_switch("##dark", &settings.dark_theme)) apply_theme();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Viewport")) {
+        if (settings_page == 2) {
             ImGui::Dummy(ImVec2(0, 4));
             if (section_header("Grid and snap", Icon::Grid)) {
                 prop_label("Show grid");
@@ -1424,13 +1677,11 @@ void Editor::window_settings() {
                                    "the camera or an object it draws without smoothing and shadows, and redraws in full when you let go.");
                 ImGui::PopStyleColor();
             }
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Graphics")) {
+        if (settings_page == 3) {
             settings_graphics();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("File editors")) {
+        if (settings_page == 4) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_dim));
             ImGui::TextWrapped("Double-clicking a file in Files opens it with the program set for its extension. "
@@ -1468,11 +1719,10 @@ void Editor::window_settings() {
                 snprintf(e.extension, sizeof(e.extension), ".ext");
                 snprintf(e.program, sizeof(e.program), "0:/programs/");
             }
-            ImGui::EndTabItem();
         }
-        ImGui::EndTabBar();
     }
-    ImGui::End();
+    ImGui::EndChild();
+    end_floating();
 }
 
 }  // namespace fe

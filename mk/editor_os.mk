@@ -5,9 +5,9 @@
 # The lists are expanded when the link rule runs, so files added to
 # mk/editor.mk are picked up whatever the include order.
 
-EDITOR_OS_SRC = $(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) $(ECS_SRC) $(FLECS_SRC) $(GFX_SRC) $(PHYSICS_SRC) $(LUA_SRC) $(SCRIPT_SRC) $(AUDIO_SRC) editor/platform/platform_minimalos.cpp editor/main_os.cpp
+EDITOR_OS_SRC = $(IMGUI_SRC) $(CORE_SRC) $(EDITOR_SRC) $(ECS_SRC) $(FLECS_SRC) $(GFX_SRC) $(PHYSICS_SRC) $(LUA_SRC) $(SCRIPT_SRC) $(AUDIO_SRC) $(FX_SRC) editor/platform/platform_minimalos.cpp editor/main_os.cpp
 
-OS_OBJS_farcade-editor = $(call os_objs,$(EDITOR_OS_SRC)) $(BUILD)/os/gen/fonts.o
+OS_OBJS_farcade-editor = $(call os_objs,$(EDITOR_OS_SRC)) $(BUILD)/os/gen/fonts.o $(BUILD)/os/gen/icon_pack.o
 
 $(BUILD)/os/editor/%.o: OS_EXTRA_FLAGS += $(EDITOR_INC) -Wno-unused-function -Wno-missing-field-initializers
 $(BUILD)/os/engine/%.o: OS_EXTRA_FLAGS += $(EDITOR_INC)
@@ -15,5 +15,9 @@ $(BUILD)/os/engine/%.o: OS_EXTRA_FLAGS += $(EDITOR_INC)
 $(BUILD)/os/gen/fonts.o: $(FONTS_CPP)
 	@mkdir -p $(dir $@)
 	$(OS_CXX) $(LANG_CXX) $(OS_FLAGS) -O0 -c $< -o $@
+
+$(BUILD)/os/gen/icon_pack.o: $(ICONS_CPP)
+	@mkdir -p $(dir $@)
+	$(OS_CXX) $(LANG_CXX) $(OS_FLAGS) $(EDITOR_INC) -O0 -c $< -o $@
 
 OS_PROGRAMS += $(BUILD)/os/bin/farcade-editor.run

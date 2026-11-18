@@ -10,6 +10,9 @@
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
+#define STB_IMAGE_WRITE_STATIC           // a private copy (the platform and the importers have their own)
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 #include "imgui/imgui_internal.h"
 
 #include <stdio.h>
@@ -133,7 +136,31 @@ int main(int argc, char** argv) {
           "  local ball = self.follow and self.follow:script(\"ball\")\n"
           "  self.on = ball ~= nil and ball.speed > self.threshold\n"
           "end\n");
-    touch(project, "crate.png", "PNG");
+    // A real crate texture (planks with a frame), so FarcadeGL draws it.
+    {
+        enum { T = 128 };
+        static uint8_t px[T * T * 3];
+        for (int y = 0; y < T; y++)
+            for (int x = 0; x < T; x++) {
+                bool frame = x < 10 || x >= T - 10 || y < 10 || y >= T - 10;
+                bool brace = abs((x - y)) < 7 || abs((x + y) - (T - 1)) < 7;
+                int plank = (y / 27) & 1;
+                float grain = 0.88f + 0.12f * fsin((float)x * 0.21f + fsin((float)y * 0.07f) * 3.0f);
+                float shade = frame || brace ? 0.78f : (plank ? 0.95f : 1.0f) * grain;
+                if (!frame && !brace && y % 27 == 0) shade *= 0.55f;          // gaps between planks
+                uint8_t* c = &px[(y * T + x) * 3];
+                c[0] = (uint8_t)(214 * shade);
+                c[1] = (uint8_t)(150 * shade);
+                c[2] = (uint8_t)(84 * shade);
+            }
+        char path[512];
+        snprintf(path, sizeof(path), "%s/assets", project);
+        mkdir(path, 0755);
+        snprintf(path, sizeof(path), "%s/assets/crate.png", project);
+        stbi_write_png(path, T, T, 3, px, T * 3);
+        snprintf(path, sizeof(path), "%s/crate.png", project);      // also next to the scenes, for the Files panel
+        stbi_write_png(path, T, T, 3, px, T * 3);
+    }
     touch(project, "grass.jpg", "JPG");
     touch(project, "notes.txt", "todo\n");
 
@@ -202,7 +229,7 @@ int main(int argc, char** argv) {
     // inspector), in both themes; then the renderer menu open.
     ed.scene.clear_selection();
     ed.play();
-    ImGui::SetWindowFocus("Console");
+    ImGui::SetWindowFocus("###Console");
     for (int t = 0; t < 2; t++) {
         ed.settings.dark_theme = t == 0;
         ed.apply_theme();
@@ -222,7 +249,7 @@ int main(int argc, char** argv) {
         ObjectId sphere = by_name("Ball"), cam2 = by_name("Overview Camera");
         ed.scene.select_only(sphere);
         ed.frame();
-        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
         for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 330); ed.frame(); }
         snprintf(path, sizeof(path), "%s/editor-modules.png", out);
         if (!platform::headless_save_png(path)) return 1;
@@ -242,7 +269,7 @@ int main(int argc, char** argv) {
         ed.scene.select_only(pil);
         ed.edit_collider = true;
         ed.tool = Tool::Select;
-        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
         for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 300); ed.frame(); }
         snprintf(path, sizeof(path), "%s/editor-collider.png", out);
         if (!platform::headless_save_png(path)) return 1;
@@ -274,7 +301,7 @@ int main(int argc, char** argv) {
             if (!strcmp(ed.scene.at(i).name, "Pillar")) ed.scene.select_only(ed.scene.at(i).id);
         ed.save_scene();
         for (int i = 0; i < 2; i++) ed.frame();
-        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) {
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("###Inspector")) {
             const Editor::UiRect* r = ed.find_rect("inspector:roughness");
             if (r) ImGui::SetScrollY(iw2, iw2->Scroll.y + (r->y - iw2->Pos.y) - 160);
         }
@@ -282,7 +309,7 @@ int main(int argc, char** argv) {
         snprintf(path, sizeof(path), "%s/editor-material.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
-        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector")) ImGui::SetScrollY(iw2, 0);
+        if (ImGuiWindow* iw2 = ImGui::FindWindowByName("###Inspector")) ImGui::SetScrollY(iw2, 0);
         // An unsaved change, then File > New scene: the prompt. The pillar
         // turns gold (one undo step), then Escape cancels the prompt and
         // Ctrl+Z puts the pillar back.
@@ -331,8 +358,53 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }
-    // The settings window, on its Viewport tab.
+    // The Create menu open (its items carry the vector icons), with the
+    // Light submenu. Menus need time to pass between frames.
+    {
+        static double t = 1000.0;
+        auto step = [&](int n) { for (int i = 0; i < n; i++) { t += 1.0 / 60.0; platform::headless_set_time(t); ed.frame(); } };
+        auto move = [&](float x, float y) {
+            platform::Event e;
+            e.type = platform::EventType::MouseMove; e.x = x; e.y = y;
+            platform::headless_push(e);
+        };
+        auto button = [&](float x, float y, bool down) {
+            platform::Event e;
+            e.type = platform::EventType::MouseButton; e.button = 0; e.down = down; e.x = x; e.y = y;
+            platform::headless_push(e);
+        };
+        // The renderer menu from the shot above is still open: close it first.
+        {
+            platform::Event k;
+            k.type = platform::EventType::Key; k.key = platform::KEY_ESCAPE; k.down = true;
+            platform::headless_push(k); step(1);
+            k.down = false;
+            platform::headless_push(k); step(2);
+        }
+        if (const Editor::UiRect* r = ed.find_rect("menubar:Create")) {
+            float x = r->x + r->w * 0.5f, y = r->y + r->h * 0.5f;
+            move(x, y); step(1);
+            button(x, y, true); step(1);
+            button(x, y, false); step(2);
+            if (const Editor::UiRect* c = ed.find_rect("menu:Camera")) {
+                // "Light" is the row above "Camera".
+                move(c->x + 30, c->y - c->h * 0.5f);
+                step(30);
+            }
+            snprintf(path, sizeof(path), "%s/editor-menu.png", out);
+            if (!platform::headless_save_png(path)) return 1;
+            printf("wrote %s\n", path);
+            platform::Event k;
+            k.type = platform::EventType::Key; k.key = platform::KEY_ESCAPE; k.down = true;
+            platform::headless_push(k); step(1);
+            k.down = false;
+            platform::headless_push(k); step(1);
+            move(10, 790); step(2);
+        }
+    }
+    // The settings window, on its Graphics page.
     ed.show_settings = true;
+    ed.settings_page = 3;       // Graphics: the page with the most to show
     ed.frame();
     ed.frame();
     snprintf(path, sizeof(path), "%s/editor-settings.png", out);

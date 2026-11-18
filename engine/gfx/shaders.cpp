@@ -1,4 +1,5 @@
 #include "gfx/shaders.h"
+#include "gfx/shaders_post.h"
 
 #include <string.h>
 
@@ -28,44 +29,12 @@ struct Text {
     }
 };
 
-// Declarations and the post processing chain shared by every fragment shader:
-// exposure, tint, tonemap, contrast, saturation, vignette, linear to sRGB.
-const char* const kPost =
-    "uniform vec4 u_post;\n"
-    "uniform vec4 u_tint;\n"
-    "uniform vec4 u_res;\n"
-    "vec3 lin2srgb(vec3 c) {\n"
-    "    return mix(c * 12.92, 1.055 * pow(c, vec3(0.4166667)) - 0.055, step(0.0031308, c));\n"
-    "}\n"
-    "vec3 post(vec3 c) {\n"
-    "    c = c * exp2(u_post.x) * u_tint.rgb;\n"
-    "    vec3 t = c;\n"
-    "    if (u_tint.w > 1.5) t = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);\n"
-    "    else if (u_tint.w > 0.5) t = c / (1.0 + c);\n"
-    "    t = clamp(t, 0.0, 1.0);\n"
-    "    t = clamp((t - 0.18) * u_post.y + 0.18, 0.0, 1.0);\n"
-    "    float luma = dot(t, vec3(0.2126, 0.7152, 0.0722));\n"
-    "    t = mix(vec3(luma), t, u_post.z);\n"
-    "    vec2 q = (gl_FragCoord.xy + u_res.zw) / u_res.xy - 0.5;\n"
-    "    float edge = clamp(length(q) * 1.4142136, 0.0, 1.0);\n"
-    "    t = t * (1.0 - u_post.w * smoothstep(0.25, 1.0, edge));\n"
-    "    return lin2srgb(clamp(t, 0.0, 1.0));\n"
-    "}\n";
-
-// The draft version of post(): exposure, tint and tonemap only, and a cheap
-// approximation of the sRGB curve (within a few percent for mid tones).
-const char* const kPostDraft =
-    "uniform vec4 u_post;\n"
-    "uniform vec4 u_tint;\n"
-    "vec3 post(vec3 c) {\n"
-    "    c = c * exp2(u_post.x) * u_tint.rgb;\n"
-    "    vec3 t = c;\n"
-    "    if (u_tint.w > 1.5) t = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);\n"
-    "    else if (u_tint.w > 0.5) t = c / (1.0 + c);\n"
-    "    t = clamp(t, 0.0, 1.0);\n"
-    "    vec3 s = sqrt(t);\n"
-    "    return 0.8 * s + 0.2 * sqrt(s);\n"
-    "}\n";
+// The post chain for this frame's choices (shaders_post.h), appended to `t`.
+void add_post(Text& t, const PostKey& pk) {
+    char buf[4096];
+    emit_post_chain(buf, sizeof buf, pk);
+    t.add(buf);
+}
 
 const char* const kSrgb2Lin =
     "vec3 srgb2lin(vec3 c) {\n"
@@ -96,6 +65,37 @@ const char* const kPointHead =
 
 }  // namespace
 
+size_t emit_gi_lookup(char* out, size_t cap) {
+    Text t(out, cap);
+    // Few registers (the GPU tier's lit shader is close to the limit): b = (x, y0, row of y0, fy), r, s, inv.
+    t.add("uniform sampler2D u_gi;\n"
+          "uniform vec4 u_gi0;\n"
+          "uniform vec4 u_gi1;\n"
+          "vec3 gi_amb(vec3 N, vec3 P) {\n"
+          "    vec4 b = vec4(clamp((P - u_gi0.xyz) * u_gi0.w, vec3(0.5), u_gi1.xyz - 0.5), 0.0);\n"
+          "    b.w = b.y - 0.5;\n"
+          "    b.y = min(floor(b.w), u_gi1.y - 2.0);\n"
+          "    b.w = b.w - b.y;\n"
+          "    b.z = b.z + b.y * u_gi1.z;\n"
+          "    vec2 inv = vec2(0.25 / u_gi1.x, 1.0 / (u_gi1.y * u_gi1.z));\n"
+          "    vec3 s = mix(texture(u_gi, vec2(b.x, b.z) * inv).rgb, texture(u_gi, vec2(b.x, b.z + u_gi1.z) * inv).rgb, b.w);\n"
+          "    vec3 r = s * s * 4.0;\n");
+    static const char* const comp[3] = { "x", "y", "z" };
+    for (int c = 1; c <= 3; c++) {
+        t.add("    s = mix(texture(u_gi, vec2(b.x + ");
+        t.add(c == 1 ? "u_gi1.x" : (c == 2 ? "2.0 * u_gi1.x" : "3.0 * u_gi1.x"));
+        t.add(", b.z) * inv).rgb, texture(u_gi, vec2(b.x + ");
+        t.add(c == 1 ? "u_gi1.x" : (c == 2 ? "2.0 * u_gi1.x" : "3.0 * u_gi1.x"));
+        t.add(", b.z + u_gi1.z) * inv).rgb, b.w) * 2.0 - 1.0;\n"
+              "    r += s * abs(s) * (2.0 * N.");
+        t.add(comp[c - 1]);
+        t.add(");\n");
+    }
+    t.add("    return max(r, vec3(0.0)) * u_gi1.w;\n"
+          "}\n");
+    return t.n;
+}
+
 void lit_vertex(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform mat4 fgl_ModelViewProjection;\n"
@@ -119,8 +119,10 @@ void lit_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
+void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& pk, bool gi_on) {
     Text t(out, cap);
+    const bool draft = pk.draft;
+    const bool gi = gi_on && !draft;       // the draft shaders keep the hemisphere
     int total = nd + np + ns;
     t.add("uniform vec4 u_mat;\n"
           "uniform vec4 u_cam;\n"
@@ -138,7 +140,12 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
           "varying vec3 v_alb;\n"
           "varying vec2 v_uv;\n");
     t.add(kSrgb2Lin);
-    t.add(draft ? kPostDraft : kPost);
+    if (gi) {
+        char buf[2048];
+        emit_gi_lookup(buf, sizeof buf);
+        t.add(buf);
+    }
+    add_post(t, pk);
     const char* tail = draft ? kLightTailDraft : kLightTail;
     t.add("void main() {\n"
           "    vec3 N = normalize(v_nrm);\n");
@@ -167,8 +174,8 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, bool draft) {
         t.add("    att = att * smoothstep(u_l3[i].x, u_l3[i].y, dot(-L, u_l1[i].xyz));\n");
         t.add(tail);
     }
-    t.add("    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n"
-          "    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
+    t.add(gi ? "    vec3 amb = gi_amb(N, v_pos);\n" : "    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
+    t.add("    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
           "    vec3 lit = albedo * (amb + diff);\n");
     t.add(draft ? "    gl_FragColor = vec4(post(lit), 1.0);\n}\n" : "    gl_FragColor = vec4(post(lit + spec), 1.0);\n}\n");
 }
@@ -189,13 +196,13 @@ void unlit_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void unlit_fragment(char* out, size_t cap, bool draft) {
+void unlit_fragment(char* out, size_t cap, const PostKey& pk) {
     Text t(out, cap);
     t.add("uniform sampler2D u_texture;\n"
           "varying vec3 v_alb;\n"
           "varying vec2 v_uv;\n");
     t.add(kSrgb2Lin);
-    t.add(draft ? kPostDraft : kPost);
+    add_post(t, pk);
     t.add("void main() {\n"
           "    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
           "    gl_FragColor = vec4(post(albedo), 1.0);\n"
@@ -212,8 +219,9 @@ void sky_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void sky_fragment(char* out, size_t cap, bool draft) {
+void sky_fragment(char* out, size_t cap, const PostKey& pk) {
     Text t(out, cap);
+    const bool draft = pk.draft;
     t.add("uniform vec4 u_fwd;\n"
           "uniform vec4 u_rx;\n"
           "uniform vec4 u_ry;\n"
@@ -223,7 +231,7 @@ void sky_fragment(char* out, size_t cap, bool draft) {
           "uniform vec4 u_sun;\n"
           "uniform vec4 u_suncol;\n"
           "varying vec2 v_ndc;\n");
-    t.add(draft ? kPostDraft : kPost);
+    add_post(t, pk);
     t.add("void main() {\n"
           "    vec3 d = normalize(u_fwd.xyz + u_rx.xyz * v_ndc.x + u_ry.xyz * v_ndc.y);\n"
           "    float up = clamp(d.y, 0.0, 1.0);\n"

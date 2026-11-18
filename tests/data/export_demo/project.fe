@@ -1,0 +1,6 @@
+farcade-project 1
+name "Export Demo"
+version "1.0"
+entry_scene "main.fscene"
+window_width 640
+window_height 400

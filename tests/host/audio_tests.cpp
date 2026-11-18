@@ -718,6 +718,90 @@ static void test_spatial() {
     }
 }
 
+static Entity reverb_zone(Rig& r, Vec3 pos, float size, float wet, float lowpass) {
+    Entity z = r.w.create("Reverb");
+    r.w.transform(z)->position = pos;
+    r.w.add(z, ModuleKind::ReverbZone);
+    ReverbZone* m = (ReverbZone*)r.w.get_mut(z, ModuleKind::ReverbZone);
+    m->size = Vec3(size, size, size);
+    m->wet = wet; m->lowpass = lowpass; m->room_size = 0.8f; m->fade_distance = 4.0f;
+    return z;
+}
+
+static void test_reverb() {
+    // A short tone, then silence: without a zone nothing is left; inside a reverb zone the tail rings on.
+    float tail_dry = 0, tail_wet = 0;
+    for (int zone = 0; zone < 2; zone++) {
+        Rig r;
+        r.init();
+        r.files.add_wav("blip.wav", kRate, 1, 440.0f, 0.15f, 0.8f);
+        r.listener(Vec3(0, 0, 0));
+        Entity s = r.stream("Blip", "blip.wav", Vec3(0, 0, 0), false, true, false);
+        (void)s;
+        if (zone) reverb_zone(r, Vec3(0, 0, 0), 10.0f, 0.8f, 0.0f);
+        r.run(1.0f);
+        float p = (float)peak(g_cap, kRate / 2, kRate, 0);       // the second half of the second: the blip is long over
+        if (zone) tail_wet = p; else tail_dry = p;
+    }
+    CHECK(tail_dry == 0 && tail_wet > 50, "a reverb zone leaves a tail after the sound (dry %.0f, wet %.0f)", tail_dry, tail_wet);
+
+    // The listener leaving the zone: the effect fades out and stops.
+    {
+        Rig r;
+        r.init();
+        r.files.add_wav("tone.wav", kRate, 1, 440.0f, 1.0f, 0.8f);
+        Entity l = r.listener(Vec3(0, 0, 0));
+        r.stream("Tone", "tone.wav", Vec3(0, 0, 0), true, true, false);
+        reverb_zone(r, Vec3(0, 0, 0), 4.0f, 0.5f, 0.0f);
+        r.run(0.3f);
+        CHECK(r.sys.mixer().reverb_active(), "inside the zone the reverb is on");
+        r.w.transform(l)->position = Vec3(50, 0, 0);
+        r.run(0.5f);
+        r.clear();
+        r.run(0.2f);
+        CHECK(!r.sys.mixer().reverb_active(), "outside it is off again");
+    }
+
+    // Muffle: a high tone loses its level in a zone with lowpass 1.
+    float level[2];
+    for (int zone = 0; zone < 2; zone++) {
+        Rig r;
+        r.init();
+        r.files.add_wav("hi.wav", kRate, 1, 6000.0f, 1.0f, 0.8f);
+        r.listener(Vec3(0, 0, 0));
+        r.stream("Hi", "hi.wav", Vec3(0, 0, 0), true, true, false);
+        if (zone) reverb_zone(r, Vec3(0, 0, 0), 10.0f, 0.0f, 1.0f);
+        r.run(0.6f);
+        level[zone] = (float)peak(g_cap, kRate / 4, r.cap_frames, 0);
+    }
+    CHECK(level[0] > 5000 && level[1] < level[0] * 0.25f, "muffle 1 takes the highs down (%.0f -> %.0f)", level[0], level[1]);
+
+    // The system-wide switch turns zones off.
+    {
+        Rig r;
+        r.init();
+        r.sys.reverb_enabled = false;
+        r.files.add_wav("hi.wav", kRate, 1, 6000.0f, 1.0f, 0.8f);
+        r.listener(Vec3(0, 0, 0));
+        r.stream("Hi", "hi.wav", Vec3(0, 0, 0), true, true, false);
+        reverb_zone(r, Vec3(0, 0, 0), 10.0f, 0.0f, 1.0f);
+        r.run(0.6f);
+        CHECK((float)peak(g_cap, kRate / 4, r.cap_frames, 0) > 5000, "reverb_enabled = false ignores zones");
+    }
+    // Disabled, or the listener outside: untouched.
+    {
+        Rig r;
+        r.init();
+        r.files.add_wav("hi.wav", kRate, 1, 6000.0f, 1.0f, 0.8f);
+        r.listener(Vec3(0, 0, 0));
+        r.stream("Hi", "hi.wav", Vec3(0, 0, 0), true, true, false);
+        Entity z = reverb_zone(r, Vec3(0, 0, 0), 10.0f, 0.0f, 1.0f);
+        ((ReverbZone*)r.w.get_mut(z, ModuleKind::ReverbZone))->enabled = false;
+        r.run(0.6f);
+        CHECK((float)peak(g_cap, kRate / 4, r.cap_frames, 0) > 5000, "a disabled zone does nothing");
+    }
+}
+
 static void test_perf() {
     // 32 voices for 1 s of audio.
     Mixer m;
@@ -790,6 +874,7 @@ int main() {
     test_streams_in_world();
     test_samplers();
     test_spatial();
+    test_reverb();
     test_perf();
     printf("audio: %d checks, %d failed\n", g_checks, g_failed);
     if (g_failed) { printf("AUDIO TESTS FAILED\n"); return 1; }

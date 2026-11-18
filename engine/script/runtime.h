@@ -28,6 +28,8 @@
 #include "script/props.h"
 #include <stdint.h>
 
+namespace fe::gfx { struct GraphicsSettings; }
+
 namespace fe {
 
 enum class ScriptLogLevel : uint8_t { Info, Warning, Error };
@@ -74,6 +76,16 @@ public:
     void trigger_exit(Entity trigger_owner, Entity other);
     void collision(Entity a, Entity b);                           // calls on_collision on both
 
+    // Input from the host, read by scripts as fe.key_down("w"), fe.key_pressed("space"),
+    // fe.mouse_x(), fe.mouse_y(), fe.mouse_down(0), fe.mouse_pressed(0), fe.mouse_wheel()
+    // (docs/scripting.md). Key names: "a".."z", "0".."9", "space", "enter", "escape",
+    // "tab", "backspace", "left", "right", "up", "down", "shift", "ctrl", "alt", "f1".."f12".
+    // "pressed" / "released" / the wheel hold for the next update only.
+    void key_event(const char* name, bool down);
+    void mouse_move(float x, float y);                // pixels of the game's view
+    void mouse_button(int button, bool down);         // 0 left, 1 right, 2 middle
+    void mouse_wheel(float dy);
+
     // Reads an instance's value by name, for tests and the editor (numbers,
     // booleans and strings). False when absent or of another type.
     bool get_number(int instance, const char* field, double* out);
@@ -83,9 +95,33 @@ public:
     // A method on a module proxy, provided by an engine system: after
     // add_module_method(ModuleKind::AudioSampler, "play", fn, user), a script's
     // obj.audio_sampler:play() calls fn(entity, user) and gets `fn(...) != 0`
-    // back as a boolean. Up to 32 methods; the same name again replaces it.
+    // back as a boolean. Up to 64 methods; the same name again replaces it.
     typedef int (*ModuleMethod)(Entity e, void* user);
     bool add_module_method(ModuleKind kind, const char* name, ModuleMethod fn, void* user);
+
+    // The same with arguments and a result: obj.particles:emit(10),
+    // obj.animator:play("walk", 0.3), obj.joint3d:break(). Up to 4 arguments
+    // are passed (numbers in num[i], strings in str[i], which is null for
+    // others; booleans count as numbers 0/1, nil and tables as 0); they are
+    // valid during the call. The result is a boolean unless fn sets another.
+    struct MethodCall {
+        int argc = 0;
+        double num[4] = {};
+        const char* str[4] = {};
+    };
+    struct MethodResult {
+        enum Type { Bool, Number, String, Nothing } type = Bool;
+        bool b = true;
+        double n = 0;
+        const char* s = nullptr;        // copied before fn returns to Lua: may point to a local
+    };
+    typedef void (*ModuleMethodEx)(Entity e, const MethodCall& call, MethodResult* out, void* user);
+    bool add_module_method_ex(ModuleKind kind, const char* name, ModuleMethodEx fn, void* user);
+
+    // The graphics settings scripts see as fe.graphics (lua_graphics.h): `settings` is the host's live struct,
+    // `changed` (optional) is set to true whenever a script changes it (the host then calls Renderer::set_settings
+    // before the next frame). Null settings: fe.graphics raises errors.
+    void set_graphics_settings(gfx::GraphicsSettings* settings, bool* changed = nullptr);
 
     // Runs a line of Lua in the shared environment (a console / REPL; tests).
     bool run(const char* code);

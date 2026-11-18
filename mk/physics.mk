@@ -4,7 +4,7 @@
 #
 # For the editor link add $(PHYSICS_SRC) (with $(ECS_SRC) $(FLECS_SRC)).
 
-PHYSICS_SRC = engine/physics/physics.cpp engine/physics/convex.cpp
+PHYSICS_SRC = engine/physics/physics.cpp engine/physics/convex.cpp engine/fx/forcefield.cpp
 
 PHYSICS_TEST_OBJS = $(call host_objs,tests/host/physics_tests.cpp $(PHYSICS_SRC) $(ECS_SRC) $(FLECS_SRC) $(CORE_SRC))
 

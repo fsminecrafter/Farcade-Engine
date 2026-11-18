@@ -165,6 +165,17 @@ void test_asset_materials() {
     t.items[0].shader_path = "blue.fshader";
     CHECK(render_ok(r, t.scene));
     CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 0, 0, 255, 4));
+    // A texture that cannot be read does not stop the frame: the object is
+    // drawn without it (white, so its color shows) and the renderer warns once.
+    t.items[0].shader_path = nullptr;
+    t.items[0].texture_path = "missing.png";
+    CHECK(render_ok(r, t.scene));
+    CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 255, 255, 255, 4));
+    const char* w = r.take_warning();
+    CHECK(w && strstr(w, "missing.png"));
+    CHECK(r.take_warning() == nullptr);
+    CHECK(render_ok(r, t.scene));                  // remembered: no second warning
+    CHECK(r.take_warning() == nullptr);
 }
 
 // ---------------------------------------------------------------- the device
@@ -193,6 +204,24 @@ void test_device() {
     CHECK(fglReadPixels(gl, buf, 32 * 4) == 0);
     CHECK_EQ(buf[0] & 0xFFFFFF, 0x336699);
     CHECK_EQ(buf[32 * 24 - 1] & 0xFFFFFF, 0x336699);
+
+    // ABI 4 on the host device: scissored clears only touch the rectangle.
+    CHECK(fglHasScissor());
+    CHECK(fglHasMipmaps());
+    CHECK(info.max_texture_units == 16u);
+    fglEnable(gl, FGL_SCISSOR_TEST);
+    fglScissor(gl, 4, 2, 8, 6);
+    fglClearColor(gl, 1.0f, 0.0f, 0.0f);
+    fglClear(gl, FGL_COLOR_BUFFER_BIT);
+    fglDisable(gl, FGL_SCISSOR_TEST);
+    CHECK(fglSubmit(gl) == 0);
+    CHECK(fglReadPixels(gl, buf, 32 * 4) == 0);
+    CHECK_EQ(buf[2 * 32 + 4] & 0xFFFFFF, 0xFF0000);         // first pixel inside
+    CHECK_EQ(buf[7 * 32 + 11] & 0xFFFFFF, 0xFF0000);        // last pixel inside
+    CHECK_EQ(buf[2 * 32 + 12] & 0xFFFFFF, 0x336699);        // right of it
+    CHECK_EQ(buf[8 * 32 + 4] & 0xFFFFFF, 0x336699);         // below it
+    CHECK_EQ(buf[0] & 0xFFFFFF, 0x336699);
+    fglClearColor(gl, 0.2f, 0.4f, 0.6f);
 
     // A vertex-colored triangle with a built-in program (CCW, covers the center).
     FGLVertex tri[3] = {
@@ -1380,6 +1409,9 @@ void test_gpu_tier_everything() {
     Renderer r;
     GraphicsSettings g;
     g.apply_preset(GraphicsPreset::Ultra);
+    g.aa_mode = AAMode::FXAA;                // the new modes (TAA, SMAA, GTAO, SSR) are in gfx_stack_tests
+    g.ao_mode = AOMode::SSAO;
+    g.ssr = false;
     g.shadow_resolution = 1024;
     g.allow_gpu_effects_on_cpu = true;
     r.set_settings(g);
@@ -1459,6 +1491,64 @@ void test_bands() {
     CHECK(render_ok(r, t.scene));       // and a full render still works after bands
 }
 
+
+// Particles over the image (particles.h): drawn after the readback, hidden by
+// meshes in front of them, the same in bands.
+void test_particles() {
+    Renderer r;
+    CHECK(r.init(W, H));
+    TestScene t;
+    t.camera(Vec3(0, 0, 6), Vec3(0, 0, 0));
+    Particle p;
+    p.pos = Vec3(0, 0, -2);         // behind the unit cube at the origin
+    p.size = 1.0f; p.r = 1; p.g = 0; p.b = 0; p.a = 1;
+    ParticleBatch b;
+    b.items = &p; b.count = 1; b.additive = false;
+    if (!render_ok(r, t.scene)) return;
+    Px before = t.at(r, Vec3(0.9f, 0.3f, 0.5f));
+    p.pos = Vec3(0.9f, 0.3f, 0.5f);   // beside the cube, in front of the background
+    t.scene.particles = &b;
+    t.scene.particle_batch_count = 1;
+    if (!render_ok(r, t.scene)) return;
+    Px red = t.at(r, p.pos);
+    CHECK_MSG(red.r > 180 && red.g < 60, "a red particle shows over the sky");
+    CHECK_MSG(before.r < 120, "(sanity: the pixel was not red without it)");
+    // Behind the cube: hidden by it.
+    p.pos = Vec3(0, 0, -2);
+    p.size = 0.4f;
+    if (!render_ok(r, t.scene)) return;
+    Px hidden = t.at(r, Vec3(0, 0, 0.5f));
+    CHECK_MSG(!(hidden.r > 150 && hidden.g < 60), "a particle behind the cube is hidden by it");
+    // In front of the cube: visible.
+    p.pos = Vec3(0, 0, 2.5f);
+    if (!render_ok(r, t.scene)) return;
+    Px shown = t.at(r, p.pos);
+    CHECK_MSG(shown.r > 150 && shown.g < 80, "a particle in front of the cube shows");
+    // Bands draw the same.
+    uint32_t* tmp = (uint32_t*)malloc((size_t)W * 6 * 4);
+    float fx, fy;
+    t.project(p.pos, &fx, &fy);
+    int y0 = (int)fy - 3;
+    if (r.render_rows(t.scene, y0, 6, tmp)) {
+        uint32_t v = tmp[3 * W + (int)fx];
+        CHECK_MSG(((v >> 16) & 0xFF) > 150 && (v & 0xFF) < 80, "bands draw particles too");
+    } else {
+        CHECK_MSG(false, "render_rows with particles");
+    }
+    free(tmp);
+    // A text label, drawn with the built-in font.
+    TextLabel lab;
+    lab.pos = Vec3(0, 1.5f, 0); lab.height = 0.8f; lab.r = 1; lab.g = 1; lab.b = 0;
+    snprintf(lab.text, sizeof lab.text, "OK");
+    t.scene.particle_batch_count = 0;
+    t.scene.labels = &lab;
+    t.scene.label_count = 1;
+    if (!render_ok(r, t.scene)) return;
+    int yellow = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { Px q = px(r, x, y); if (q.r > 200 && q.g > 200 && q.b < 90) yellow++; }
+    CHECK_MSG(yellow > 20, "a text label shows in the image");
+}
+
 }  // namespace
 
 int main() {
@@ -1487,5 +1577,6 @@ int main() {
     test_fxaa();
     test_gpu_tier_everything();
     test_bands();
+    test_particles();
     return finish_tests("gfx_tests");
 }

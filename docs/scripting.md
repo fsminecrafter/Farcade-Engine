@@ -128,6 +128,22 @@ end
 
 What a script stores in `self` stays there.
 
+### Input
+
+Keyboard and mouse, in the editor's Play (over the viewport) and in the player:
+
+| | |
+| --- | --- |
+| `fe.key_down(name)` | true while the key is held |
+| `fe.key_pressed(name)`, `fe.key_released(name)` | true during the update after the key went down / up |
+| `fe.mouse_x()`, `fe.mouse_y()` | the pointer, in pixels of the game's view |
+| `fe.mouse_down(b)`, `fe.mouse_pressed(b)` | button 0 left, 1 right, 2 middle |
+| `fe.mouse_wheel()` | scroll since the last update |
+
+Key names: `"a"` to `"z"`, `"0"` to `"9"`, `"space"`, `"enter"`, `"escape"`, `"tab"`,
+`"backspace"`, `"left"`, `"right"`, `"up"`, `"down"`, `"shift"`, `"ctrl"`, `"alt"`, `"f1"` to
+`"f12"`, `"pageup"`, `"pagedown"`, `"home"`, `"end"`, `"insert"`, `"delete"`.
+
 ### Objects
 
 `self.object`, `other` in the collision callbacks, `fe.find`, `obj.parent`
@@ -148,7 +164,7 @@ using a handle as a table key work.
 | `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
 | `obj.alive` | false once destroyed |
 | `obj.material` | the look of a mesh object, or nil for objects without a mesh (see below) |
-| `obj.<module>` | `rigidbody3d`, `collider3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `camera`, `skylight`, `sky`, `post_process` (see modules.md): the module, or nil if the object has none |
+| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
 
 A module's fields read and write through the ECS (`World::get_field` /
 `set_field`): numbers are clamped to the field's range, enums are their name

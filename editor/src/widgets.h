@@ -31,6 +31,13 @@ struct Palette {
     uint32_t error;
     uint32_t overlay;       // floating viewport toolbars
     uint32_t shadow;
+    // Floating windows (Settings, dialogs) sit above the panels: a lifted
+    // background, a visible border and a drop shadow, so they never blend
+    // into the editor. Docked panels have no outline at all.
+    uint32_t float_bg;
+    uint32_t float_border;
+    uint32_t float_title;   // their title bar
+    uint32_t sidebar;       // a dialog's navigation column
 };
 
 const Palette& ui_palette();
@@ -57,5 +64,20 @@ bool flat_button(const char* label, float height = 0.0f);
 
 // Text drawn with the medium font.
 void heading(const char* text);
+
+// Floating windows and dialogs: border, lifted background, drop shadow.
+// begin_floating / end_floating wrap ImGui::Begin / End (always call
+// end_floating, like End); begin_modal wraps BeginPopupModal (call
+// ImGui::EndPopup when it returned true).
+bool begin_floating(const char* name, bool* open, int flags = 0);
+void end_floating();
+bool begin_modal(const char* name, bool* open = nullptr, int flags = 0);
+
+// A dialog's main action: filled with the accent color.
+bool primary_button(const char* label);
+
+// A row in a dialog's navigation column: icon, label, selected state.
+// Returns true when clicked.
+bool nav_item(const char* id, Icon icon, const char* label, bool selected);
 
 }  // namespace fe

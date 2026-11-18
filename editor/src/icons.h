@@ -12,6 +12,7 @@ enum class Icon {
     Info, Warning, Error,
     Stop, Eye, EyeOff, Plus, Search, Gear, ChevronDown, ChevronRight, Close, Sun, Monitor, Layers,
     Camera, Bulb, Cloud, Speaker, Wave, Body, Collider, Ear, Wand, Empty, Star,
+    Sparks, Joint, Clip, Wind, Spawn, Reverb, Sprite, TextT,
 };
 
 // Draws `icon` centered in the box [p, p + size] with the given color.

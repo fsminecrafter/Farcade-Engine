@@ -54,13 +54,15 @@ static void test_meta(World& w) {
             case FieldType::Float: ECS_CHECK(m[i].type == ecs_id(ecs_f32_t)); break;
             case FieldType::Int: ECS_CHECK(m[i].type == ecs_id(ecs_i32_t)); break;
             case FieldType::Bool: ECS_CHECK(m[i].type == ecs_id(ecs_bool_t)); break;
-            case FieldType::Bits: ECS_CHECK(m[i].type == ecs_id(ecs_u32_t)); break;
+            case FieldType::Bits:
+            case FieldType::Object: ECS_CHECK(m[i].type == ecs_id(ecs_u32_t)); break;
             case FieldType::Vec3:
             case FieldType::Color: {
                 const EcsStruct* vs = ecs_get(ew, m[i].type, EcsStruct);
                 ECS_CHECK(vs && ecs_vec_count(&vs->members) == 3);
                 break;
             }
+            case FieldType::Text:
             case FieldType::Path:
                 ECS_CHECK(m[i].type == ecs_id(ecs_char_t) && m[i].count == kPathMax);
                 break;

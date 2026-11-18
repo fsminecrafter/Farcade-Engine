@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "model_cache.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -92,6 +93,16 @@ void Scene::remove_one(ObjectId id) {
             ScriptSlot& sl = objects_[i]->scripts[s];
             for (int k = 0; k < sl.prop_count; k++)
                 if (sl.props[k].type == PropType::Object && sl.props[k].object == id) sl.props[k].object = kNoObject;
+        }
+    // Module links (Joint 3D's connected body, a Spawner's source) too.
+    for (int i = 0; i < count_; i++)
+        for (int k = 0; k < kModuleKindCount; k++) {
+            if (!objects_[i]->modules.has((ModuleKind)k)) continue;
+            const ModuleInfo& mi = module_info((ModuleKind)k);
+            char* data = (char*)objects_[i]->modules.data((ModuleKind)k);
+            for (int f = 0; f < mi.field_count; f++)
+                if (mi.fields[f].type == FieldType::Object && *(ObjectId*)(data + mi.fields[f].offset) == id)
+                    *(ObjectId*)(data + mi.fields[f].offset) = kNoObject;
         }
 }
 
@@ -442,8 +453,17 @@ const MeshData& Scene::mesh_for(const Object& o) {
         case MeshKind::Plane: return plane;
         case MeshKind::Sphere: return sphere;
         case MeshKind::Cylinder: return cylinder;
-        default: return cube;   // models show as a cube until .mof loading lands
+        case MeshKind::Model:
+            // The imported model; a cube when the file cannot be loaded.
+            if (const Model* m = model_for(o)) return m->mesh;
+            return cube;
+        default: return cube;
     }
+}
+
+const Model* Scene::model_for(const Object& o) {
+    if (o.kind != ObjectKind::Mesh || o.mesh != MeshKind::Model || !o.model_path[0]) return nullptr;
+    return model_load(o.model_path);
 }
 
 ObjectId Scene::pick(const Ray& ray, float* distance) {

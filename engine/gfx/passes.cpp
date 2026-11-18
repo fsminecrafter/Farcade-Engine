@@ -157,7 +157,7 @@ struct GpuTier::Impl {
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
-    Target gmat, ao_c, ao_hist, ssr_t;      // roughness / metal G-buffer, GTAO raw and history, the SSR result
+    Target gmat, ao_c, ao_hist, ssr_t, ssr_b;   // roughness / metal G-buffer, GTAO raw and history, the SSR result (+ blur scratch)
     uint64_t ao_scene_hash = 0;             // what the GTAO history was accumulated for
     FGLShader* gtao_p = nullptr;
     FGLShader* ao_accum_p = nullptr;
@@ -165,6 +165,7 @@ struct GpuTier::Impl {
     FGLShader* material_p = nullptr;
     FGLShader* ssrmask_p = nullptr;
     FGLShader* ssr_p = nullptr;
+    FGLShader* ssrblur_p = nullptr;
     Target sm_edges, sm_wh, sm_wv;          // SMAA: edges, blend weights of the two axes
     FGLTexture sm_area = 0;                 // the area texture (post_stack.h smaa_area), made on first use
     FGLShader* sm_edge_p = nullptr;
@@ -1019,6 +1020,25 @@ struct GpuTier::Impl {
         bind_tex(ssr_p, "u_mat", gmat, FGL_TEXTURE_CLAMP);
         bind_tex(ssr_p, "u_scene", scene_t, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         fs_draw(ssr_p);
+        // Denoise: the march is jittered per pixel at half resolution; a depth-aware blur across and down
+        // (ssr_t -> ssr_b -> ssr_t) removes the speckle TAA's clamp would otherwise keep.
+        if (!ensure(ssr_b, hw, hh, false)) return false;
+        if (!make(&ssrblur_p, shaders::pp_vertex, shaders::pp_ssrblur_fragment, "ssr blur")) return false;
+        fglDisable(gl, FGL_DEPTH_TEST);
+        for (int pass = 0; pass < 2; pass++) {
+            const Target& src = pass == 0 ? ssr_t : ssr_b;
+            const Target& dst = pass == 0 ? ssr_b : ssr_t;
+            set_target(dst.color, 0);
+            fglDisable(gl, FGL_DEPTH_TEST);
+            fglDisable(gl, FGL_CULL_FACE);
+            u4(ssrblur_p, "u_p", px, py, 0, 0);
+            u4(ssrblur_p, "u_dir", pass == 0 ? px * 1.5f : 0.0f, pass == 0 ? 0.0f : py * 1.5f, 0, 0);
+            u4(ssrblur_p, "u_q", far_m, 0, 0, 0);
+            u4(ssrblur_p, "u_z", 0, 0, 0, 0);
+            bind_tex(ssrblur_p, "u_src", src, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+            bind_tex(ssrblur_p, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
+            fs_draw(ssrblur_p);
+        }
         if (!end_pass(t0, &stats.ssr_ms)) return false;
         return true;
     }
@@ -1497,12 +1517,12 @@ struct GpuTier::Impl {
         if (sm_area) fglDestroyTexture(gl, sm_area);
         sm_area = 0;
         free_target(sm_edges); free_target(sm_wh); free_target(sm_wv);
-        drop(&gtao_p); drop(&ao_accum_p); drop(&copy_p); drop(&material_p); drop(&ssrmask_p); drop(&ssr_p);
+        drop(&gtao_p); drop(&ao_accum_p); drop(&copy_p); drop(&material_p); drop(&ssrmask_p); drop(&ssr_p); drop(&ssrblur_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
         for (LitProg& v : lit_p) { drop(&v.sh); v = LitProg(); }
         free_target(shadow); free_target(atlas); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
-        free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t);
+        free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t); free_target(ssr_b);
         free_target(scene); free_target(ldr);
         for (Target& t : bl_down) free_target(t);
         for (Target& t : bl_up) free_target(t);

@@ -88,7 +88,8 @@ bool toggle_switch(const char* id, bool* value) {
     bool hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float y = p.y + (fh - h) * 0.5f;
-    ImU32 track = *value ? g_pal.accent : (hovered ? g_pal.active : g_pal.hover);
+    // Off: a grey track the white knob stands out on, in both themes.
+    ImU32 track = *value ? g_pal.accent : (hovered ? g_pal.text_dim : g_pal.text_faint);
     dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + w, y + h), track, h * 0.5f);
     float r = h * 0.5f - 2.0f;
     float cx = *value ? p.x + w - h * 0.5f : p.x + h * 0.5f;

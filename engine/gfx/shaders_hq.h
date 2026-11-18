@@ -91,7 +91,9 @@ void pp_copy_fragment(char* out, size_t cap);                  // sampler u_src
 void hq_material_vertex(char* out, size_t cap);                // roughness / metallic G-buffer (u_mm.xy per item)
 void hq_material_fragment(char* out, size_t cap);
 void pp_ssrmask_fragment(char* out, size_t cap);               // samplers u_depth, u_mat; u_q.x roughness cutoff
-void pp_ssr_fragment(char* out, size_t cap);                   // samplers u_depth, u_normal, u_mat, u_scene
+void pp_ssr_fragment(char* out, size_t cap);
+// The SSR result blurred along u_dir (5 taps), weighted by depth similarity: denoises the jittered march.
+void pp_ssrblur_fragment(char* out, size_t cap);                   // samplers u_depth, u_normal, u_mat, u_scene
 void pp_blur_fragment(char* out, size_t cap);                  // u_dir: xy texel step
 void pp_bright_fragment(char* out, size_t cap, bool karis);    // u_q.x threshold; karis: weighted by 1 / (1 + luma)
 void pp_down_fragment(char* out, size_t cap, bool wide);       // wide: 13 taps, else a 4x4 box

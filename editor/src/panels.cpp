@@ -1594,7 +1594,7 @@ void Editor::window_settings() {
     ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(520, 320), ImVec2(FLT_MAX, FLT_MAX));
-    if (!begin_floating("Settings", &show_settings, ImGuiWindowFlags_NoCollapse)) {
+    if (!begin_floating(FE_ICON_GEAR "  Settings###Settings", &show_settings, ImGuiWindowFlags_NoCollapse)) {
         end_floating();
         return;
     }

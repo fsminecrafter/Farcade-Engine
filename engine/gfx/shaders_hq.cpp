@@ -830,8 +830,11 @@ void pp_ssrmask_fragment(char* out, size_t cap) {
           "}\n");
 }
 
-// Marches the reflection ray in view space (12 steps, spaced quadratically, jittered) against the depth buffer
-// and adds the scene colour found there, weighted by Fresnel and smoothness; u_ao.zw: ortho flag, far m;
+// Marches the reflection ray in view space (11 steps, spaced quadratically, jittered) against the depth buffer
+// and adds the scene colour found there, weighted by Fresnel and smoothness. A hit must be a few texels away
+// and on a surface facing the ray (no self-hits where the ray grazes its own object), and reflections fade
+// out at silhouettes, where the normal is nearly side-on (11 depth taps + the hit's normal keep the shader
+// within the CPU JIT's 16 samples); u_ao.zw: ortho flag, far m;
 // u_q: x max distance m, y thickness m, z roughness cutoff. Output: the HDR encoded contribution.
 void pp_ssr_fragment(char* out, size_t cap) {
     Text t(out, cap);
@@ -861,32 +864,67 @@ void pp_ssr_fragment(char* out, size_t cap) {
           "    vec2 mat = texture(u_mat, uv).rg;\n"
           "    vec4 st = vec4(uv, 0.0, 0.0);\n"        // xy: the hit uv, z: hit, w: jitter
           "    st.w = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + u_ao.z);\n");
-    for (int i = 0; i < 12; i++) {
+    const int steps = 11;
+    for (int i = 0; i < steps; i++) {
         t.add("    {\n        vec3 S = P + Rr * (((");
         t.flt((float)i + 0.5f);
-        t.add(" + st.w - 0.5) / 12.0) * ((");
+        t.add(" + st.w - 0.5) / 11.0) * ((");
         t.flt((float)i + 0.5f);
-        t.add(" + st.w - 0.5) / 12.0) * u_q.x + 0.05);\n"
+        t.add(" + st.w - 0.5) / 11.0) * u_q.x + 0.05);\n"
               "        vec2 suv = mix(vec2(S.x / max(S.z, 0.05) / u_proj.x * 0.5 + 0.5, 0.5 - S.y / max(S.z, 0.05) / u_proj.y * 0.5),\n"
               "                       vec2(S.x / u_proj.x * 0.5 + 0.5, 0.5 - S.y / u_proj.y * 0.5), u_ao.x);\n"
               "        float diff = S.z - depth_at(suv);\n"
-              "        float ok = step(0.0, diff) * step(diff, u_q.y + 0.05 * S.z) * step(st.z, 0.5) * step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0);\n"
+              "        vec2 away = (suv - uv) / u_p.xy;\n"     // in texels: a hit next to the start is the surface itself
+              "        float ok = step(0.0, diff) * step(diff, u_q.y + 0.05 * S.z) * step(st.z, 0.5) * step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0)\n"
+              "                 * step(9.0, dot(away, away));\n"
               "        st.xy = mix(st.xy, suv, ok);\n"
               "        st.z = max(st.z, ok);\n"
               "    }\n");
     }
     t.add("    float k = 0.0;\n"
           "    {\n"
+          "        vec3 Nh = texture(u_normal, st.xy).rgb * 2.0 - 1.0;\n"   // the surface hit must face the ray
+          "        Nh = vec3(Nh.x, Nh.y, -Nh.z);\n"
+          "        float facing = clamp(-dot(Nh, Rr) * 4.0, 0.0, 1.0);\n"
           "        vec2 e = abs(st.xy - 0.5) * 2.0;\n"
           "        float edge = clamp((1.0 - max(e.x, e.y)) * 8.0, 0.0, 1.0);\n"
-          "        float fr = pow(1.0 - clamp(dot(N, -V), 0.0, 1.0), 5.0);\n"
+          "        float nv = clamp(dot(N, -V), 0.0, 1.0);\n"
+          "        float silhouette = clamp((nv - 0.08) * 6.0, 0.0, 1.0);\n"   // side-on pixels: unreliable rays
+          "        float fr = pow(1.0 - nv, 5.0);\n"
           "        float f0 = mix(0.04, 0.8, mat.g);\n"
           "        float sm = clamp(1.0 - mat.r / u_q.z, 0.0, 1.0);\n"
-          "        k = (f0 + (1.0 - f0) * fr) * sm * sm * st.z * edge * clamp(Rr.z * 4.0 + 0.2, 0.0, 1.0);\n"
+          "        k = (f0 + (1.0 - f0) * fr) * sm * sm * st.z * edge * facing * silhouette * clamp(Rr.z * 4.0 + 0.2, 0.0, 1.0);\n"
           "    }\n"
           "    vec3 c = texture(u_scene, st.xy).rgb;\n"
           "    c = c * c * 8.0 * mix(1.0, 0.8, mat.g);\n"
           "    gl_FragColor = vec4(sqrt(clamp(c * k, 0.0, 8.0) * 0.125), 1.0);\n"
+          "}\n");
+}
+
+void pp_ssrblur_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_src;\n"
+          "uniform sampler2D u_depth;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_dir;\n"                 // xy: uv step of one tap
+          "uniform vec4 u_q;\n");                 // x: far (m)
+    t.add(kPack);
+    t.add("void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    float d0 = unpack24(texture(u_depth, uv).rgb) * u_q.x;\n"
+          "    float tol = 0.05 + 0.03 * d0;\n"
+          "    vec3 sum = texture(u_src, uv).rgb * 0.3;\n"
+          "    float wsum = 0.3;\n");
+    static const float off[4] = { -2.0f, -1.0f, 1.0f, 2.0f };
+    static const float wt[4] = { 0.15f, 0.2f, 0.2f, 0.15f };
+    for (int i = 0; i < 4; i++) {
+        t.add("    {\n        vec2 o = uv + u_dir.xy * ");
+        t.flt(off[i]);
+        t.add(";\n        float w = clamp(1.0 - abs(unpack24(texture(u_depth, o).rgb) * u_q.x - d0) / tol, 0.0, 1.0) * ");
+        t.flt(wt[i]);
+        t.add(";\n        sum += texture(u_src, o).rgb * w;\n        wsum += w;\n    }\n");
+    }
+    t.add("    gl_FragColor = vec4(sum / wsum, 1.0);\n"
           "}\n");
 }
 

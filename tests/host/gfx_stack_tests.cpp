@@ -598,7 +598,7 @@ void test_settings_text() {
     // invalid names and values are refused with a reason, and change nothing
     GraphicsSettings before = g;
     CHECK(!graphics_set_text(&g, "no_such_thing", "1", err, sizeof err) && strstr(err, "unknown graphics setting"));
-    CHECK(!graphics_set_text(&g, "aa", "taa", err, sizeof err) && strstr(err, "allowed: off, fxaa"));
+    CHECK(!graphics_set_text(&g, "aa", "msaa", err, sizeof err) && strstr(err, "allowed: off, fxaa, smaa, taa"));
     CHECK(!graphics_set_text(&g, "render_scale", "7", err, sizeof err) && strstr(err, "0.25 to 1"));
     CHECK(!graphics_set_text(&g, "render_scale", "abc"));
     CHECK(!graphics_set_text(&g, "shadow_cascades", "2.5"));

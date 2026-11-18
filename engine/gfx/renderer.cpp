@@ -148,6 +148,9 @@ GraphicsFeatures make_features(const DeviceCaps& caps, const GraphicsSettings& s
     f.pbr = f.gpu_tier && settings.pbr;
     f.local_shadows = f.gpu_tier && settings.local_shadows;
     f.gi = settings.gi_mode == GiMode::Probes;
+    f.aa_mode = settings.aa_mode;
+    f.ao_mode = settings.ao_mode;
+    f.ssr = f.gpu_tier && settings.ssr;
     return f;
 }
 

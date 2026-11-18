@@ -59,9 +59,11 @@ struct PassHost {
 // What runs this frame: the features, limited by what the scene has.
 struct GpuPlan {
     bool shadows = false, ao = false, bloom = false, aa = false, pbr = false, fog = false;
+    bool gtao = false, ssr = false;         // GTAO instead of SSAO; screen space reflections
+    AAMode aa_mode = AAMode::FXAA;
     bool local_shadows = false;             // a point or spot light with Shadows on
     bool hw = false;                        // FarcadeGL runs on a graphics card
-    bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows; }
+    bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows || ssr; }
 };
 
 class GpuTier {

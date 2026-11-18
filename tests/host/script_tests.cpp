@@ -40,7 +40,7 @@ static void check_graphics() {
         "  self.aa1 = fe.graphics.get('aa')\n"
         "  self.res1 = fe.graphics.get('shadow_resolution')\n"
         "  self.bad_name = pcall(fe.graphics.set, 'nope', 1)\n"
-        "  local ok, msg = pcall(fe.graphics.set, 'aa', 'taa')\n"
+        "  local ok, msg = pcall(fe.graphics.set, 'aa', 'msaa')\n"
         "  self.bad_value = ok\n"
         "  self.msg = msg\n"
         "  self.bad_get = pcall(fe.graphics.get, 'nope')\n"
@@ -59,14 +59,14 @@ static void check_graphics() {
         "end\n");
     SCRIPT_CHECK(id > 0);
     E.w.progress(0.1f);
-    SCRIPT_CHECK(E.str_is(id, "aa0", "fxaa") && near_(E.num(id, "scale0"), 1.0) && E.flag(id, "pbr0"));
+    SCRIPT_CHECK(E.str_is(id, "aa0", "smaa") && near_(E.num(id, "scale0"), 1.0) && E.flag(id, "pbr0"));
     SCRIPT_CHECK(E.str_is(id, "aa1", "off") && near_(E.num(id, "res1"), 1024));
     SCRIPT_CHECK(!gs.antialiasing && gs.render_scale == 0.5f && !gs.pbr && gs.shadow_resolution == 1024);
     SCRIPT_CHECK(changed);                                   // the host applies it before the next frame
     SCRIPT_CHECK(!E.flag(id, "bad_name") && !E.flag(id, "bad_value") && !E.flag(id, "bad_get") && !E.flag(id, "bad_preset") &&
                  !E.flag(id, "bad_type"));
     char msg[200] = {};
-    SCRIPT_CHECK(E.rt.get_string(id, "msg", msg, sizeof msg) && strstr(msg, "invalid value 'taa'") && strstr(msg, "off, fxaa"));
+    SCRIPT_CHECK(E.rt.get_string(id, "msg", msg, sizeof msg) && strstr(msg, "invalid value 'msaa'") && strstr(msg, "off, fxaa, smaa, taa"));
     SCRIPT_CHECK(near_(E.num(id, "count"), fe::gfx::graphics_property_count()) && near_(E.num(id, "scale_max"), 1.0));
     SCRIPT_CHECK(E.str_is(id, "bloom_values", "off,simple,chain") && E.str_is(id, "bloom_type", "choice"));
     char text[2048] = {};

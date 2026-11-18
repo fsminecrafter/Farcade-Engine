@@ -111,6 +111,7 @@ struct RendererStats {
 struct GpuTierStats {
     double shadow_ms = 0, depth_ms = 0, ssao_ms = 0, blur_ms = 0, lit_ms = 0, bloom_ms = 0, composite_ms = 0, fxaa_ms = 0;
     double local_shadow_ms = 0;             // the point / spot shadow atlas
+    double ssr_ms = 0, taa_ms = 0, smaa_ms = 0;
     int passes = 0;                         // render passes of the frame
     bool shadow_reused = false;             // every sun cascade of the last frame was still valid
     int cascades = 0, cascades_drawn = 0, cascades_reused = 0;   // the sun's cascades and what the frame did with them

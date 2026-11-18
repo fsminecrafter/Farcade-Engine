@@ -13,8 +13,9 @@ const char* const kPresets[] = { "low", "medium", "high", "ultra", "custom", nul
 const char* const kLevels[] = { "auto", "fl0", "fl1", "gpu", nullptr };
 const char* const kShadowModes[] = { "off", "single", "cascades", nullptr };
 const char* const kRes[] = { "512", "1024", "2048", "4096", nullptr };
-const char* const kAo[] = { "off", "ssao", nullptr };
-const char* const kAa[] = { "off", "fxaa", nullptr };
+const char* const kAo[] = { "off", "ssao", "gtao", nullptr };
+const char* const kAa[] = { "off", "fxaa", "smaa", "taa", nullptr };
+const char* const kOnOff[] = { "off", "on", nullptr };
 const char* const kBloom[] = { "off", "simple", "chain", nullptr };
 const char* const kGi[] = { "hemisphere", "probes", nullptr };
 const char* const kGiDensity[] = { "coarse", "normal", "fine", nullptr };
@@ -67,12 +68,16 @@ const Prop kProps[] = {
        [](const GS& s) { return s.local_shadow_lights; }, [](GS& s, int v) { s.local_shadow_lights = v; }),
     IP("local_shadow_resolution", GraphicsPropKind::Choice, 0, 0, kRes, "Texels of the point / spot shadow atlas (a side)",
        [](const GS& s) { return res_index(s.local_shadow_resolution); }, [](GS& s, int v) { s.local_shadow_resolution = kResValues[v]; }),
-    IP("ao", GraphicsPropKind::Choice, 0, 0, kAo, "Ambient occlusion: off or screen space (SSAO)",
-       [](const GS& s) { return s.ambient_occlusion ? 1 : 0; }, [](GS& s, int v) { s.ambient_occlusion = v != 0; }),
+    IP("ao", GraphicsPropKind::Choice, 0, 0, kAo, "Ambient occlusion: off, SSAO (12 taps) or GTAO (half resolution, horizon based, denoised)",
+       [](const GS& s) { return !s.ambient_occlusion ? 0 : (s.ao_mode == AOMode::GTAO ? 2 : 1); },
+       [](GS& s, int v) { s.ambient_occlusion = v != 0; if (v == 1) s.ao_mode = AOMode::SSAO; else if (v == 2) s.ao_mode = AOMode::GTAO; }),
+    IP("ssr", GraphicsPropKind::Choice, 0, 0, kOnOff, "Screen space reflections on glossy surfaces (half resolution; GPU tier)",
+       [](const GS& s) { return s.ssr ? 1 : 0; }, [](GS& s, int v) { s.ssr = v != 0; }),
     FP("ao_radius", 0.05f, 5.0f, "AO radius in meters", ao_radius),
     FP("ao_strength", 0.0f, 2.0f, "AO strength", ao_strength),
-    IP("aa", GraphicsPropKind::Choice, 0, 0, kAa, "Anti-aliasing: off or FXAA",
-       [](const GS& s) { return s.antialiasing ? 1 : 0; }, [](GS& s, int v) { s.antialiasing = v != 0; }),
+    IP("aa", GraphicsPropKind::Choice, 0, 0, kAa, "Anti-aliasing: off, FXAA (cheapest), SMAA or TAA (also upscales when render_scale < 1)",
+       [](const GS& s) { return !s.antialiasing ? 0 : 1 + (int)s.aa_mode; },
+       [](GS& s, int v) { s.antialiasing = v != 0; if (v >= 1) s.aa_mode = (AAMode)(v - 1); }),
     IP("bloom", GraphicsPropKind::Choice, 0, 0, kBloom, "Bloom: off, the simple 4 level glow, or the 5 level chain",
        [](const GS& s) { return !s.bloom ? 0 : (s.bloom_mode == BloomMode::Simple ? 1 : 2); },
        [](GS& s, int v) { s.bloom = v != 0; if (v == 1) s.bloom_mode = BloomMode::Simple; else if (v == 2) s.bloom_mode = BloomMode::Chain; }),

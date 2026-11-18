@@ -12,6 +12,7 @@
 #
 #   build/host/bin/gfx_tests     tests (part of make test)
 #   build/host/bin/gfx_stack_tests  tests of the feature levels, the post stack, cascades and GI
+#   build/host/bin/shader_compile_tests  every generated shader variant compiles
 #   build/host/bin/fe-gfx-shot   fe-gfx-shot <out.png> [width height]: renders a demo scene
 #   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <base> <hq>": base tier and GPU tier checksums)
 
@@ -28,11 +29,11 @@ GFX_JIT_FLAG := -DFGPU_ENABLE_JIT
 $(BUILD)/host/external/fgpu/%.o $(BUILD)/host/engine/gfx/host/%.o: HOST_EXTRA_FLAGS += $(GFX_JIT_FLAG)
 
 $(BUILD)/host/engine/gfx/%.o $(BUILD)/host/external/fgpu/%.o $(BUILD)/host/tools/gfx/%.o: HOST_EXTRA_FLAGS += $(GFX_HOST_INC)
-$(BUILD)/host/tests/host/gfx_tests.cpp.o $(BUILD)/host/tests/host/gfx_stack_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_HOST_INC)
+$(BUILD)/host/tests/host/gfx_tests.cpp.o $(BUILD)/host/tests/host/gfx_stack_tests.cpp.o $(BUILD)/host/tests/host/shader_compile_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_HOST_INC)
 # farcadegl.h copies matrices and vectors through one function; GCC cannot see
 # that the 64 byte matrix branch is not taken for vector uniforms.
 GFX_SDK_WARN := -Wno-array-bounds -Wno-stringop-overread
-$(BUILD)/host/engine/gfx/renderer.cpp.o $(BUILD)/host/engine/gfx/passes.cpp.o $(BUILD)/host/tests/host/gfx_tests.cpp.o $(BUILD)/host/tests/host/gfx_stack_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_SDK_WARN)
+$(BUILD)/host/engine/gfx/renderer.cpp.o $(BUILD)/host/engine/gfx/passes.cpp.o $(BUILD)/host/tests/host/gfx_tests.cpp.o $(BUILD)/host/tests/host/gfx_stack_tests.cpp.o $(BUILD)/host/tests/host/shader_compile_tests.cpp.o: HOST_EXTRA_FLAGS += $(GFX_SDK_WARN)
 $(BUILD)/os/engine/gfx/renderer.cpp.o $(BUILD)/os/engine/gfx/passes.cpp.o: OS_EXTRA_FLAGS += $(GFX_SDK_WARN)
 
 $(BUILD)/host/tools/gfx/shot.cpp.o: HOST_EXTRA_FLAGS += -Wno-unused-function     # static stb_image_write
@@ -47,12 +48,17 @@ $(BUILD)/host/bin/gfx_stack_tests: $(call host_objs,tests/host/gfx_stack_tests.c
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -o $@ $^ -lm
 
+# Every generated shader variant through the FGSL front end.
+$(BUILD)/host/bin/shader_compile_tests: $(call host_objs,tests/host/shader_compile_tests.cpp) $(GFX_HOST_OBJS)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -o $@ $^ -lm
+
 $(BUILD)/host/bin/fe-gfx-shot: $(call host_objs,tools/gfx/shot.cpp) $(GFX_HOST_OBJS)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -o $@ $^ -lm
 
 HOST_PROGRAMS += $(BUILD)/host/bin/fe-gfx-shot
-HOST_TESTS    += $(BUILD)/host/bin/gfx_tests $(BUILD)/host/bin/gfx_stack_tests
+HOST_TESTS    += $(BUILD)/host/bin/gfx_tests $(BUILD)/host/bin/gfx_stack_tests $(BUILD)/host/bin/shader_compile_tests
 
 # ---- Minimal-OS smoke program (run it with tools/ci/run_os.sh, see docs/runtime.md)
 OS_OBJS_gfx_smoke = $(call os_objs,$(GFX_SRC) $(CORE_SRC) tests/os/gfx_smoke/main.cpp)

@@ -3,6 +3,8 @@
 //   <out>/<Name>.fepak     every scene, script, model, texture, sound and
 //                          shader the game needs, plus project.fe (core/pak.h)
 //   <out>/<Name>.run       the prebuilt player (Minimal-OS; on the PC <out>/<Name>)
+//   <out>/<Name>.mpkg      with ExportOptions::mpkg: an installable package (mpkg.h) that
+//                          unpacks to 0:/programs/<Name>.run and 0:/games/<Name>/<Name>.fepak (+ icon)
 //   <out>/icon.bmp         the project's icon, when it has one (also inside the .run)
 //
 // Needs no editor state and no screen: the editor's File > Export game... and
@@ -22,6 +24,7 @@ struct ExportOptions {
     const char* out_dir = nullptr;          // created when missing
     const char* name = nullptr;             // null = project.fe's name
     const char* player_path = nullptr;      // prebuilt player; null = export_default_player()
+    bool mpkg = false;                      // also write <Name>.mpkg (installs to 0:/programs/<Name>.run and 0:/games/<Name>/)
     bool all_scenes = true;                 // pack every .fscene in the project, not only the entry scene
     // Progress and problems, one line each (level 0 info, 1 warning, 2 error). May be null.
     void (*log)(int level, const char* line, void* user) = nullptr;
@@ -35,6 +38,7 @@ struct ExportReport {
     uint64_t pak_bytes = 0;
     char pak_path[512] = {};
     char run_path[512] = {};
+    char mpkg_path[512] = {};               // when ExportOptions::mpkg
     char error[256] = {};                   // set when the export failed
 };
 
@@ -47,7 +51,7 @@ void export_default_out_dir(const char* name, char* out, size_t cap);
 bool export_game(const ExportOptions& opt, ExportReport* report);
 
 // `farcade-editor --export <project-or-scene> <outdir> [--name N] [--scene S]
-// [--player P] [--run [N]]`. `argv[i]` is the "--export" argument. Prints
+// [--player P] [--mpkg] [--run [N]]`. `argv[i]` is the "--export" argument. Prints
 // "FE EXPORT OK ..." or "FE EXPORT FAIL: ..." and returns the exit code
 // (0 = exported). With --run the game is started afterwards (N frames when given).
 int export_cli(int argc, char** argv, int i);

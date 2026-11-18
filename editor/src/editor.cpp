@@ -9,6 +9,9 @@
 #include "script/runtime.h"
 #include "audio/audio.h"
 #include "scene_io.h"
+#include "model_cache.h"
+#include "model_import.h"
+#include "core/vfs.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -277,6 +280,14 @@ bool Editor::init(int width, int height) {
     snprintf(project_dir, sizeof(project_dir), "%s", platform::default_project_root());
     snprintf(files_dir, sizeof(files_dir), "%s", project_dir);
     load_project();
+    // Models and other project files are read through the VFS: plain files under the project.
+    {
+        vfs::Disk disk;
+        disk.read_file = platform::read_file;
+        disk.file_exists = platform::file_exists;
+        vfs::set_disk(disk);
+        vfs::set_root(project_dir);
+    }
     history_reset();
     log(LogLevel::Info, "Farcade Editor started (%dx%d)", platform::width(), platform::height());
     return true;
@@ -543,6 +554,7 @@ void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     mesh("Cylinder", MeshKind::Cylinder, ground);
     mesh("Plane", MeshKind::Plane, flat);
     if (menu_item("Empty")) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    if (menu_item("Import model...")) { want_import_model_ = true; import_path[0] = 0; }
     ImGui::Separator();
     if (ImGui::BeginMenu("Light")) {
         if (menu_item("Directional Light")) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
@@ -588,6 +600,7 @@ void Editor::play() {
     // Script inputs follow the files as they are now (the values set in the
     // editor stay).
     reload_all_scripts();
+    model_cache_clear();                // model files may have changed
     play_backup_ = new Scene();
     play_backup_->copy_from(scene);
     play_time = 0.0;
@@ -894,6 +907,7 @@ void Editor::save_as_popup() {
 
 void Editor::open_file(const char* path) {
     if (path_is_scene(path)) { request_open_scene(path); return; }
+    if (path_is_importable_model(path)) { import_model(path); return; }
     const char* program = settings.program_for(path);
     if (!program || !*program) {
         log(LogLevel::Warning, "No editor set for %s files (Settings > File editors)", path_extension(path));
@@ -913,6 +927,19 @@ void Editor::apply_file_to_object(const char* path, ObjectId id) {
         snprintf(o->shader_path, sizeof(o->shader_path), "%s", path);
         log(LogLevel::Info, "%s: shader %s", o->name, path_filename(path));
     } else if (path_is_model(path)) {
+        // .gltf/.glb/.obj are converted to a .mof first; the object then uses that.
+        char mof[512], msg[1024];
+        if (path_is_importable_model(path)) {
+            char full[600];
+            project_path(path, full, sizeof full);
+            if (!model_convert_file(full, mof, sizeof mof, msg, sizeof msg)) {
+                log(LogLevel::Error, "Import %s: %s", path_filename(path), msg);
+                return;
+            }
+            if (msg[0]) log(LogLevel::Warning, "Import %s: %s", path_filename(path), msg);
+            path = mof;
+        }
+        model_cache_clear();
         o->mesh = MeshKind::Model;
         snprintf(o->model_path, sizeof(o->model_path), "%s", path);
         log(LogLevel::Info, "%s: model %s", o->name, path_filename(path));
@@ -1072,6 +1099,7 @@ void Editor::build_ui() {
     unsaved_popup();
     project_settings_popup();
     export_popup();
+    import_model_popup();
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -1149,7 +1177,9 @@ void Editor::main_menu() {
         if (menu_item("Settings...")) show_settings = true;
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Create")) {
+    bool create_menu = ImGui::BeginMenu("Create");
+    track("menubar:Create");
+    if (create_menu) {
         create_menu_items(kNoObject, camera.target);
         ImGui::EndMenu();
     }

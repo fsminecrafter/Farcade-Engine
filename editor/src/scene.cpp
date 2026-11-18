@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "model_cache.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -452,8 +453,17 @@ const MeshData& Scene::mesh_for(const Object& o) {
         case MeshKind::Plane: return plane;
         case MeshKind::Sphere: return sphere;
         case MeshKind::Cylinder: return cylinder;
-        default: return cube;   // models show as a cube until .mof loading lands
+        case MeshKind::Model:
+            // The imported model; a cube when the file cannot be loaded.
+            if (const Model* m = model_for(o)) return m->mesh;
+            return cube;
+        default: return cube;
     }
+}
+
+const Model* Scene::model_for(const Object& o) {
+    if (o.kind != ObjectKind::Mesh || o.mesh != MeshKind::Model || !o.model_path[0]) return nullptr;
+    return model_load(o.model_path);
 }
 
 ObjectId Scene::pick(const Ray& ray, float* distance) {

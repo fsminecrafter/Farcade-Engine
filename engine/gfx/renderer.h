@@ -30,6 +30,7 @@ struct RenderMesh {
     const Vec3* normals = nullptr;
     uint32_t vertex_count = 0;
     uint64_t key = 0;
+    const float* uvs = nullptr;         // optional, 2 floats per vertex (else a box projection is used)
 };
 
 struct DrawItem {

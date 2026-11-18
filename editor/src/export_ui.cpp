@@ -166,6 +166,8 @@ void Editor::export_popup() {
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##ex_out", export_out, sizeof export_out);
     track("export:out");
+    ImGui::Checkbox("Also make an installable .mpkg", &export_mpkg);
+    track("export:mpkg");
     bool modified = scene_modified();
     if (modified) ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1), "The open scene has unsaved changes: it is saved first.");
     ImGui::Spacing();
@@ -198,6 +200,7 @@ void Editor::export_popup() {
         opt.entry_scene = export_scene;
         opt.name = export_name;
         opt.out_dir = export_out;
+        opt.mpkg = export_mpkg;
         opt.log = export_log;
         opt.user = this;
         ExportReport rep;

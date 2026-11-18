@@ -23,6 +23,7 @@ struct Result {
     long frames = 0;
     uint32_t checksum = 0;              // of the last frame's pixels
     int objects = 0;
+    int models = 0;                     // model objects whose .mof loaded
     int scripts = 0;                    // script instances that started
     int script_lines = 0;               // lines scripts printed
     ProjectSettings project;

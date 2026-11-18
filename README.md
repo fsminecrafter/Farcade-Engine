@@ -79,7 +79,7 @@ ARGS=--farcadegl tools/ci/run_os.sh build/os/bin/farcade-editor.run 'FE EDITOR f
 
 ## Exporting a game
 
-`File > Project settings...` edits `project.fe` (name, version, entry scene, window size, icon); `File > Export game...` writes `<Name>.fepak` (every scene and the scripts, models, textures and sounds they use, `docs/pak-format.md`) and a copy of the prebuilt player `feplayer` as `<Name>.run`, by default into `0:/games/<Name>/`. The player runs the scene like the editor's Play (same `PlaySession`: Lua, physics, audio, the current camera, FarcadeGL), full screen or as a MOSdesk window; Esc quits. Scripts read the keyboard and mouse with `fe.key_down("w")`, `fe.mouse_x()` ... (`docs/scripting.md`). Details in `docs/export.md`.
+`File > Project settings...` edits `project.fe` (name, version, entry scene, window size, icon); `File > Export game...` writes `<Name>.fepak` (every scene and the scripts, models, textures and sounds they use, `docs/pak-format.md`) and a copy of the prebuilt player `feplayer` as `<Name>.run`, by default into `0:/games/<Name>/`. The player runs the scene like the editor's Play (same `PlaySession`: Lua, physics, audio, the current camera, FarcadeGL), full screen or as a MOSdesk window; Esc quits. Scripts read the keyboard and mouse with `fe.key_down("w")`, `fe.mouse_x()` ... (`docs/scripting.md`). Imported `.mof` models are drawn in the viewport, in Play and in the player (`docs/scenes.md`); Create > Import model... converts glTF/OBJ. `--mpkg` also writes an installable `.mpkg`. Details in `docs/export.md`.
 
 ```sh
 build/host/bin/fe-export MyProject out/                        # the editor's export on the PC, no screen

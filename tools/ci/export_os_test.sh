@@ -16,14 +16,14 @@ BIN=build/os/bin
 DEMO=tests/data/export_demo
 [ -f $BIN/farcade-editor.run ] && [ -f $BIN/feplayer.run ] || { echo "run make os first"; exit 2; }
 
-ARGS="--export 0:/programs 0:/games/ExportDemo --entry-only --run 20" \
+ARGS="--export 0:/programs 0:/games/ExportDemo --entry-only --mpkg --run 20" \
     tools/ci/run_os.sh $BIN/farcade-editor.run \
-    'FE PLAYER DONE frames=20 .*scripts=1' \
+    'FE PLAYER DONE frames=20 .*scripts=1 models=1' \
     'FE EXPORT FAIL|FE PLAYER FAIL|FE EXPORT game exited [1-9]|^error:' \
     $BIN/feplayer.run $DEMO/main.fscene $DEMO/spin.lua $DEMO/cube.mof $DEMO/project.fe $DEMO/graphics.cfg
 
 LOG=${LOG_DIR:-build/os/run_os}/farcade-editor.serial.log
-for want in 'FE EXPORT OK 0:/games/ExportDemo/Export_Demo.fepak files=5' 'FE GAME start Spinner' 'FE GAME spin 15' 'FE PLAYER READY Export Demo' 'FE PLAYER graphics settings from graphics.cfg'; do
+for want in 'FE EXPORT OK 0:/games/ExportDemo/Export_Demo.fepak files=5' 'FE GAME start Spinner' 'FE GAME spin 15' 'FE PLAYER READY Export Demo' 'Export_Demo.mpkg' 'FE PLAYER graphics settings from graphics.cfg'; do
     grep -aqF -- "$want" "$LOG" || { echo "export_os_test: missing in the serial log: $want"; exit 1; }
 done
 echo "export_os_test: PASS"

@@ -6,6 +6,7 @@
 // gizmos stay.
 #include "editor.h"
 #include "render_bridge.h"
+#include "model_cache.h"
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
@@ -376,8 +377,9 @@ void Editor::panel_viewport() {
         int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
         if (ok) {
             bridge.build(scene, v.view, v.proj, eye, znear, zfar);
-            bridge.scene.read_asset = read_render_asset;
-            bridge.scene.asset_user = this;
+            static ModelAssetReader assets{ read_render_asset, this };
+            bridge.scene.read_asset = model_asset_reader;
+            bridge.scene.asset_user = &assets;
             bridge.scene.draft = false;
             ok = fgl.render_rows(bridge.scene, y, band_rows, disp + (size_t)y * full_w);
         }
@@ -412,8 +414,9 @@ void Editor::panel_viewport() {
             if (ok) {
                 fgl.set_settings(settings.graphics);
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
-                bridge.scene.read_asset = read_render_asset;
-                bridge.scene.asset_user = this;
+                static ModelAssetReader assets{ read_render_asset, this };
+                bridge.scene.read_asset = model_asset_reader;
+                bridge.scene.asset_user = &assets;
                 bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
                 ok = fgl.render(bridge.scene);
                 // What runs, for Settings > Graphics.

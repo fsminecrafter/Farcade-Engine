@@ -131,3 +131,42 @@ How it works:
 On Minimal-OS, `farcade-editor.run --scene-test` saves the demo scene
 twice, opens it again and prints `FE SCENE PASS <objects> <bytes>` when it
 comes back unchanged.
+
+## Models in scenes
+
+An object with `mesh model` and a `model "<path>.mof"` line shows an imported
+model. `.mof` files are read through the VFS (`engine/core/vfs.h`): plain files
+under the project in the editor, the package in an exported game. A file that
+cannot be read shows as a cube.
+
+**Importing:** Create > Import model... (a path to a `.gltf`, `.glb` or `.obj`),
+the Files panel's "Import as model" (right click, or double-click the file),
+and dropping such a file on the viewport or an object all convert it with
+the engine's importers to a `.mof` next to the source and use that. The
+converter is `model_convert_file` (`editor/src/model_import.h`).
+
+**What is drawn** (`editor/src/model_cache.h`): every mesh instance of the node
+tree, one part per submesh, in the bind pose with the node transforms applied.
+FarcadeGL draws a part with its material's base color factor (the object's
+color tints it; the default grey is neutral) and its base color texture (PNG,
+JPEG or raw RGBA8 stored in the `.mof`, mip 0) with the file's UVs. The CPU
+preview draws the merged mesh in one color. Bounds, picking, framing and
+Mesh colliders use the real mesh.
+
+**For other code** (an Animator module, say):
+
+```cpp
+const fe::Model* m = fe::Scene::model_for(object);   // null unless a Model object whose file loaded
+m->mesh                  // MeshData: all parts merged (triangle list)
+m->parts[i]              // positions, normals, uvs (triangle lists, bind pose), color, texture,
+                         //   mesh_index / submesh_index / material / node into m->mof
+m->mof                   // the mof_file view: bones (inverse bind matrices), nodes,
+                         //   mof_mesh_joints() / mof_mesh_weights() skin streams, materials, textures
+```
+
+The pointers stay valid until `model_cache_clear()` (called by Play, Import and
+when a model file is assigned). To pose a skinned model, compute the bone
+matrices from `m->mof.bones`, skin the `.mof` vertex streams
+(`mof_mesh_positions` plus joints and weights of `parts[i].mesh_index`) and draw
+the result as your own `gfx::DrawItem`s; the parts are the bind pose. `.mof`
+carries no animation clips yet.

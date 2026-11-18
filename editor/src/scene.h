@@ -146,6 +146,8 @@ public:
 
     // The built-in mesh of an object (primitives are generated once).
     static const MeshData& mesh_for(const Object& o);
+    // The loaded .mof of a Model object (model_cache.h: parts, skeleton), or null.
+    static const struct Model* model_for(const Object& o);
 
     // World-space ray pick: the nearest visible object hit, or kNoObject.
     ObjectId pick(const Ray& ray, float* distance = nullptr);

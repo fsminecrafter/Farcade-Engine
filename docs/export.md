@@ -65,7 +65,7 @@ its own process.
 
 ```sh
 farcade-editor.run --export <project-or-scene> <outdir> [--name N] [--scene S]
-                   [--player P] [--entry-only] [--run [FRAMES]]
+                   [--player P] [--entry-only] [--mpkg] [--run [FRAMES]]
 build/host/bin/fe-export <project-or-scene> <outdir> ...      # the same on the PC, without the editor
 ```
 
@@ -110,16 +110,19 @@ FarcadeGL. Keyboard and mouse reach scripts as `fe.key_down("w")`,
 
 ## Notes
 
-- Models (`.mof`) are packed and found through the VFS, but the engine does
-  not draw them yet (a model object shows as a cube, in the editor too).
+- Models (`.mof`) are packed, found through the VFS and drawn (`docs/scenes.md`, "Models in scenes").
 - A path in a scene that points outside the project cannot be packed; it is
   warned about.
 - Packages are not compressed yet (the entry flags have room for zstd).
 - The `.run` format (MINIRUN1) can carry files under `Resources/`; the
   exporter uses that for the icon only, because a running program has no
   documented way to read its own bundle. The package stays a separate file.
-- Packaging as an installable `.mpkg` (installs to `0:/programs/<Game>.run` and
-  `0:/games/<Game>/`) is not done yet.
+- `--mpkg` (or the dialog's "Also make an installable .mpkg") writes `<Name>.mpkg`
+  next to the game: `mos_pkg_unzip(..., "0:/")`, the terminal's `pkg` command and Deliver
+  install it to `0:/programs/<Name>.run` and `0:/games/<Name>/<Name>.fepak` (+ the icon). The player finds
+  its package there (`0:/games/<name>/<name>.fepak`). Entries are stored, not LZSS compressed
+  (`editor/src/mpkg.h`, format of Minimal-OS's `pkgformat.h`). The icon also sits inside the `.run`
+  for MOSdesk; no Deliver metadata beyond the archive is written.
 
 ## Testing
 

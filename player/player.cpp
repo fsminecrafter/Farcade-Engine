@@ -5,6 +5,7 @@
 #include "core/vfs.h"
 #include "platform/platform.h"
 #include "graphics_text.h"
+#include "model_cache.h"
 #include "play_session.h"
 #include "fx/fx.h"
 #include "project.h"
@@ -181,6 +182,8 @@ int run(const Options& opt, Result* result) {
         return 1;
     }
     res->scripts = session.script_count();
+    for (int i = 0; i < scene.count(); i++)
+        if (Scene::model_for(scene.at(i))) res->models++;
 
     static gfx::Renderer fgl;
     static RenderBridge bridge;
@@ -226,8 +229,9 @@ int run(const Options& opt, Result* result) {
                     proj = Mat4::perspective(radians(50.0f), aspect, 0.1f, 500.0f);
                 }
                 bridge.build(scene, view, proj, eye, zn, zf);
-                bridge.scene.read_asset = vfs::read_cb;
-                bridge.scene.asset_user = nullptr;
+                static ModelAssetReader assets{ vfs::read_cb, nullptr };
+                bridge.scene.read_asset = model_asset_reader;
+                bridge.scene.asset_user = &assets;
                 // Particles, billboards and text over the image (engine/fx).
                 if (FxWorld* fx = session.fx()) {
                     FxWorld::Frame fr = fx->collect(eye);
@@ -267,7 +271,7 @@ int run(const Options& opt, Result* result) {
     if (device) { device->shutdown(); delete device; }
     platform::shutdown();
     vfs::unmount_all();
-    if (!opt.quiet) printf("FE PLAYER DONE frames=%ld checksum=%08x objects=%d scripts=%d\n", res->frames, (unsigned)res->checksum, res->objects, res->scripts);
+    if (!opt.quiet) printf("FE PLAYER DONE frames=%ld checksum=%08x objects=%d scripts=%d models=%d\n", res->frames, (unsigned)res->checksum, res->objects, res->scripts, res->models);
     return 0;
 }
 

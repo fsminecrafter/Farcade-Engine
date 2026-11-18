@@ -10,13 +10,20 @@
 
 .SECONDEXPANSION:
 
-PAK_SRC     := engine/core/pak.cpp engine/core/vfs.cpp
+PAK_SRC     := engine/core/pak.cpp engine/core/vfs.cpp editor/src/mpkg.cpp
+# Models in scenes: the .mof reader/writer and the importers (engine/mof), the model cache.
+MODEL_CORE_SRC   := engine/mof/mof_read.cpp engine/mof/mof_write.cpp editor/src/model_cache.cpp
+MODEL_IMPORT_SRC := engine/mof/import_common.cpp engine/mof/import_gltf.cpp engine/mof/import_obj.cpp \
+                    engine/mof/mof_ext_impl.c external/fast_obj/fast_obj.c editor/src/model_convert.cpp editor/src/model_import.cpp
+MODEL_CONVERT_SRC := engine/mof/import_common.cpp engine/mof/import_gltf.cpp engine/mof/import_obj.cpp \
+                    engine/mof/mof_ext_impl.c external/fast_obj/fast_obj.c editor/src/model_convert.cpp
+EDITOR_SRC  += $(MODEL_CORE_SRC) $(MODEL_IMPORT_SRC)
 EDITOR_SRC  += $(PAK_SRC) editor/src/project.cpp editor/src/play_session.cpp editor/src/export.cpp editor/src/export_ui.cpp editor/src/graphics_text.cpp
 
 # What the player needs of the editor's sources: scene, scene files, project
 # settings, the play session (shared with editor Play), the render bridge.
 PLAYER_SHARED := editor/src/scene.cpp editor/src/scene_io.cpp editor/src/project.cpp editor/src/play_session.cpp \
-                 editor/src/render_bridge.cpp editor/src/graphics_text.cpp $(PAK_SRC)
+                 editor/src/render_bridge.cpp editor/src/graphics_text.cpp $(PAK_SRC) $(MODEL_CORE_SRC)
 PLAYER_SRC    := player/player.cpp $(PLAYER_SHARED)
 
 $(BUILD)/host/player/%.o $(BUILD)/host/tools/export/%.o $(BUILD)/host/tests/host/export_tests.cpp.o: HOST_EXTRA_FLAGS += $(EDITOR_INC)
@@ -31,13 +38,20 @@ $(BUILD)/host/bin/feplayer: $(call host_objs,player/main.cpp) $$(PLAYER_HOST_OBJ
 
 # fe-export: the exporter alone (scene loading and the pak writer; no renderer).
 $(BUILD)/host/bin/fe-export: $(call host_objs,tools/export/main.cpp editor/src/export.cpp editor/src/scene.cpp editor/src/scene_io.cpp \
-                                 editor/src/project.cpp $(PAK_SRC) editor/platform/platform_headless.cpp $(CORE_SRC))
+                                 editor/src/project.cpp $(PAK_SRC) $(MODEL_CORE_SRC) editor/platform/platform_headless.cpp $(CORE_SRC))
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -o $@ $^ -lm
 
 $(BUILD)/host/bin/export_tests: $(call host_objs,tests/host/export_tests.cpp) $$(PLAYER_HOST_OBJS) $(call host_objs,editor/src/export.cpp)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) -o $@ $^ -lm
+
+$(BUILD)/host/bin/model_tests: $(call host_objs,tests/host/model_tests.cpp) $$(PLAYER_HOST_OBJS) $(call host_objs,$(MODEL_CONVERT_SRC))
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -o $@ $^ -lm
+
+HOST_TESTS += $(BUILD)/host/bin/model_tests
+$(BUILD)/host/tests/host/model_tests.cpp.o: HOST_EXTRA_FLAGS += $(EDITOR_INC) $(GFX_HOST_INC)
 
 HOST_PROGRAMS += $(BUILD)/host/bin/feplayer $(BUILD)/host/bin/fe-export
 HOST_TESTS    += $(BUILD)/host/bin/export_tests

@@ -146,6 +146,7 @@ public:
     char export_name[64] = {};                  // the dialog's fields
     char export_scene[256] = {};
     char export_out[256] = {};
+    bool export_mpkg = false;                   // also write the .mpkg
     char export_status[256] = {};               // the last export's result line
     char export_run_path[512] = {};             // program and package of the last export, for "Run"
     char export_pak_path[512] = {};
@@ -161,6 +162,11 @@ public:
     ObjectId create_child(const char* name, MeshKind mesh, ObjectId parent);
     // Special objects (Camera, Sky, Sky Light, Post Processing, Empty) and
     // lights (an Empty with a Light module), under `parent` when given.
+    // A model file as a new object: .gltf/.glb/.obj are converted to .mof first (model_import.h).
+    ObjectId import_model(const char* path, ObjectId parent = kNoObject);
+    char import_path[256] = {};
+    bool want_import_model_ = false;
+    void import_model_popup();
     ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
     ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
     // The items of every "add object" menu (Create, the Hierarchy's + and

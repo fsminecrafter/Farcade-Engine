@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#define STB_IMAGE_WRITE_STATIC           // the importers (mof_ext_impl.c) have their own copy
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 

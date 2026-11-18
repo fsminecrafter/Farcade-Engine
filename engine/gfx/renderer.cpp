@@ -575,7 +575,9 @@ struct Renderer::Impl {
                         float* o = scratch + (v + t) * 8;
                         o[0] = ps[t].x; o[1] = ps[t].y; o[2] = ps[t].z;
                         o[3] = ns[t].x; o[4] = ns[t].y; o[5] = ns[t].z;
-                        if (fabsf(ns[t].y) > fabsf(ns[t].x) && fabsf(ns[t].y) > fabsf(ns[t].z)) {
+                        if (m.uvs) {
+                            o[6] = m.uvs[(size_t)(at + t) * 2]; o[7] = m.uvs[(size_t)(at + t) * 2 + 1];
+                        } else if (fabsf(ns[t].y) > fabsf(ns[t].x) && fabsf(ns[t].y) > fabsf(ns[t].z)) {
                             o[6] = ps[t].x + 0.5f; o[7] = ps[t].z + 0.5f;
                         } else if (fabsf(ns[t].x) > fabsf(ns[t].z)) {
                             o[6] = ps[t].z + 0.5f; o[7] = ps[t].y + 0.5f;

@@ -1,0 +1,217 @@
+// Compiles every shader the renderers generate, for every variant key, with
+// the same FGSL front end (fglsl.h) that FarcadeGL uses on the OS. A shader
+// that only fails for one mix of features (say SSAO on with the draft post
+// chain) shows up here instead of as "back to the CPU preview" on a card.
+#include "gfx/shaders.h"
+#include "gfx/shaders_hq.h"
+#include "gfx/shaders_post.h"
+#include "fglsl.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+using namespace fe::gfx::shaders;
+
+namespace {
+
+int g_programs = 0, g_failed = 0;
+char* g_vs;
+char* g_fs;
+fglsl_program_t* g_prog;
+
+// Compiles g_vs + g_fs; prints the error and the offending fragment line.
+void check(const char* what, size_t cap) {
+    g_programs++;
+    size_t vl = strlen(g_vs), fl = strlen(g_fs);
+    if (vl + 1 >= cap || fl + 1 >= cap) {
+        if (g_failed++ < 40) printf("FAIL %s: source fills its %zu byte buffer (vertex %zu, fragment %zu)\n", what, cap, vl, fl);
+        return;
+    }
+    if (fglsl_compile(g_prog, g_vs, g_fs) == 0) return;
+    if (g_failed++ >= 40) return;
+    printf("FAIL %s: %s\n", what, g_prog->error);
+    if (getenv("FE_DUMP_SHADER")) printf("---- vertex\n%s\n---- fragment\n%s\n", g_vs, g_fs);
+}
+
+// Every post chain key worth telling apart.
+int post_keys(PostKey* out) {
+    int n = 0;
+    for (int tm = 0; tm < 4; tm++)
+        for (int bits = 0; bits < 16; bits++) {
+            PostKey k;
+            k.tonemap = (uint8_t)tm;
+            k.grade = bits & 1;
+            k.grain = (bits >> 1) & 1;
+            k.draft = (bits >> 2) & 1;
+            k.hdr_codec = (bits >> 3) & 1;
+            out[n++] = k;
+        }
+    return n;
+}
+
+void name_post(char* s, size_t cap, const PostKey& p) {
+    snprintf(s, cap, "tonemap %d%s%s%s%s", p.tonemap, p.grade ? " grade" : "", p.grain ? " grain" : "",
+             p.draft ? " draft" : "", p.hdr_codec ? " hdr_codec" : "");
+}
+
+void cpu_tier(const PostKey* posts, int np) {
+    char what[256], pn[96];
+    for (int pi = 0; pi < np; pi++) {
+        name_post(pn, sizeof pn, posts[pi]);
+        for (int nd = 0; nd <= 2; nd++)
+            for (int npl = 0; npl <= 2; npl++)
+                for (int ns = 0; ns <= 2; ns++)
+                    for (int gi = 0; gi < 2; gi++) {
+                        if (nd + npl + ns > kMaxLights) continue;
+                        lit_vertex(g_vs, kSourceBytes);
+                        lit_fragment(g_fs, kSourceBytes, nd, npl, ns, posts[pi], gi != 0);
+                        snprintf(what, sizeof what, "lit %d/%d/%d%s, %s", nd, npl, ns, gi ? " gi" : "", pn);
+                        check(what, kSourceBytes);
+                    }
+        unlit_vertex(g_vs, kSourceBytes);
+        unlit_fragment(g_fs, kSourceBytes, posts[pi]);
+        snprintf(what, sizeof what, "unlit, %s", pn);
+        check(what, kSourceBytes);
+        sky_vertex(g_vs, kSourceBytes);
+        sky_fragment(g_fs, kSourceBytes, posts[pi]);
+        snprintf(what, sizeof what, "sky, %s", pn);
+        check(what, kSourceBytes);
+    }
+}
+
+void gpu_tier_lit(const PostKey* posts, int np) {
+    char what[384], pn[96];
+    for (int pi = 0; pi < np; pi++) {
+        name_post(pn, sizeof pn, posts[pi]);
+        // Every light kind alone and together, plus two of each; the other
+        // tonemaps change only the post chain, which the rest tests cover.
+        if (posts[pi].tonemap != 0) continue;
+        static const int mixes[][3] = { {0,0,0}, {1,0,0}, {0,1,0}, {0,0,1}, {1,1,1}, {2,2,2} };
+        for (const auto& m : mixes) {
+            HqLitKey k;
+            k.post = posts[pi];
+            k.nd = m[0];
+            k.np = m[1];
+            k.ns = m[2];
+            if (k.nd + k.np + k.ns > kMaxLights) continue;
+            for (int bits = 0; bits < 128; bits++) {
+                k.pbr = bits & 1;
+                k.ao = (bits >> 1) & 1;
+                k.fog = (bits >> 2) & 1;
+                k.hdr = (bits >> 3) & 1;
+                k.gi = (bits >> 4) & 1;
+                k.local_soft = (bits >> 5) & 1;
+                bool local = (bits >> 6) & 1;
+                k.nps = local ? k.np : 0;
+                k.nss = local ? k.ns : 0;
+                for (int shadow = 0; shadow < 3; shadow++) {
+                    k.shadow = shadow;
+                    int max_c = shadow && k.nd ? kMaxCascades : 1;
+                    for (int c = 1; c <= max_c; c++) {
+                        k.cascades = c;
+                        k.shadow_light = 0;
+                        hq_lit_vertex(g_vs, kHqSourceBytes, shadow ? c : 0);
+                        hq_lit_fragment(g_fs, kHqSourceBytes, k);
+                        snprintf(what, sizeof what,
+                                 "hq lit %d/%d/%d%s%s%s%s%s shadow %d x%d local %d/%d%s, %s", k.nd, k.np, k.ns,
+                                 k.pbr ? " pbr" : "", k.ao ? " ao" : "", k.fog ? " fog" : "", k.hdr ? " hdr" : "",
+                                 k.gi ? " gi" : "", shadow, c, k.nps, k.nss, k.local_soft ? " soft" : "", pn);
+                        check(what, kHqSourceBytes);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void gpu_tier_rest(const PostKey* posts, int np) {
+    char what[256], pn[96];
+    for (int pi = 0; pi < np; pi++) {
+        name_post(pn, sizeof pn, posts[pi]);
+        for (int bits = 0; bits < 4; bits++) {
+            bool fog = bits & 1, hdr = (bits >> 1) & 1;
+            hq_unlit_vertex(g_vs, kHqSourceBytes);
+            hq_unlit_fragment(g_fs, kHqSourceBytes, fog, hdr, posts[pi]);
+            snprintf(what, sizeof what, "hq unlit%s%s, %s", fog ? " fog" : "", hdr ? " hdr" : "", pn);
+            check(what, kHqSourceBytes);
+        }
+        for (int hdr = 0; hdr < 2; hdr++) {
+            sky_vertex(g_vs, kHqSourceBytes);
+            hq_sky_fragment(g_fs, kHqSourceBytes, hdr != 0, posts[pi]);
+            snprintf(what, sizeof what, "hq sky%s, %s", hdr ? " hdr" : "", pn);
+            check(what, kHqSourceBytes);
+        }
+        for (int bits = 0; bits < 8; bits++) {
+            bool bloom = bits & 1, chroma = (bits >> 1) & 1, ssr = (bits >> 2) & 1;
+            pp_vertex(g_vs, kHqSourceBytes);
+            pp_composite_fragment(g_fs, kHqSourceBytes, bloom, posts[pi], chroma, ssr);
+            snprintf(what, sizeof what, "composite%s%s%s, %s", bloom ? " bloom" : "", chroma ? " chromatic" : "",
+                     ssr ? " ssr" : "", pn);
+            check(what, kHqSourceBytes);
+        }
+    }
+
+    typedef void (*gen_t)(char*, size_t);
+    struct Pair { const char* name; gen_t vs, fs; };
+    static const Pair pairs[] = {
+        { "shadow", hq_shadow_vertex, hq_shadow_fragment },
+        { "white", pp_vertex, pp_white_fragment },
+        { "local shadow", hq_local_shadow_vertex, hq_local_shadow_fragment },
+        { "depth", hq_depth_vertex, hq_depth_fragment },
+        { "normal", hq_normal_vertex, hq_normal_fragment },
+        { "material", hq_material_vertex, hq_material_fragment },
+        { "sky mask", pp_vertex, pp_skymask_fragment },
+        { "ssao", pp_vertex, pp_ssao_fragment },
+        { "gtao", pp_vertex, pp_gtao_fragment },
+        { "ao accumulate", pp_vertex, pp_ao_accum_fragment },
+        { "copy", pp_vertex, pp_copy_fragment },
+        { "ssr mask", pp_vertex, pp_ssrmask_fragment },
+        { "ssr", pp_vertex, pp_ssr_fragment },
+        { "ssr blur", pp_vertex, pp_ssrblur_fragment },
+        { "blur", pp_vertex, pp_blur_fragment },
+        { "bloom up", pp_vertex, pp_up_fragment },
+        { "taa", pp_vertex, pp_taa_fragment },
+        { "smaa edges", pp_vertex, pp_smaa_edge_fragment },
+        { "smaa mask", pp_vertex, pp_smaa_mask_fragment },
+        { "smaa blend", pp_vertex, pp_smaa_blend_fragment },
+        { "fxaa mask", pp_vertex, pp_fxaa_mask_fragment },
+        { "fxaa", pp_vertex, pp_fxaa_fragment },
+    };
+    for (const Pair& p : pairs) {
+        p.vs(g_vs, kHqSourceBytes);
+        p.fs(g_fs, kHqSourceBytes);
+        check(p.name, kHqSourceBytes);
+    }
+    for (int v = 0; v < 2; v++) {
+        pp_vertex(g_vs, kHqSourceBytes);
+        pp_bright_fragment(g_fs, kHqSourceBytes, v != 0);
+        check(v ? "bloom bright (karis)" : "bloom bright", kHqSourceBytes);
+        pp_vertex(g_vs, kHqSourceBytes);
+        pp_down_fragment(g_fs, kHqSourceBytes, v != 0);
+        check(v ? "bloom down (wide)" : "bloom down", kHqSourceBytes);
+        pp_vertex(g_vs, kHqSourceBytes);
+        pp_smaa_weights_fragment(g_fs, kHqSourceBytes, v != 0);
+        check(v ? "smaa weights (vertical)" : "smaa weights", kHqSourceBytes);
+    }
+}
+
+}  // namespace
+
+int main() {
+    g_vs = (char*)malloc(kHqSourceBytes);
+    g_fs = (char*)malloc(kHqSourceBytes);
+    g_prog = (fglsl_program_t*)malloc(sizeof(fglsl_program_t));
+    if (!g_vs || !g_fs || !g_prog) return 2;
+    PostKey posts[64];
+    int np = post_keys(posts);
+    cpu_tier(posts, np);
+    gpu_tier_rest(posts, np);
+    gpu_tier_lit(posts, np);
+    if (g_failed) {
+        printf("shader_compile_tests: %d of %d programs failed\n", g_failed, g_programs);
+        return 1;
+    }
+    printf("shader_compile_tests: all %d programs compile\n", g_programs);
+    return 0;
+}

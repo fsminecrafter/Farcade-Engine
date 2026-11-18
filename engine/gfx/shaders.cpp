@@ -147,7 +147,11 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& 
     }
     add_post(t, pk);
     const char* tail = draft ? kLightTailDraft : kLightTail;
+    // The shading runs in a block: FGSL frees a block's registers when it
+    // ends, so post() (AgX, grain) gets them instead of N, V, spec, ...
     t.add("void main() {\n"
+          "    vec3 col = vec3(0.0);\n"
+          "    {\n"
           "    vec3 N = normalize(v_nrm);\n");
     if (!draft)
         t.add("    vec3 V = normalize(u_cam.xyz - v_pos);\n"
@@ -177,7 +181,9 @@ void lit_fragment(char* out, size_t cap, int nd, int np, int ns, const PostKey& 
     t.add(gi ? "    vec3 amb = gi_amb(N, v_pos);\n" : "    vec3 amb = mix(u_gnd.rgb, u_sky.rgb, N.y * 0.5 + 0.5);\n");
     t.add("    vec3 albedo = v_alb * srgb2lin(texture2D(u_texture, v_uv).rgb);\n"
           "    vec3 lit = albedo * (amb + diff);\n");
-    t.add(draft ? "    gl_FragColor = vec4(post(lit), 1.0);\n}\n" : "    gl_FragColor = vec4(post(lit + spec), 1.0);\n}\n");
+    t.add(draft ? "    col = lit;\n" : "    col = lit + spec;\n");
+    t.add("    }\n"
+          "    gl_FragColor = vec4(post(col), 1.0);\n}\n");
 }
 
 void unlit_vertex(char* out, size_t cap) {

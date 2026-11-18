@@ -217,7 +217,12 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add("uniform sampler2D u_shadow;\n");
         for (int c = 0; c < k.cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
     }
-    if (k.ao) t.add("uniform sampler2D u_ao;\n");
+    if (k.ao) {
+        t.add("uniform sampler2D u_ao;\n");
+        // The AO lookup needs the target size; the post chain declares u_res
+        // only when it is not the draft one (set_post sets it either way).
+        if (k.post.draft) t.add("uniform vec4 u_res;\n");
+    }
     if (k.gi) {
         char gbuf[2048];
         emit_gi_lookup(gbuf, sizeof gbuf);

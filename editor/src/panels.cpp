@@ -884,9 +884,24 @@ struct ScriptList {
     char paths[64][256];
     int count = 0;
 };
-void collect_scripts(const platform::DirEntry& e, void* user) {
-    ScriptList* l = (ScriptList*)user;
-    if (!e.is_dir && path_is_script(e.name) && l->count < 64) snprintf(l->paths[l->count++], 256, "%s", e.name);
+// Every script under `dir`, up to three folders deep, as full paths.
+struct TreeWalk { ScriptList* list; const char* dir; int depth; };
+void collect_scripts_tree(const char* dir, ScriptList* list, int depth);
+void walk_entry(const platform::DirEntry& e, void* user) {
+    TreeWalk* w = (TreeWalk*)user;
+    if (e.name[0] == '.' || w->list->count >= 64) return;
+    char full[256];
+    snprintf(full, sizeof full, "%s/%s", w->dir, e.name);
+    if (e.is_dir) {
+        if (w->depth < 3 && strcmp(e.name, "build") && strcmp(e.name, "export")) collect_scripts_tree(full, w->list, w->depth + 1);
+    } else if (path_is_script(e.name)) {
+        snprintf(w->list->paths[w->list->count++], 256, "%s", full);
+    }
+}
+void collect_scripts_tree(const char* dir, ScriptList* list, int depth) {
+    if (!dir[0]) return;
+    TreeWalk w = { list, dir, depth };
+    platform::list_dir(dir, walk_entry, &w);
 }
 }  // namespace
 
@@ -920,34 +935,62 @@ void Editor::add_script_button(Object* o) {
     ImGui::EndDisabled();
     if (clicked) ImGui::OpenPopup("##add_script_menu");
     if (ImGui::BeginPopup("##add_script_menu")) {
-        // Scripts in the project folder and its scripts/ folder.
+        // Scripts anywhere in the project (a few folders deep), a search
+        // field, and "New file" at the bottom, named after the search.
         static ScriptList list;
+        static char search[96];
         if (ImGui::IsWindowAppearing()) {
             list.count = 0;
-            const char* dirs[2] = { project_dir, nullptr };
-            char sub[300];
-            snprintf(sub, sizeof(sub), "%s/scripts", project_dir);
-            dirs[1] = sub;
-            for (int d = 0; d < 2; d++) {
-                int before = list.count;
-                if (!dirs[d][0]) continue;
-                platform::list_dir(dirs[d], collect_scripts, &list);
-                for (int i = before; i < list.count; i++) {
-                    char full[256];
-                    snprintf(full, sizeof(full), "%s/%s", dirs[d], list.paths[i]);
-                    memcpy(list.paths[i], full, sizeof(full));
-                }
-            }
+            search[0] = 0;
+            collect_scripts_tree(project_dir, &list, 0);
+            ImGui::SetKeyboardFocusHere();
         }
-        if (!list.count) ImGui::TextDisabled("No scripts in the project (drop one from Files)");
+        ImGui::SetNextItemWidth(280 * settings.ui_scale);
+        bool enter = ImGui::InputTextWithHint("##script_search", "Search, or name a new script", search, sizeof search,
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        track("addscript:search");
+        ImGui::Separator();
+        size_t pl = strlen(project_dir);
+        int shown = 0, first = -1;
         for (int i = 0; i < list.count; i++) {
+            const char* rel = list.paths[i];
+            if (pl && !strncmp(rel, project_dir, pl) && rel[pl] == '/') rel += pl + 1;
+            if (search[0] && !ImStristr(rel, nullptr, search, nullptr)) continue;
+            if (first < 0) first = i;
+            shown++;
             ImGui::PushID(i);
-            if (ImGui::Selectable(path_filename(list.paths[i]))) apply_file_to_object(list.paths[i], o->id);
-            char k[48];
+            if (ImGui::Selectable(rel)) { apply_file_to_object(list.paths[i], o->id); ImGui::CloseCurrentPopup(); }
+            char k[300];
             snprintf(k, sizeof(k), "addscript:%s", path_filename(list.paths[i]));
             track(k);
             ImGui::PopID();
         }
+        if (!list.count) ImGui::TextDisabled("No scripts in the project yet");
+        else if (!shown) ImGui::TextDisabled("No script matches \"%s\"", search);
+        ImGui::Separator();
+        // Always last: a new script from the template.
+        bool cpp = settings.new_script_language == 1;
+        char label[160];
+        const char* base = search[0] ? search : "new_script";
+        snprintf(label, sizeof label, "%s  New file: %s%s", FE_ICON_PLUS, base,
+                 path_is_script(base) ? "" : cpp ? ".cpp" : ".lua");
+        bool make = ImGui::Selectable(label) || (enter && !shown);
+        track("addscript:new");
+        if (enter && shown && first >= 0) { apply_file_to_object(list.paths[first], o->id); ImGui::CloseCurrentPopup(); }
+        if (make) {
+            char dir[300], path[600];
+            snprintf(dir, sizeof dir, "%s/scripts", project_dir);
+            if (create_script_file(dir, base, path, sizeof path)) {
+                log(LogLevel::Info, "Created %s", path);
+                apply_file_to_object(path, o->id);
+            } else if (platform::file_exists(path)) {
+                apply_file_to_object(path, o->id);      // it exists: just use it
+            } else {
+                log(LogLevel::Error, "Could not write %s", path);
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::TextDisabled(cpp ? "New scripts: C++ (Settings > General)" : "New scripts: Lua (Settings > General)");
         ImGui::EndPopup();
     }
 }
@@ -1362,6 +1405,21 @@ void Editor::panel_files() {
     if (!g_listing.valid || strcmp(g_listing.dir, files_dir)) refresh(files_dir);
     static char selected_file[512];
     static char filter[64];
+    // Right-click actions: a name to ask for (new file/folder, rename) or a
+    // removal to confirm, shown as a small dialog after the menu closes.
+    enum FileAction { FA_None, FA_NewScript, FA_NewText, FA_NewFolder, FA_Rename, FA_Remove };
+    static int action = FA_None;
+    static bool action_open = false;
+    static char action_path[512];       // the item (rename/remove) or the folder (new)
+    static char action_name[128];
+    static char action_error[128];
+    auto start_action = [&](int a, const char* path, const char* name) {
+        action = a;
+        action_open = true;
+        action_error[0] = 0;
+        snprintf(action_path, sizeof action_path, "%s", path);
+        snprintf(action_name, sizeof action_name, "%s", name ? name : "");
+    };
 
     // Toolbar: up, refresh, the folder as clickable parts, a filter.
     float bs = ImGui::GetFrameHeight();
@@ -1485,6 +1543,14 @@ void Editor::panel_files() {
             if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
             if (!e.is_dir && path_is_importable_model(e.name) && menu_item("Import as model")) import_model(full);
             if (menu_item("Copy path")) ImGui::SetClipboardText(full);
+            ImGui::Separator();
+            if (menu_item("Rename...", "F2")) start_action(FA_Rename, full, e.name);
+            if (menu_item(e.is_dir ? "Remove folder..." : "Remove file...", "Del")) start_action(FA_Remove, full, e.name);
+            if (e.is_dir) {
+                ImGui::Separator();
+                if (menu_item("New script here...")) start_action(FA_NewScript, full, "");
+                if (menu_item("New folder here...")) start_action(FA_NewFolder, full, "New folder");
+            }
             ImGui::EndPopup();
         }
         ImVec2 q(p.x + tile, p.y + tile);
@@ -1512,14 +1578,107 @@ void Editor::panel_files() {
     // Empty space: context menu for the folder itself.
     ImGui::Dummy(ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 20)));
     if (ImGui::IsItemClicked(0)) selected_file[0] = 0;
-    if (ImGui::BeginPopupContextItem("##folderctx")) {
+    {
+        // Right-clicking anywhere in the grid that is not a file opens the
+        // folder's menu (tests click the middle of the panel).
+        ImGuiWindow* gw = ImGui::GetCurrentWindow();
+        track_rect("files:empty", gw->InnerRect.Min.x, gw->InnerRect.Min.y, gw->InnerRect.GetWidth(), gw->InnerRect.GetHeight());
+    }
+    if (ImGui::BeginPopupContextWindow("##folderctx", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
         const char* why = platform::reveal_unavailable_reason();
         if (menu_item("Open folder in file manager", nullptr, false, why == nullptr)) platform::reveal_in_file_manager(files_dir);
         if (why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", why);
         if (menu_item("Refresh")) refresh(files_dir);
+        ImGui::Separator();
+        const char* lang = settings.new_script_language == 1 ? "New C++ script..." : "New Lua script...";
+        if (menu_item(lang)) start_action(FA_NewScript, files_dir, "");
+        if (menu_item("New text file...")) start_action(FA_NewText, files_dir, "notes.txt");
+        if (menu_item("New folder...")) start_action(FA_NewFolder, files_dir, "New folder");
         ImGui::EndPopup();
     }
+    // Keys on the selected file.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && selected_file[0] && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) start_action(FA_Rename, selected_file, path_filename(selected_file));
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) start_action(FA_Remove, selected_file, path_filename(selected_file));
+    }
     ImGui::EndChild();
+
+    // The action's dialog.
+    if (action_open) { ImGui::OpenPopup("###file_action"); action_open = false; }
+    ImGui::SetNextWindowSize(ImVec2(420 * settings.ui_scale, 0));
+    static const char* titles[] = { "", "New script", "New text file", "New folder", "Rename", "Remove" };
+    char title[64];
+    snprintf(title, sizeof title, "%s###file_action", titles[action]);
+    if (begin_modal(title, nullptr, ImGuiWindowFlags_NoResize)) {
+        bool ok = false;
+        if (action == FA_Remove) {
+            bool dir = false;
+            for (int i = 0; i < g_listing.count; i++)
+                if (!strcmp(g_listing.items[i].name, action_name)) dir = g_listing.items[i].is_dir;
+            ImGui::TextWrapped(dir ? "Remove the folder \"%s\" and everything in it? This cannot be undone."
+                                   : "Remove \"%s\"? The file is deleted; this cannot be undone.", action_name);
+        } else {
+            ImGui::TextUnformatted(action == FA_Rename ? "New name" : "Name");
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##action_name", action_name, sizeof action_name, ImGuiInputTextFlags_EnterReturnsTrue)) ok = true;
+            track("files:action_name");
+            if (action == FA_NewScript)
+                ImGui::TextDisabled("Makes a %s script (Settings > General > New scripts).",
+                                    settings.new_script_language == 1 ? "C++" : "Lua");
+        }
+        if (action_error[0]) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(pal.error), "%s", action_error);
+        ImGui::Spacing();
+        ImGui::BeginDisabled(action != FA_Remove && action != FA_NewScript && !action_name[0]);
+        if (primary_button(action == FA_Remove ? "Remove" : action == FA_Rename ? "Rename" : "Create")) ok = true;
+        track("files:action_ok");
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        track("files:action_cancel");
+        if (ok && (action == FA_Remove || action == FA_NewScript || action_name[0])) {
+            char target[600];
+            bool done = false;
+            if (strchr(action_name, '/') || strchr(action_name, '\\')) {
+                snprintf(action_error, sizeof action_error, "A name cannot contain / or \\");
+            } else if (action == FA_Remove) {
+                done = platform::remove_path(action_path);
+                if (!done) snprintf(action_error, sizeof action_error, "Could not remove it.");
+                else {
+                    if (!strcmp(selected_file, action_path)) selected_file[0] = 0;
+                    log(LogLevel::Info, "Removed %s", action_path);
+                }
+            } else if (action == FA_Rename) {
+                char dir[512];
+                snprintf(dir, sizeof dir, "%s", action_path);
+                if (char* sl = strrchr(dir, '/')) *sl = 0;
+                join(target, sizeof target, dir, action_name);
+                if (!strcmp(target, action_path)) done = true;
+                else if (platform::file_exists(target)) snprintf(action_error, sizeof action_error, "That name is already used.");
+                else if (!(done = platform::rename_path(action_path, target)))
+                    snprintf(action_error, sizeof action_error, "Could not rename it.");
+                else if (!strcmp(selected_file, action_path)) snprintf(selected_file, sizeof selected_file, "%s", target);
+            } else if (action == FA_NewScript) {
+                done = create_script_file(action_path, action_name, target, sizeof target);
+                if (!done) snprintf(action_error, sizeof action_error, "That file exists already, or cannot be written.");
+                else { snprintf(selected_file, sizeof selected_file, "%s", target); log(LogLevel::Info, "Created %s", target); }
+            } else {
+                join(target, sizeof target, action_path, action_name);
+                if (platform::file_exists(target)) snprintf(action_error, sizeof action_error, "That name is already used.");
+                else if (action == FA_NewFolder) done = platform::make_dir(target);
+                else done = platform::write_file(target, "", 0);
+                if (!done && !action_error[0]) snprintf(action_error, sizeof action_error, "Could not create it.");
+                if (done) snprintf(selected_file, sizeof selected_file, "%s", target);
+            }
+            if (done) {
+                refresh(files_dir);
+                ImGui::CloseCurrentPopup();
+            }
+        } else if (cancel) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     ImGui::End();
 }
 
@@ -1643,6 +1802,15 @@ void Editor::window_settings() {
             track("settings:invert_scrolling");
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
             ImGui::TextWrapped("Reverse the mouse wheel direction for scrolling and viewport zoom.");
+            ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 4));
+            prop_label("New scripts");
+            static const char* langs[] = { "Lua (.lua)", "C++ (.cpp)" };
+            ImGui::Combo("##new_script_lang", &settings.new_script_language, langs, 2);
+            track("settings:new_script_language");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+            ImGui::TextWrapped("The language of scripts made by Add script > New file and by Files > New script. "
+                               "Play mode and exported games run Lua scripts.");
             ImGui::PopStyleColor();
         }
         if (settings_page == 1) {

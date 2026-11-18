@@ -55,6 +55,7 @@ struct Settings {
     float snap_move = 0.5f;
     float snap_rotate = 15.0f;          // degrees
     float snap_scale = 0.1f;
+    int new_script_language = 0;        // 0 Lua (.lua), 1 C++ (.cpp): what "New script" makes
     FileEditor editors[16];
     int editor_count = 0;
     const char* program_for(const char* path) const;
@@ -167,6 +168,30 @@ public:
     char import_path[256] = {};
     bool want_import_model_ = false;
     void import_model_popup();
+
+    // ---- the file and folder picker (file_dialog.cpp): every "choose a
+    // file" field opens it instead of asking for a typed path.
+    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene };
+    enum PickOwner : uint8_t { PickRoot = 0, PickExport = 1, PickProject = 2 };
+    struct FileDialog {
+        PickFor target = PickFor::None;
+        uint8_t owner = PickRoot;   // the modal it opens from (popups stack inside it)
+        bool want_open = false;
+        bool folder = false;        // choose a folder, not a file
+        char title[64] = {};
+        char dir[512] = {};
+        char exts[96] = {};         // ".gltf;.glb;.obj", empty: every file
+        char name[256] = {};        // the chosen file's name in `dir`
+        char filter[64] = {};
+    } file_dialog_;
+    void open_file_dialog(PickFor target, uint8_t owner, const char* title, bool folder, const char* start, const char* exts);
+    void file_dialog_popup(uint8_t owner);
+    void file_dialog_done(PickFor target, const char* path);
+    // A path field with a "..." button that opens the picker.
+    bool path_field(const char* id, char* buf, size_t cap, PickFor target, uint8_t owner, const char* title, bool folder, const char* exts);
+    // Makes `dir` the project: reads its project.fe and points Files and the VFS at it.
+    void open_project(const char* dir);
+    void request_open_project(const char* dir);
     ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
     ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
     // The items of every "add object" menu (Create, the Hierarchy's + and
@@ -176,6 +201,10 @@ public:
     // Scripts: adds one to an object and reads the inputs it declares
     // (-- @prop lines, see script.h). Returns its index or -1.
     int add_script(ObjectId id, const char* path);
+    // Writes a new script from the template of Settings > General > New
+    // scripts into `dir` (name without extension is fine). The full path goes
+    // to `out`; false when the file exists or cannot be written.
+    bool create_script_file(const char* dir, const char* name, char* out, size_t cap);
     // Reads a script's file again and brings its inputs up to date, keeping
     // the values set in the editor. False when the file cannot be read.
     bool reload_script(ObjectId id, int index);
@@ -330,7 +359,7 @@ private:
     char* scene_snapshot(Scene& sc);
     void restore_snapshot(const char* text);
     // the unsaved-changes prompt
-    enum class Pending : uint8_t { None, NewScene, OpenScene, Quit };
+    enum class Pending : uint8_t { None, NewScene, OpenScene, OpenProject, Quit };
     Pending pending_ = Pending::None;
     char pending_path_[512] = {};
     bool want_unsaved_prompt_ = false;

@@ -100,8 +100,10 @@ void Editor::project_settings_popup() {
     char cur[256];
     relative_scene(*this, cur, sizeof cur);
     float use_w = ImGui::CalcTextSize("Use open scene").x + 20;
-    ImGui::SetNextItemWidth(-use_w - 8);
-    ImGui::InputText("##ps_scene", project.entry_scene, sizeof project.entry_scene);
+    ImGui::PushItemWidth(-use_w - 8);
+    path_field("ps_scene", project.entry_scene, sizeof project.entry_scene, PickFor::ProjectScene, PickProject,
+               "Entry scene", false, ".fscene");
+    ImGui::PopItemWidth();
     track("project:scene");
     ImGui::SameLine();
     ImGui::BeginDisabled(cur[0] == 0);
@@ -121,8 +123,7 @@ void Editor::project_settings_popup() {
     if (project.window_width > 8192) project.window_width = 8192;
     if (project.window_height > 8192) project.window_height = 8192;
     ImGui::TextUnformatted("Icon (a .bmp in the project; shown by MOSdesk)");
-    ImGui::SetNextItemWidth(-1);
-    ImGui::InputText("##ps_icon", project.icon, sizeof project.icon);
+    path_field("ps_icon", project.icon, sizeof project.icon, PickFor::ProjectIcon, PickProject, "Game icon", false, ".bmp");
     track("project:icon");
     ImGui::Checkbox("Use these graphics settings for the exported game", &project.graphics);
     track("project:graphics");
@@ -136,6 +137,7 @@ void Editor::project_settings_popup() {
     if (save) save_project();
     if (cancel) load_project();             // forget the edits
     if (save || cancel) ImGui::CloseCurrentPopup();
+    file_dialog_popup(PickProject);
     ImGui::EndPopup();
 }
 
@@ -154,8 +156,10 @@ void Editor::export_popup() {
     char cur[256];
     relative_scene(*this, cur, sizeof cur);
     float use_w = ImGui::CalcTextSize("Use open scene").x + 20;
-    ImGui::SetNextItemWidth(-use_w - 8);
-    ImGui::InputText("##ex_scene", export_scene, sizeof export_scene);
+    ImGui::PushItemWidth(-use_w - 8);
+    path_field("ex_scene", export_scene, sizeof export_scene, PickFor::ExportScene, PickExport, "Entry scene", false,
+               ".fscene");
+    ImGui::PopItemWidth();
     track("export:scene");
     ImGui::SameLine();
     ImGui::BeginDisabled(cur[0] == 0);
@@ -163,8 +167,7 @@ void Editor::export_popup() {
     track("export:use_scene");
     ImGui::EndDisabled();
     ImGui::TextUnformatted("Output folder");
-    ImGui::SetNextItemWidth(-1);
-    ImGui::InputText("##ex_out", export_out, sizeof export_out);
+    path_field("ex_out", export_out, sizeof export_out, PickFor::ExportFolder, PickExport, "Export to folder", true, "");
     track("export:out");
     ImGui::Checkbox("Also make an installable .mpkg", &export_mpkg);
     track("export:mpkg");
@@ -216,6 +219,7 @@ void Editor::export_popup() {
         }
     }
     if (close) ImGui::CloseCurrentPopup();
+    file_dialog_popup(PickExport);
     ImGui::EndPopup();
 }
 

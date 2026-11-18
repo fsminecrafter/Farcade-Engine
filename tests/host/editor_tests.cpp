@@ -116,6 +116,15 @@ static bool click_ui(const char* key, int b = 0) {
     return true;
 }
 
+static void type_text(const char* text) {
+    for (const char* c = text; *c; c++) {
+        platform::Event e;
+        e.type = platform::EventType::Text;
+        e.codepoint = (uint32_t)*c;
+        platform::headless_push(e);
+    }
+}
+
 static const Editor::TileRect* tile(const char* name) {
     for (int i = 0; i < E->file_tile_count; i++)
         if (!strcmp(path_filename(E->file_tiles[i].path), name)) return &E->file_tiles[i];
@@ -712,6 +721,18 @@ int main() {
             if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
             CHECK(click_ui("script:0:remove") && ed.scene.get(lever)->script_count == 1 && ed.scene.get(lever)->scripts[0].name_is("switch"),
                   "the trash button removes a script");
+            // Add script > New file: the search text names a new Lua script.
+            if (iw) { frames(1); ImGui::SetScrollY(iw, iw->ScrollMax.y); frames(2); }
+            click_ui("inspector:add_script");
+            frames(2);
+            type_text("spinner");
+            frames(2);
+            CHECK(ui("addscript:new") != nullptr, "Add script ends with New file");
+            click_ui("addscript:new");
+            frames(2);
+            CHECK(platform::file_exists("build/host/test-project/scripts/spinner.lua"), "New file writes scripts/spinner.lua");
+            Object* ol2 = ed.scene.get(lever);
+            CHECK(ol2->script_count == 2 && ol2->scripts[1].name_is("spinner"), "and adds it to the object (count %d)", ol2->script_count);
         }
         // Filling the slots: at most kMaxScripts.
         for (int i = 0; i < kMaxScripts + 2; i++) ed.scene.add_script(knob, "build/host/test-project/player.lua");
@@ -1416,7 +1437,7 @@ int main() {
         int before = ed.scene.count();
         CHECK(click_ui("menubar:Create"), "Create menu opens");
         frames(2);
-        CHECK(click_ui("menu:Import model..."), "Create > Import model... opens a prompt");
+        CHECK(click_ui("menu:Import model..."), "Create > Import model... opens the file picker");
         frames(2);
         for (const char* c = "models/quad.obj"; *c; c++) {
             platform::Event e;
@@ -1425,7 +1446,7 @@ int main() {
             platform::headless_push(e);
         }
         frames(2);
-        CHECK(click_ui("import:go"), "the prompt's Import button");
+        CHECK(click_ui("pick:ok"), "the picker's Open button");
         frames(2);
         CHECK(ed.scene.count() == before + 1, "the model is in the scene");
         Object* mo = ed.scene.get(ed.scene.active());
@@ -1670,6 +1691,70 @@ int main() {
 
     CHECK(ed.damage_mismatches == 0, "incremental UI redraws differ from full redraws in %d frames", ed.damage_mismatches);
     printf("editor_tests: frames %d drawn %d skipped %d\n", ed.perf.frames, ed.perf.drawn, ed.perf.skipped);
+    // ---- Files: right-click New script, Rename, Remove
+    {
+        platform::make_dir("build/host/test-project/sandbox");
+        snprintf(ed.files_dir, sizeof(ed.files_dir), "%s/sandbox", dir);
+        frames(3);
+        ImGui::SetWindowFocus("###Files");      // it shares a tab bar with the Console
+        frames(3);
+        CHECK(click_ui("files:empty", 1), "right-click the empty part of Files");
+        frames(2);
+        CHECK(click_ui("menu:New Lua script..."), "Files offers New Lua script");
+        frames(2);
+        type_text("walker");
+        frames(1);
+        CHECK(click_ui("files:action_ok"), "the name dialog's Create");
+        frames(3);
+        CHECK(platform::file_exists("build/host/test-project/sandbox/walker.lua"), "walker.lua was created");
+        frames(2);
+        const Editor::TileRect* t = tile("walker.lua");
+        CHECK(t != nullptr, "it shows in Files");
+        if (t) {
+            click(t->x + t->w * 0.5f, t->y + t->h * 0.5f, 1);
+            frames(2);
+            CHECK(click_ui("menu:Rename..."), "a file offers Rename");
+            frames(2);
+            type_text("runner.lua");       // the old name is selected, so typing replaces it
+            frames(1);
+            click_ui("files:action_ok");
+            frames(3);
+            CHECK(platform::file_exists("build/host/test-project/sandbox/runner.lua") &&
+                  !platform::file_exists("build/host/test-project/sandbox/walker.lua"), "Rename renames it");
+        }
+        t = tile("runner.lua");
+        if (t) {
+            click(t->x + t->w * 0.5f, t->y + t->h * 0.5f, 1);
+            frames(2);
+            CHECK(click_ui("menu:Remove file..."), "a file offers Remove");
+            frames(2);
+            click_ui("files:action_ok");
+            frames(3);
+            CHECK(!platform::file_exists("build/host/test-project/sandbox/runner.lua"), "Remove deletes it");
+        }
+    }
+
+    // ---- File > Open project...: the folder picker
+    {
+        platform::make_dir("build/host/other-project");
+        platform::write_file("build/host/other-project/project.fe", "name = Other\n", 13);
+        CHECK(click_ui("menubar:File") && (frames(2), click_ui("menu:Open project...")), "File > Open project... opens the picker");
+        frames(2);
+        CHECK(click_ui("pick:place1"), "the Projects place");
+        frames(2);
+        const Editor::UiRect* r = ui("pick:other-project");
+        CHECK(r != nullptr, "the picker lists other-project");
+        if (r) {
+            click(r->x + r->w * 0.5f, r->y + r->h * 0.5f);
+            click(r->x + r->w * 0.5f, r->y + r->h * 0.5f);
+            frames(2);
+        }
+        CHECK(click_ui("pick:ok"), "Select folder");
+        frames(3);
+        if (ui("unsaved:discard")) { click_ui("unsaved:discard"); frames(3); }
+        CHECK(strstr(ed.project_dir, "other-project") != nullptr, "the project is open (%s)", ed.project_dir);
+    }
+
     printf("editor_tests: %d checks, %d failed\n", g_checks, g_failed);
     ed.shutdown();
     return g_failed ? 1 : 0;

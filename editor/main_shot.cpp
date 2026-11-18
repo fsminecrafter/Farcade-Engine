@@ -410,6 +410,16 @@ int main(int argc, char** argv) {
     snprintf(path, sizeof(path), "%s/editor-settings.png", out);
     if (!platform::headless_save_png(path)) return 1;
     printf("wrote %s\n", path);
+    // The file picker (Create > Import model...), when asked for.
+    if (getenv("FE_SHOT_PICKER")) {
+        ed.show_settings = false;
+        ed.open_file_dialog(Editor::PickFor::ImportModel, Editor::PickRoot, "Import model", false, ed.project_dir,
+                            ".gltf;.glb;.obj;.mof");
+        for (int i = 0; i < 4; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-picker.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
     ed.shutdown();
     return 0;
 }

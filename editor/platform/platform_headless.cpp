@@ -132,6 +132,28 @@ bool copy_file(const char* from, const char* to) {
 
 bool make_dir(const char* path) { return mkdir(path, 0755) == 0 || file_exists(path); }
 
+namespace {
+void remove_child(const DirEntry& e, void* user) {
+    char full[1024];
+    snprintf(full, sizeof full, "%s/%s", (const char*)user, e.name);
+    remove_path(full);
+}
+}  // namespace
+
+bool remove_path(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) return unlink(path) == 0;
+    list_dir(path, remove_child, (void*)path);
+    return rmdir(path) == 0;
+}
+
+bool rename_path(const char* from, const char* to) {
+    struct stat st;
+    if (stat(to, &st) == 0) return false;
+    return rename(from, to) == 0;
+}
+
 void* open_read(const char* path, uint64_t* size) {
     FILE* f = fopen(path, "rb");
     if (!f) return nullptr;

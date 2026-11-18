@@ -95,6 +95,10 @@ void* read_file(const char* path, size_t* size);
 bool write_file(const char* path, const void* data, size_t size);
 bool copy_file(const char* from, const char* to);
 bool make_dir(const char* path);
+// Removes a file, or a folder and everything in it.
+bool remove_path(const char* path);
+// Renames or moves a file or folder; fails if `to` exists.
+bool rename_path(const char* from, const char* to);
 // Random access reading (game packages are not read whole). open_read
 // returns a handle (null on error) and the file's size.
 void* open_read(const char* path, uint64_t* size);

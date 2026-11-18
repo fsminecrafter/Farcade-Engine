@@ -489,6 +489,27 @@ bool copy_file(const char* from, const char* to) {
 
 bool make_dir(const char* path) { return mos_mkdir(path) == 0 || file_exists(path); }
 
+namespace {
+void remove_child(const DirEntry& e, void* user) {
+    char full[512];
+    snprintf(full, sizeof full, "%s/%s", (const char*)user, e.name);
+    remove_path(full);
+}
+}  // namespace
+
+bool remove_path(const char* path) {
+    syscall_stat_t st;
+    if (mos_stat(path, &st) != 0) return false;
+    if (st.type == SYS_STAT_FILE) return mos_delete(path) == 0;
+    list_dir(path, remove_child, (void*)path);
+    return mos_rmdir(path) == 0;
+}
+
+bool rename_path(const char* from, const char* to) {
+    if (mos_exists(to)) return false;
+    return mos_rename(from, to) == 0;
+}
+
 void* open_read(const char* path, uint64_t* size) {
     syscall_stat_t st;
     if (mos_stat(path, &st) != 0 || st.type != SYS_STAT_FILE) return nullptr;

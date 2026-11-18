@@ -579,7 +579,8 @@ void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     mesh("Cylinder", MeshKind::Cylinder, ground, FE_ICON_CYLINDER);
     mesh("Plane", MeshKind::Plane, flat, FE_ICON_PLANE);
     if (menu_item("Empty", nullptr, false, true, FE_ICON_EMPTY)) create_kind("Empty", ObjectKind::Empty, ground, parent);
-    if (menu_item("Import model...", nullptr, false, true, FE_ICON_IMPORT)) { want_import_model_ = true; import_path[0] = 0; }
+    if (menu_item("Import model...", nullptr, false, true, FE_ICON_IMPORT))
+        open_file_dialog(PickFor::ImportModel, PickRoot, "Import model", false, project_dir, ".gltf;.glb;.obj;.mof");
     ImGui::Separator();
     if (ImGui::BeginMenu(FE_ICON_BULB "  Light###Light")) {
         if (menu_item("Directional Light", nullptr, false, true, FE_ICON_LIGHT_DIRECTIONAL)) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
@@ -839,6 +840,7 @@ void Editor::do_pending() {
     pending_ = Pending::None;
     if (p == Pending::NewScene) new_scene();
     else if (p == Pending::OpenScene) open_scene(pending_path_);
+    else if (p == Pending::OpenProject) open_project(pending_path_);
     else if (p == Pending::Quit) quit = true;
 }
 
@@ -1125,6 +1127,7 @@ void Editor::build_ui() {
     project_settings_popup();
     export_popup();
     import_model_popup();
+    file_dialog_popup(PickRoot);
     ImGuiWindow* menubar = ImGui::FindWindowByName("##MainMenuBar");
     float top = menubar ? menubar->Size.y : ImGui::GetFrameHeight();
     float bar_h = ImGui::GetTextLineHeight() + 10.0f * settings.ui_scale;
@@ -1181,7 +1184,8 @@ void Editor::main_menu() {
     track("menubar:File");
     if (file_menu) {
         if (menu_item("New scene", nullptr, false, true, FE_ICON_FILE)) request_new_scene();
-        menu_item("Open project...", nullptr, false, false, FE_ICON_FOLDER_OPEN);
+        if (menu_item("Open project...", nullptr, false, !playing(), FE_ICON_FOLDER_OPEN))
+            open_file_dialog(PickFor::OpenProject, PickRoot, "Open project", true, project_dir, "");
         if (menu_item("Save scene", "Ctrl+S", false, true, FE_ICON_SAVE)) save_scene();
         if (menu_item("Save scene as...", nullptr, false, true, FE_ICON_COPY)) {
             const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fscene";

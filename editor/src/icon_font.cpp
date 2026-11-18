@@ -48,7 +48,7 @@ bool load_glyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void*
     const IconPackEntry& e = kIconPack[index - 1];
     bool box = mode_of(src) == Mode::Box;
     // The icon's square in layout units, and where it sits.
-    float s = box ? baked->Size : ImFloor(baked->Size * 1.2f + 0.5f);
+    float s = box ? baked->Size : ImFloor(baked->Size * 1.1f + 0.5f);
     float advance = box ? baked->Size : s + ImFloor(baked->Size * 0.08f + 0.5f);
     if (out_advance_x) { *out_advance_x = advance; return true; }
     out->AdvanceX = advance;

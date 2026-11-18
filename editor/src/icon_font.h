@@ -30,7 +30,7 @@ extern const IconPackEntry kIconPack[];
 extern const unsigned kIconPackCount;
 
 // Merges the icons into the font added to `atlas` just before (call right
-// after AddFont...): inline glyphs about 1.2 em, centered on the capitals.
+// after AddFont...): inline glyphs about 1.1 em, centered on the capitals.
 void icon_font_merge(ImFontAtlas* atlas);
 // Adds the font draw_icon uses: one icon filling a size x size box.
 ImFont* icon_font_add_box(ImFontAtlas* atlas);

@@ -199,9 +199,11 @@ void Editor::apply_theme() {
     c[ImGuiCol_FrameBg] = rgb(bg2);
     c[ImGuiCol_FrameBgHovered] = rgb(bg3);
     c[ImGuiCol_FrameBgActive] = rgb(bg4);
-    c[ImGuiCol_TitleBg] = rgb(bg0);
-    c[ImGuiCol_TitleBgActive] = rgb(bg0);
-    c[ImGuiCol_TitleBgCollapsed] = rgb(bg0);
+    // A docked panel's tab strip is part of its card: the panel color.
+    // (Floating windows set their own title colors, widgets.cpp.)
+    c[ImGuiCol_TitleBg] = rgb(bg1);
+    c[ImGuiCol_TitleBgActive] = rgb(bg1);
+    c[ImGuiCol_TitleBgCollapsed] = rgb(bg1);
     c[ImGuiCol_MenuBarBg] = rgb(bg0);
     c[ImGuiCol_ScrollbarBg] = rgb(0, 0);
     c[ImGuiCol_ScrollbarGrab] = rgb(bg3);
@@ -225,12 +227,13 @@ void Editor::apply_theme() {
     c[ImGuiCol_ResizeGripHovered] = rgb(accent, 0.5f);
     c[ImGuiCol_ResizeGripActive] = acc;
     c[ImGuiCol_InputTextCursor] = rgb(text);
-    c[ImGuiCol_Tab] = rgb(bg0, 0);
+    // Tabs: the selected one a step raised, the accent line on the focused panel only.
+    c[ImGuiCol_Tab] = rgb(bg1, 0);
     c[ImGuiCol_TabHovered] = rgb(bg3);
-    c[ImGuiCol_TabSelected] = rgb(bg1);
+    c[ImGuiCol_TabSelected] = rgb(bg2);
     c[ImGuiCol_TabSelectedOverline] = acc;
-    c[ImGuiCol_TabDimmed] = rgb(bg0, 0);
-    c[ImGuiCol_TabDimmedSelected] = rgb(bg1);
+    c[ImGuiCol_TabDimmed] = rgb(bg1, 0);
+    c[ImGuiCol_TabDimmedSelected] = rgb(bg2);
     c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0, 0);
     c[ImGuiCol_DockingPreview] = rgb(accent, 0.40f);
     c[ImGuiCol_PlotLines] = acc;
@@ -566,29 +569,29 @@ ObjectId Editor::create_light(LightType type, const Vec3& at, ObjectId parent) {
 
 void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     Vec3 ground(at.x, 0.5f, at.z), flat(at.x, 0, at.z);
-    auto mesh = [&](const char* name, MeshKind k, const Vec3& p) {
-        if (!menu_item(name)) return;
+    auto mesh = [&](const char* name, MeshKind k, const Vec3& p, const char* icon) {
+        if (!menu_item(name, nullptr, false, true, icon)) return;
         if (parent) create_child(name, k, parent);
         else create_object(name, k, p);
     };
-    mesh("Cube", MeshKind::Cube, ground);
-    mesh("Sphere", MeshKind::Sphere, ground);
-    mesh("Cylinder", MeshKind::Cylinder, ground);
-    mesh("Plane", MeshKind::Plane, flat);
-    if (menu_item("Empty")) create_kind("Empty", ObjectKind::Empty, ground, parent);
-    if (menu_item("Import model...")) { want_import_model_ = true; import_path[0] = 0; }
+    mesh("Cube", MeshKind::Cube, ground, FE_ICON_CUBE);
+    mesh("Sphere", MeshKind::Sphere, ground, FE_ICON_SPHERE);
+    mesh("Cylinder", MeshKind::Cylinder, ground, FE_ICON_CYLINDER);
+    mesh("Plane", MeshKind::Plane, flat, FE_ICON_PLANE);
+    if (menu_item("Empty", nullptr, false, true, FE_ICON_EMPTY)) create_kind("Empty", ObjectKind::Empty, ground, parent);
+    if (menu_item("Import model...", nullptr, false, true, FE_ICON_IMPORT)) { want_import_model_ = true; import_path[0] = 0; }
     ImGui::Separator();
-    if (ImGui::BeginMenu("Light")) {
-        if (menu_item("Directional Light")) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
-        if (menu_item("Point Light")) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
-        if (menu_item("Spot Light")) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
+    if (ImGui::BeginMenu(FE_ICON_BULB "  Light###Light")) {
+        if (menu_item("Directional Light", nullptr, false, true, FE_ICON_LIGHT_DIRECTIONAL)) create_light(LightType::Directional, Vec3(at.x, 4, at.z), parent);
+        if (menu_item("Point Light", nullptr, false, true, FE_ICON_LIGHT_POINT)) create_light(LightType::Point, Vec3(at.x, 2, at.z), parent);
+        if (menu_item("Spot Light", nullptr, false, true, FE_ICON_LIGHT_SPOT)) create_light(LightType::Spot, Vec3(at.x, 3, at.z), parent);
         ImGui::EndMenu();
     }
-    if (menu_item("Camera")) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
+    if (menu_item("Camera", nullptr, false, true, FE_ICON_CAMERA)) create_kind("Camera", ObjectKind::Camera, Vec3(at.x, 1.6f, at.z + 6), parent);
     ImGui::Separator();
-    if (menu_item("Sky")) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
-    if (menu_item("Sky Light")) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
-    if (menu_item("Post Processing")) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Sky Light", nullptr, false, true, FE_ICON_SUN)) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Post Processing", nullptr, false, true, FE_ICON_WAND)) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
 }
 
 void Editor::frame_selection() {
@@ -1142,8 +1145,11 @@ void Editor::build_ui() {
 }
 
 // A menu item that also records where it was drawn ("menu:<label>").
-bool Editor::menu_item(const char* label, const char* shortcut, bool selected, bool enabled) {
-    bool r = ImGui::MenuItem(label, shortcut, selected, enabled);
+bool Editor::menu_item(const char* label, const char* shortcut, bool selected, bool enabled, const char* icon) {
+    // The icon, two spaces, the label; the id stays the label's.
+    char text[96];
+    if (icon) snprintf(text, sizeof(text), "%s  %s###%s", icon, label, label);
+    bool r = ImGui::MenuItem(icon ? text : label, shortcut, selected, enabled);
     char key[48];
     snprintf(key, sizeof(key), "menu:%s", label);
     track(key);
@@ -1174,29 +1180,29 @@ void Editor::main_menu() {
     bool file_menu = ImGui::BeginMenu("File");
     track("menubar:File");
     if (file_menu) {
-        if (menu_item("New scene")) request_new_scene();
-        menu_item("Open project...", nullptr, false, false);
-        if (menu_item("Save scene", "Ctrl+S")) save_scene();
-        if (menu_item("Save scene as...")) {
+        if (menu_item("New scene", nullptr, false, true, FE_ICON_FILE)) request_new_scene();
+        menu_item("Open project...", nullptr, false, false, FE_ICON_FOLDER_OPEN);
+        if (menu_item("Save scene", "Ctrl+S", false, true, FE_ICON_SAVE)) save_scene();
+        if (menu_item("Save scene as...", nullptr, false, true, FE_ICON_COPY)) {
             const char* cur = scene_path[0] ? path_filename(scene_path) : "main.fscene";
             snprintf(save_as_name, sizeof save_as_name, "%.*s", (int)(strlen(cur) - (path_is_scene(cur) ? 7 : 0)), cur);
             want_save_as_ = true;
         }
         ImGui::Separator();
-        if (menu_item("Project settings...", nullptr, false, !playing())) request_project_settings();
-        if (menu_item("Export game...", nullptr, false, !playing())) request_export();
+        if (menu_item("Project settings...", nullptr, false, !playing(), FE_ICON_SETTINGS_SLIDERS)) request_project_settings();
+        if (menu_item("Export game...", nullptr, false, !playing(), FE_ICON_EXPORT)) request_export();
         ImGui::Separator();
-        if (menu_item("Quit")) request_quit();
+        if (menu_item("Quit", nullptr, false, true, FE_ICON_CLOSE)) request_quit();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        if (menu_item("Undo", "Ctrl+Z", false, can_undo() && !playing())) undo();
-        if (menu_item("Redo", "Ctrl+Y", false, can_redo() && !playing())) redo();
+        if (menu_item("Undo", "Ctrl+Z", false, can_undo() && !playing(), FE_ICON_UNDO)) undo();
+        if (menu_item("Redo", "Ctrl+Y", false, can_redo() && !playing(), FE_ICON_REDO)) redo();
         ImGui::Separator();
-        if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0)) duplicate_selection();
-        if (menu_item("Delete", "Del", false, scene.selected_count() > 0)) delete_selection();
+        if (menu_item("Duplicate", "Ctrl+D", false, scene.selected_count() > 0, FE_ICON_DUPLICATE)) duplicate_selection();
+        if (menu_item("Delete", "Del", false, scene.selected_count() > 0, FE_ICON_TRASH)) delete_selection();
         ImGui::Separator();
-        if (menu_item("Settings...")) show_settings = true;
+        if (menu_item("Settings...", nullptr, false, true, FE_ICON_GEAR)) show_settings = true;
         ImGui::EndMenu();
     }
     bool create_menu = ImGui::BeginMenu("Create");
@@ -1206,15 +1212,15 @@ void Editor::main_menu() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        if (menu_item("Frame selection", "F", false, scene.selected_count() > 0)) frame_selection();
-        if (menu_item("Grid", "G", settings.show_grid)) settings.show_grid = !settings.show_grid;
+        if (menu_item("Frame selection", "F", false, scene.selected_count() > 0, FE_ICON_FULLSCREEN)) frame_selection();
+        if (menu_item("Grid", "G", settings.show_grid, true, FE_ICON_GRID)) settings.show_grid = !settings.show_grid;
         ImGui::Separator();
-        if (menu_item("Reset layout")) want_reset_layout = true;
-        if (menu_item("Dark theme", nullptr, settings.dark_theme)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
+        if (menu_item("Reset layout", nullptr, false, true, FE_ICON_LAYERS)) want_reset_layout = true;
+        if (menu_item("Dark theme", nullptr, settings.dark_theme, true, FE_ICON_PALETTE)) { settings.dark_theme = !settings.dark_theme; apply_theme(); }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        if (menu_item("ImGui demo", nullptr, show_demo)) show_demo = !show_demo;
+        if (menu_item("ImGui demo", nullptr, show_demo, true, FE_ICON_HELP)) show_demo = !show_demo;
         ImGui::EndMenu();
     }
 
@@ -1397,10 +1403,10 @@ void Editor::dockspace(float top, float bottom) {
         left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
         right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
         bottom_id = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, nullptr, &center);
-        ImGui::DockBuilderDockWindow("Hierarchy", left);
-        ImGui::DockBuilderDockWindow("Inspector", right);
-        ImGui::DockBuilderDockWindow("Files", bottom_id);
-        ImGui::DockBuilderDockWindow("Console", bottom_id);
+        ImGui::DockBuilderDockWindow("###Hierarchy", left);
+        ImGui::DockBuilderDockWindow("###Inspector", right);
+        ImGui::DockBuilderDockWindow("###Files", bottom_id);
+        ImGui::DockBuilderDockWindow("###Console", bottom_id);
         ImGui::DockBuilderDockWindow("Viewport", center);
         if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(center)) n->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
         ImGui::DockBuilderFinish(id);

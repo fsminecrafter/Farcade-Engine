@@ -1,5 +1,6 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
+#include "icon_glyphs.h"
 #include "icons.h"
 #include "model_import.h"
 #include "widgets.h"
@@ -106,7 +107,7 @@ static bool search_field(const char* id, const char* hint, char* buf, size_t cap
 // ---------------------------------------------------------------- Hierarchy
 
 void Editor::panel_hierarchy() {
-    ImGui::Begin("Hierarchy");
+    ImGui::Begin(FE_ICON_HIERARCHY "  Hierarchy###Hierarchy");
     const float bs = ImGui::GetFrameHeight();
     static char filter[64];
     search_field("##filter", "Filter objects", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
@@ -1135,7 +1136,7 @@ void Editor::settings_graphics() {
 }
 
 void Editor::panel_inspector() {
-    ImGui::Begin("Inspector");
+    ImGui::Begin(FE_ICON_INSPECTOR "  Inspector###Inspector");
     int n = scene.selected_count();
     Object* o = scene.get(scene.active());
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1357,7 +1358,7 @@ ImU32 file_color(const platform::DirEntry& e) {
 }  // namespace
 
 void Editor::panel_files() {
-    ImGui::Begin("Files");
+    ImGui::Begin(FE_ICON_FILES "  Files###Files");
     if (!g_listing.valid || strcmp(g_listing.dir, files_dir)) refresh(files_dir);
     static char selected_file[512];
     static char filter[64];
@@ -1525,7 +1526,7 @@ void Editor::panel_files() {
 // ---------------------------------------------------------------- Console
 
 void Editor::panel_console() {
-    ImGui::Begin("Console");
+    ImGui::Begin(FE_ICON_CONSOLE "  Console###Console");
     static bool show[3] = { true, true, true };
     static char filter[64];
     int counts[3] = { 0, 0, 0 };

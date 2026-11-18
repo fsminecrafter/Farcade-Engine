@@ -233,7 +233,9 @@ public:
     void track_rect(const char* key, float x, float y, float w, float h);
     const UiRect* find_rect(const char* key) const;
     // ImGui::MenuItem that also records its rectangle as "menu:<label>".
-    bool menu_item(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true);
+    // `icon`: an FE_ICON_* glyph drawn before the label (icon_glyphs.h).
+    bool menu_item(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true,
+                   const char* icon = nullptr);
     // Viewport statistics of the last frame.
     int view_triangles = 0;
     float view_ms = 0.0f;

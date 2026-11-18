@@ -10,6 +10,9 @@
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
+#define STB_IMAGE_WRITE_STATIC           // a private copy (the platform and the importers have their own)
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 #include "imgui/imgui_internal.h"
 
 #include <stdio.h>
@@ -133,7 +136,31 @@ int main(int argc, char** argv) {
           "  local ball = self.follow and self.follow:script(\"ball\")\n"
           "  self.on = ball ~= nil and ball.speed > self.threshold\n"
           "end\n");
-    touch(project, "crate.png", "PNG");
+    // A real crate texture (planks with a frame), so FarcadeGL draws it.
+    {
+        enum { T = 128 };
+        static uint8_t px[T * T * 3];
+        for (int y = 0; y < T; y++)
+            for (int x = 0; x < T; x++) {
+                bool frame = x < 10 || x >= T - 10 || y < 10 || y >= T - 10;
+                bool brace = abs((x - y)) < 7 || abs((x + y) - (T - 1)) < 7;
+                int plank = (y / 27) & 1;
+                float grain = 0.88f + 0.12f * fsin((float)x * 0.21f + fsin((float)y * 0.07f) * 3.0f);
+                float shade = frame || brace ? 0.78f : (plank ? 0.95f : 1.0f) * grain;
+                if (!frame && !brace && y % 27 == 0) shade *= 0.55f;          // gaps between planks
+                uint8_t* c = &px[(y * T + x) * 3];
+                c[0] = (uint8_t)(214 * shade);
+                c[1] = (uint8_t)(150 * shade);
+                c[2] = (uint8_t)(84 * shade);
+            }
+        char path[512];
+        snprintf(path, sizeof(path), "%s/assets", project);
+        mkdir(path, 0755);
+        snprintf(path, sizeof(path), "%s/assets/crate.png", project);
+        stbi_write_png(path, T, T, 3, px, T * 3);
+        snprintf(path, sizeof(path), "%s/crate.png", project);      // also next to the scenes, for the Files panel
+        stbi_write_png(path, T, T, 3, px, T * 3);
+    }
     touch(project, "grass.jpg", "JPG");
     touch(project, "notes.txt", "todo\n");
 

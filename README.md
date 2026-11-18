@@ -20,6 +20,8 @@ repository.
 
 | | |
 |---|---|
+| ![The Settings window](docs/screenshots/editor-settings.png) | ![The Create menu with its icons](docs/screenshots/editor-menu.png) |
+| **Settings**: a floating window with a border and shadow over the editor, pages in a sidebar; Graphics lists every technique as a choice | **Vector icons** in menus, tabs and panels: SVG drawn as Minimal-OS vector `.img` files, rasterized at any size (`editor/icons`) |
 | ![Light theme](docs/screenshots/editor-light.png) | ![Modules on an object: Rigidbody 3D, Collider 3D, Audio Sampler](docs/screenshots/editor-modules.png) |
 | **Light theme**: the same scene; the parent/child tree in the Hierarchy | **Modules**: Rigidbody 3D, Collider 3D and Audio Sampler on the ball (`docs/modules.md`) |
 | ![A camera object and its Current switch](docs/screenshots/editor-camera.png) | ![Play mode](docs/screenshots/editor-play.png) |
@@ -27,7 +29,7 @@ repository.
 | ![The viewport drawn by FarcadeGL](docs/screenshots/editor-farcadegl.png) | ![Play through the current camera, drawn by FarcadeGL](docs/screenshots/editor-farcadegl-play.png) |
 | **FarcadeGL** draws the viewport: the sun, the sky, the sky light and post processing (renderer menu, top right) | **Play** looks through the current camera (Main Camera) |
 | ![FarcadeGL base tier](docs/screenshots/gfx-low.png) | ![FarcadeGL GPU tier](docs/screenshots/gfx-ultra.png) |
-| **FarcadeGL, base tier** (runs everywhere, also on the CPU) | **GPU tier** (Ultra): sun shadows, ambient occlusion, bloom, PBR metals, FXAA, fog. On by default only on a graphics card |
+| **FarcadeGL, base tier** (runs everywhere, also on the CPU) | **GPU tier** (Ultra): cascaded sun shadows, GTAO, TAA, screen-space reflections, bloom, PBR metals, probe GI, fog. On by default only on a graphics card |
 | ![Shaping a collider](docs/screenshots/editor-collider.png) | ![GPU tier in the editor](docs/screenshots/editor-farcadegl-ultra.png) |
 | **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
 | ![Material settings in the Inspector](docs/screenshots/editor-material.png) | ![The unsaved-changes prompt](docs/screenshots/editor-unsaved.png) |
@@ -35,8 +37,8 @@ repository.
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 
-*The editor running full screen on Minimal-OS (QEMU, 1024x768), with the
-entity system linked in.*
+*The editor running full screen on Minimal-OS (QEMU, 1024x768): the same
+theme and vector icons, the viewport drawn by FarcadeGL on the kernel's FGPU.*
 
 The screenshots come from `build/host/bin/fe-editor-shot <dir>`, which
 renders the editor headless on the PC, and from `tools/ci/run_os.sh` with

@@ -40,7 +40,7 @@ ObjectId Editor::import_model(const char* path, ObjectId parent) {
 void Editor::import_model_popup() {
     if (want_import_model_) { ImGui::OpenPopup("Import model"); want_import_model_ = false; }
     ImGui::SetNextWindowSize(ImVec2(480 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Import model", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Import model", nullptr, ImGuiWindowFlags_NoResize)) return;
     ImGui::TextWrapped("A .gltf, .glb or .obj file (a path in the project, or a full path). It is converted to a .mof next to it and added to the scene.");
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(-1);
@@ -48,7 +48,7 @@ void Editor::import_model_popup() {
     track("import:path");
     bool valid = import_path[0] && path_is_model(import_path);
     ImGui::BeginDisabled(!valid);
-    bool go = ImGui::Button("Import") || (enter && valid);
+    bool go = primary_button("Import") || (enter && valid);
     track("import:go");
     ImGui::EndDisabled();
     ImGui::SameLine();

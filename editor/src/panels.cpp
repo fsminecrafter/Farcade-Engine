@@ -1147,13 +1147,31 @@ void Editor::panel_inspector() {
         float cy = p.y + avail.y * 0.38f;
         draw_icon(dl, Icon::Cube, ImVec2(p.x + avail.x * 0.5f - 18, cy - 44), 36, pal.text_faint);
         const char* l1 = "Nothing selected";
-        const char* l2 = "Click an object in the viewport or the hierarchy.";
-        const char* l3 = "Shift-click adds to the selection.";
+        // Centered lines, wrapped to the panel so narrow panels do not cut them.
+        const char* lines[] = { "Click an object in the viewport or the hierarchy.", "Shift-click adds to the selection." };
         if (font_medium) ImGui::PushFont(font_medium, 0.0f);
         dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l1).x) * 0.5f, cy), pal.text_dim, l1);
         if (font_medium) ImGui::PopFont();
-        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l2).x) * 0.5f, cy + fs + 8), pal.text_faint, l2);
-        dl->AddText(ImVec2(p.x + (avail.x - ImGui::CalcTextSize(l3).x) * 0.5f, cy + fs * 2 + 12), pal.text_faint, l3);
+        float y = cy + fs + 8, wrap = avail.x - 24.0f;
+        for (const char* text : lines) {
+            const char* t = text;
+            while (*t) {
+                // the longest run of words that fits
+                const char* end = t;
+                const char* fit = nullptr;
+                for (;;) {
+                    while (*end && *end != ' ') end++;
+                    if (ImGui::CalcTextSize(t, end).x > wrap && fit) break;
+                    fit = end;
+                    if (!*end) break;
+                    end++;
+                }
+                float lw = ImGui::CalcTextSize(t, fit).x;
+                dl->AddText(ImVec2(p.x + (avail.x - lw) * 0.5f, y), pal.text_faint, t, fit);
+                y += fs + 4;
+                t = *fit ? fit + 1 : fit;
+            }
+        }
         ImGui::End();
         return;
     }
@@ -1572,19 +1590,52 @@ void Editor::panel_console() {
 // ---------------------------------------------------------------- Settings
 
 void Editor::window_settings() {
-    ImGui::SetNextWindowSize(ImVec2(560, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-    if (!ImGui::Begin("Settings", &show_settings, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
-        ImGui::End();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(520, 320), ImVec2(FLT_MAX, FLT_MAX));
+    if (!begin_floating("Settings", &show_settings, ImGuiWindowFlags_NoCollapse)) {
+        end_floating();
         return;
     }
-    // Tabs inside a window: the selected one gets a visible background.
-    ImGui::PushStyleColor(ImGuiCol_TabSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
-    ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImGui::ColorConvertU32ToFloat4(pal.hover));
-    bool tabs = ImGui::BeginTabBar("##settings");
-    ImGui::PopStyleColor(2);
-    if (tabs) {
-        if (ImGui::BeginTabItem("General")) {
+    // A navigation column on the left, the page on the right.
+    struct Page { Icon icon; const char* name; const char* about; };
+    static const Page pages[] = {
+        { Icon::Gear, "General", "How the editor behaves." },
+        { Icon::Sun, "Appearance", "Theme and colors." },
+        { Icon::Grid, "Viewport", "Grid, snapping and the CPU preview." },
+        { Icon::Monitor, "Graphics", "FarcadeGL: presets, every technique as a choice, effects. Exported with games." },
+        { Icon::File, "File editors", "Programs that open files from the Files panel." },
+    };
+    const int page_count = (int)(sizeof(pages) / sizeof(pages[0]));
+    if (settings_page < 0 || settings_page >= page_count) settings_page = 0;
+    float nav_w = 184.0f * settings.ui_scale;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(pal.sidebar));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::BeginChild("##settings_nav", ImVec2(nav_w, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    for (int i = 0; i < page_count; i++) {
+        char id[32];
+        snprintf(id, sizeof(id), "##page%d", i);
+        if (nav_item(id, pages[i].icon, pages[i].name, settings_page == i)) settings_page = i;
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0, 14.0f);
+    ImGui::BeginChild("##settings_page", ImVec2(0, 0));
+    {
+        ImGui::PushFont(font_medium);
+        ImGui::SetWindowFontScale(1.25f);
+        ImGui::TextUnformatted(pages[settings_page].name);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_dim));
+        ImGui::TextWrapped("%s", pages[settings_page].about);
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 6));
+    }
+    {
+        if (settings_page == 0) {
             ImGui::Dummy(ImVec2(0, 4));
             prop_label("Invert scrolling");
             toggle_switch("##invert_scrolling", &settings.invert_scrolling);
@@ -1592,15 +1643,13 @@ void Editor::window_settings() {
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
             ImGui::TextWrapped("Reverse the mouse wheel direction for scrolling and viewport zoom.");
             ImGui::PopStyleColor();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Appearance")) {
+        if (settings_page == 1) {
             ImGui::Dummy(ImVec2(0, 4));
             prop_label("Dark theme");
             if (toggle_switch("##dark", &settings.dark_theme)) apply_theme();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Viewport")) {
+        if (settings_page == 2) {
             ImGui::Dummy(ImVec2(0, 4));
             if (section_header("Grid and snap", Icon::Grid)) {
                 prop_label("Show grid");
@@ -1627,13 +1676,11 @@ void Editor::window_settings() {
                                    "the camera or an object it draws without smoothing and shadows, and redraws in full when you let go.");
                 ImGui::PopStyleColor();
             }
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Graphics")) {
+        if (settings_page == 3) {
             settings_graphics();
-            ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("File editors")) {
+        if (settings_page == 4) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_dim));
             ImGui::TextWrapped("Double-clicking a file in Files opens it with the program set for its extension. "
@@ -1671,11 +1718,10 @@ void Editor::window_settings() {
                 snprintf(e.extension, sizeof(e.extension), ".ext");
                 snprintf(e.program, sizeof(e.program), "0:/programs/");
             }
-            ImGui::EndTabItem();
         }
-        ImGui::EndTabBar();
     }
-    ImGui::End();
+    ImGui::EndChild();
+    end_floating();
 }
 
 }  // namespace fe

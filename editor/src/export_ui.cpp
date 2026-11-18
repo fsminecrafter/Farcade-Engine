@@ -86,7 +86,7 @@ void Editor::request_export() {
 void Editor::project_settings_popup() {
     if (want_project_settings_) { ImGui::OpenPopup("Project settings"); want_project_settings_ = false; }
     ImGui::SetNextWindowSize(ImVec2(460 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Project settings", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Project settings", nullptr, ImGuiWindowFlags_NoResize)) return;
     ImGui::TextDisabled("%s/project.fe", project_dir);
     ImGui::Spacing();
     ImGui::TextUnformatted("Name");
@@ -128,7 +128,7 @@ void Editor::project_settings_popup() {
     track("project:graphics");
     ImGui::TextDisabled("Settings > Graphics as they are when you save or export.");
     ImGui::Spacing();
-    bool save = ImGui::Button("Save");
+    bool save = primary_button("Save");
     track("project:save");
     ImGui::SameLine();
     bool cancel = ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
@@ -143,7 +143,7 @@ void Editor::project_settings_popup() {
 void Editor::export_popup() {
     if (want_export_) { ImGui::OpenPopup("Export game"); want_export_ = false; }
     ImGui::SetNextWindowSize(ImVec2(500 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Export game", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Export game", nullptr, ImGuiWindowFlags_NoResize)) return;
     ImGui::TextWrapped("Packs the scenes and everything they use into a game package and puts the player next to it.");
     ImGui::Spacing();
     ImGui::TextUnformatted("Name");
@@ -173,7 +173,7 @@ void Editor::export_popup() {
     ImGui::Spacing();
     bool valid = export_name[0] && export_scene[0] && export_out[0];
     ImGui::BeginDisabled(!valid);
-    bool go = ImGui::Button("Export");
+    bool go = primary_button("Export");
     track("export:go");
     ImGui::EndDisabled();
     ImGui::SameLine();

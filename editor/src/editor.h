@@ -216,6 +216,7 @@ public:
     ImFont* font_medium = nullptr;      // headings, tabs, section titles
     ImFont* font_mono = nullptr;
     bool show_settings = false;
+    int settings_page = 0;              // the Settings window's page (General, Appearance, ...)
     bool show_demo = false;
     bool want_reset_layout = true;
     bool quit = false;

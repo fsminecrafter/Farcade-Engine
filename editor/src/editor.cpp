@@ -108,63 +108,77 @@ ImU32 rgbu(uint32_t hex, float a = 1.0f) { return ImGui::ColorConvertFloat4ToU32
 void Editor::apply_theme() {
     ImGuiStyle& st = ImGui::GetStyle();
     st = ImGuiStyle();
-    st.WindowPadding = ImVec2(8, 8);
-    st.FramePadding = ImVec2(7, 4);
+    st.WindowPadding = ImVec2(10, 10);
+    st.FramePadding = ImVec2(8, 4);
     st.ItemSpacing = ImVec2(6, 5);
-    st.ItemInnerSpacing = ImVec2(5, 4);
-    st.CellPadding = ImVec2(6, 3);
+    st.ItemInnerSpacing = ImVec2(6, 4);
+    st.CellPadding = ImVec2(6, 4);
     st.IndentSpacing = 14;
-    st.ScrollbarSize = 8;
-    st.GrabMinSize = 8;
+    st.ScrollbarSize = 9;
+    st.GrabMinSize = 9;
+    // Docked panels: no outlines (they are cards on the darker background,
+    // separated by gaps). Floating windows and dialogs add their own border
+    // and shadow (begin_floating / begin_modal in widgets.cpp).
     st.WindowBorderSize = 0;
     st.ChildBorderSize = 0;
     st.PopupBorderSize = 1;
     st.FrameBorderSize = 0;
     st.TabBorderSize = 0;
-    st.TabBarBorderSize = 1;
+    st.TabBarBorderSize = 0;
     st.TabBarOverlineSize = 2;
-    st.WindowRounding = 6;
+    st.WindowRounding = 8;
     st.ChildRounding = 6;
-    st.FrameRounding = 4;
-    st.PopupRounding = 6;
-    st.ScrollbarRounding = 4;
-    st.GrabRounding = 3;
-    st.TabRounding = 4;
+    st.FrameRounding = 5;
+    st.PopupRounding = 8;
+    st.ScrollbarRounding = 6;
+    st.GrabRounding = 4;
+    st.TabRounding = 5;
     st.WindowTitleAlign = ImVec2(0.0f, 0.5f);
     st.WindowMenuButtonPosition = ImGuiDir_None;
     st.SeparatorTextBorderSize = 1;
-    st.DockingSeparatorSize = 2;
+    st.DockingSeparatorSize = 3;
     st.SelectableTextAlign = ImVec2(0.0f, 0.5f);
+    st.DisabledAlpha = 0.45f;
     st.AntiAliasedLines = true;
     st.AntiAliasedFill = true;
 
     Palette& p = pal;
+    // One accent, the logo's blue.
     uint32_t accent = 0x4C8DFF;
     p.accent = rgbu(accent);
-    p.axis[0] = rgbu(0xE5534B);
-    p.axis[1] = rgbu(0x6CC24A);
+    p.axis[0] = rgbu(0xEF5B57);
+    p.axis[1] = rgbu(0x72C64F);
     p.axis[2] = rgbu(0x4C8DFF);
     uint32_t bg0, bg1, bg2, bg3, bg4, head, border, text, dim, faint;
     if (settings.dark_theme) {
-        bg0 = 0x101215; bg1 = 0x191B20; bg2 = 0x22252B; bg3 = 0x2A2E35; bg4 = 0x343941;
-        head = 0x1F2227; border = 0x2A2E35; text = 0xDCDFE4; dim = 0x8D949E; faint = 0x5E656F;
-        p.accent_soft = rgbu(accent, 0.22f);
-        p.accent_text = rgbu(0x6EA3FF);
+        // Neutral, slightly cool greys: background, panel, input, hover, pressed.
+        bg0 = 0x0D0F12; bg1 = 0x16181D; bg2 = 0x1E2127; bg3 = 0x262A31; bg4 = 0x30353D;
+        head = 0x1B1E23; border = 0x2A2E35; text = 0xE4E7EB; dim = 0x969DA7; faint = 0x626973;
+        p.accent_soft = rgbu(accent, 0.20f);
+        p.accent_text = rgbu(0x78AAFF);
         p.play = rgbu(0x3FBF7F);
         p.warning = rgbu(0xE8B04B);
         p.error = rgbu(0xEF6461);
-        p.overlay = rgbu(0x191B20, 0.90f);
-        p.shadow = rgbu(0x000000, 0.35f);
+        p.overlay = rgbu(0x1B1E23, 0.92f);
+        p.shadow = rgbu(0x000000, 0.42f);
+        p.float_bg = rgbu(0x1A1D22);
+        p.float_border = rgbu(0x353A43);
+        p.float_title = rgbu(0x1A1D22);
+        p.sidebar = rgbu(0x15171B);
     } else {
-        bg0 = 0xD9DCE1; bg1 = 0xF4F5F7; bg2 = 0xFFFFFF; bg3 = 0xE8EAEE; bg4 = 0xDADDE3;
-        head = 0xEBEDF0; border = 0xD3D7DD; text = 0x1C1F24; dim = 0x5D646E; faint = 0x9AA1AA;
-        p.accent_soft = rgbu(accent, 0.18f);
+        bg0 = 0xD5D9DF; bg1 = 0xF6F7F9; bg2 = 0xFFFFFF; bg3 = 0xEAECF0; bg4 = 0xDDE0E6;
+        head = 0xEEF0F3; border = 0xD6DAE0; text = 0x1A1D22; dim = 0x5A616B; faint = 0x98A0A9;
+        p.accent_soft = rgbu(accent, 0.16f);
         p.accent_text = rgbu(0x2F6FE4);
         p.play = rgbu(0x1E9E5E);
         p.warning = rgbu(0xC4860F);
         p.error = rgbu(0xD64541);
-        p.overlay = rgbu(0xFFFFFF, 0.92f);
-        p.shadow = rgbu(0x000000, 0.12f);
+        p.overlay = rgbu(0xFFFFFF, 0.94f);
+        p.shadow = rgbu(0x1A2030, 0.16f);
+        p.float_bg = rgbu(0xFFFFFF);
+        p.float_border = rgbu(0xC9CED6);
+        p.float_title = rgbu(0xFFFFFF);
+        p.sidebar = rgbu(0xF3F4F7);
     }
     p.app_bg = rgbu(bg0); p.panel = rgbu(bg1); p.frame = rgbu(bg2); p.hover = rgbu(bg3); p.active = rgbu(bg4);
     p.header = rgbu(head); p.border = rgbu(border); p.text = rgbu(text); p.text_dim = rgbu(dim); p.text_faint = rgbu(faint);
@@ -177,8 +191,9 @@ void Editor::apply_theme() {
     c[ImGuiCol_TextDisabled] = rgb(faint);
     c[ImGuiCol_WindowBg] = rgb(bg1);
     c[ImGuiCol_ChildBg] = rgb(0, 0);
-    c[ImGuiCol_PopupBg] = dark ? rgb(0x15171B) : rgb(0xF4F5F7);
-    c[ImGuiCol_Border] = rgb(border);
+    // Menus, combo lists and tooltips float too: lifted, with an outline.
+    c[ImGuiCol_PopupBg] = dark ? rgb(0x1A1D22) : rgb(0xFFFFFF);
+    c[ImGuiCol_Border] = dark ? rgb(0x353A43) : rgb(0xC9CED6);
     c[ImGuiCol_BorderShadow] = rgb(0, 0);
     c[ImGuiCol_FrameBg] = rgb(bg2);
     c[ImGuiCol_FrameBgHovered] = rgb(bg3);
@@ -197,10 +212,12 @@ void Editor::apply_theme() {
     c[ImGuiCol_Button] = rgb(bg3);
     c[ImGuiCol_ButtonHovered] = rgb(bg4);
     c[ImGuiCol_ButtonActive] = dark ? rgb(0x3E444D) : rgb(0xCDD1D8);
-    c[ImGuiCol_Header] = rgb(accent, dark ? 0.22f : 0.18f);
+    c[ImGuiCol_Header] = rgb(accent, dark ? 0.20f : 0.16f);
     c[ImGuiCol_HeaderHovered] = dark ? rgb(0xFFFFFF, 0.05f) : rgb(0x000000, 0.045f);
     c[ImGuiCol_HeaderActive] = rgb(accent, 0.30f);
     c[ImGuiCol_Separator] = rgb(border);
+    // The gaps between docked panels are the background itself.
+    c[ImGuiCol_DockingEmptyBg] = rgb(bg0);
     c[ImGuiCol_SeparatorHovered] = acc;
     c[ImGuiCol_SeparatorActive] = acc;
     c[ImGuiCol_ResizeGrip] = rgb(0, 0);
@@ -215,7 +232,6 @@ void Editor::apply_theme() {
     c[ImGuiCol_TabDimmedSelected] = rgb(bg1);
     c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0, 0);
     c[ImGuiCol_DockingPreview] = rgb(accent, 0.40f);
-    c[ImGuiCol_DockingEmptyBg] = rgb(bg0);
     c[ImGuiCol_PlotLines] = acc;
     c[ImGuiCol_PlotLinesHovered] = rgb(0x6EA3FF);
     c[ImGuiCol_PlotHistogram] = acc;
@@ -820,11 +836,11 @@ void Editor::do_pending() {
 void Editor::unsaved_popup() {
     if (want_unsaved_prompt_) { ImGui::OpenPopup("Unsaved changes"); want_unsaved_prompt_ = false; }
     ImGui::SetNextWindowSize(ImVec2(400 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Unsaved changes", nullptr, ImGuiWindowFlags_NoResize)) return;
     const char* name = scene_path[0] ? path_filename(scene_path) : "the scene";
     ImGui::TextWrapped("Save the changes to %s first? Without saving they are lost.", name);
     ImGui::Dummy(ImVec2(0, 4));
-    bool save = ImGui::Button("Save");
+    bool save = primary_button("Save");
     track("unsaved:save");
     ImGui::SameLine();
     bool discard = ImGui::Button("Don't save");
@@ -883,7 +899,7 @@ void Editor::new_scene() {
 void Editor::save_as_popup() {
     if (want_save_as_) { ImGui::OpenPopup("Save scene as"); want_save_as_ = false; }
     ImGui::SetNextWindowSize(ImVec2(360 * settings.ui_scale, 0));
-    if (!ImGui::BeginPopupModal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
+    if (!begin_modal("Save scene as", nullptr, ImGuiWindowFlags_NoResize)) return;
     ImGui::TextUnformatted("Name (saved in scenes/ as .fscene)");
     if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(-1);
@@ -891,7 +907,7 @@ void Editor::save_as_popup() {
     track("save_as:name");
     bool valid = save_as_name[0] != 0 && !strchr(save_as_name, '/');
     ImGui::BeginDisabled(!valid);
-    bool save = ImGui::Button("Save") || (enter && valid);
+    bool save = primary_button("Save") || (enter && valid);
     track("save_as:save");
     ImGui::EndDisabled();
     ImGui::SameLine();

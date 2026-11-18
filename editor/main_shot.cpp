@@ -333,6 +333,7 @@ int main(int argc, char** argv) {
     }
     // The settings window, on its Viewport tab.
     ed.show_settings = true;
+    ed.settings_page = 3;       // Graphics: the page with the most to show
     ed.frame();
     ed.frame();
     snprintf(path, sizeof(path), "%s/editor-settings.png", out);

@@ -22,6 +22,14 @@ enum class GraphicsPreset : uint8_t { Low, Medium, High, Ultra, Custom };
 // average, 13 tap downsamples, the Bloom radius of the Post Processing object).
 enum class BloomMode : uint8_t { Simple, Chain };
 
+// Anti-aliasing (with the `antialiasing` switch on): FXAA (one cheap pass, the original), SMAA (edge detection,
+// blend weights from an area texture, neighbourhood blending) or TAA (jittered camera, a history buffer,
+// reprojection and a neighbourhood clamp; with render_scale < 1 it also upscales). All GPU tier.
+enum class AAMode : uint8_t { FXAA, SMAA, TAA };
+// Ambient occlusion (with `ambient_occlusion` on): SSAO (the original, 12 taps) or GTAO (half resolution,
+// 2 slices of 6 steps, horizon based, with a temporal and spatial denoise).
+enum class AOMode : uint8_t { SSAO, GTAO };
+
 // Ambient light: Hemisphere (the sky / ground colours of the Sky Light, free) or Probes (the CPU voxel and
 // L1 SH probe GI of gi.h: bounce light and colour bleeding, a few core-ms). Density is the probe spacing
 // (2 / 1 / 0.5 m around the camera), Update how much of the grid is refreshed a frame (1/32, 1/16, 1/8).
@@ -67,7 +75,10 @@ struct GraphicsSettings {
     float ao_strength = 1.0f;               // 0..2
     bool bloom = true;                      // uses PostProcess::bloom and bloom_threshold
     BloomMode bloom_mode = BloomMode::Chain;
-    bool antialiasing = true;               // FXAA
+    bool antialiasing = true;               // see aa_mode
+    AAMode aa_mode = AAMode::FXAA;
+    AOMode ao_mode = AOMode::SSAO;
+    bool ssr = false;                       // screen space reflections (half resolution, roughness cutoff; GPU tier)
     GiMode gi_mode = GiMode::Hemisphere;    // works on every feature level (CPU work, not a pass)
     GiDensity gi_density = GiDensity::Normal;
     GiUpdate gi_update = GiUpdate::Normal;
@@ -98,8 +109,9 @@ struct GraphicsSettings {
 //   shadow_resolution 512 | 1024 | 2048 | 4096     shadow_distance 1..2000 (m)
 //   soft_shadows      bool             cascade_cache       bool
 //   local_shadows     bool             local_shadow_lights 1..4     local_shadow_resolution 512..4096
-//   ao                off | ssao       ao_radius 0.05..5    ao_strength 0..2
-//   aa                off | fxaa
+//   ao                off | ssao | gtao       ao_radius 0.05..5    ao_strength 0..2
+//   aa                off | fxaa | smaa | taa
+//   ssr               off | on
 //   bloom             off | simple | chain
 //   gi                hemisphere | probes     gi_density coarse | normal | fine     gi_update slow | normal | fast
 //   pbr               bool             allow_gpu_effects_on_cpu  bool
@@ -152,6 +164,9 @@ struct GraphicsFeatures {
     bool shadows = false, ambient_occlusion = false, bloom = false, antialiasing = false, pbr = false;
     bool local_shadows = false;             // point and spot light shadows
     bool gi = false;                        // probe GI feeds the ambient light
+    AAMode aa_mode = AAMode::FXAA;          // meaningful when antialiasing
+    AOMode ao_mode = AOMode::SSAO;          // meaningful when ambient_occlusion
+    bool ssr = false;
 };
 
 inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
@@ -160,14 +175,14 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
         case GraphicsPreset::Low:
             shadows = false; ambient_occlusion = false; bloom = false; antialiasing = false; pbr = false;
             local_shadows = false; bloom_mode = BloomMode::Simple; shadow_cascades = 1;
-            gi_mode = GiMode::Hemisphere;
+            gi_mode = GiMode::Hemisphere; aa_mode = AAMode::FXAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 0.4f; fx_depth_test = false; fx_reverb = false;
             break;
         case GraphicsPreset::Medium:
             shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30; shadow_cascades = 2;
             ambient_occlusion = false; bloom = true; antialiasing = true; pbr = true;
             local_shadows = false; bloom_mode = BloomMode::Simple;
-            gi_mode = GiMode::Hemisphere;
+            gi_mode = GiMode::Hemisphere; aa_mode = AAMode::FXAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 0.7f; fx_depth_test = true; fx_reverb = true;
             break;
         case GraphicsPreset::High:
@@ -175,6 +190,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             ambient_occlusion = true; ao_radius = 0.5f; ao_strength = 1.0f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 2; local_shadow_resolution = 1024;
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Normal;
+            aa_mode = AAMode::SMAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 1.0f; fx_depth_test = true; fx_reverb = true;
             break;
         case GraphicsPreset::Ultra:
@@ -182,6 +198,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             ambient_occlusion = true; ao_radius = 0.7f; ao_strength = 1.2f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 4; local_shadow_resolution = 2048;
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Fast;
+            aa_mode = AAMode::TAA; ao_mode = AOMode::GTAO; ssr = true;
             fx_particle_density = 1.0f; fx_depth_test = true; fx_reverb = true;
             break;
         case GraphicsPreset::Custom:

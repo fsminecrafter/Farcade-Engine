@@ -139,6 +139,75 @@ int DynamicResolution::internal_size(int full, float scale) {
     return v > full ? full : v;
 }
 
+// ------------------------------------------------------------------ SMAA area, TAA jitter
+
+void smaa_area(int cb, int ca, int d1, int d2, float* tb, float* ta) {
+    *tb = *ta = 0;
+    auto height = [](int c) { return c == 1 ? -0.5f : (c == 2 ? 0.5f : 0.0f); };   // y positive = below the boundary
+    float hl = height(cb & 3), hr = height(ca & 3);
+    if (hl == 0 && hr == 0) return;                     // an isolated edge: nothing to smooth
+    float len = (float)(d1 + d2 + 1);
+    auto profile = [&](float pos) {
+        float t = pos / len;
+        if (hl * hr < 0) return hl + (hr - hl) * t;                                  // Z: one straight line
+        float a = 1.0f - 2.0f * t, b = 2.0f * t - 1.0f;                              // U / L: ramps to the middle
+        return hl * (a > 0 ? a : 0.0f) + hr * (b > 0 ? b : 0.0f);
+    };
+    // the average height of the contour over the pixel (two samples are exact for these piecewise linear shapes)
+    float y = 0.5f * (profile((float)d1 + 0.25f) + profile((float)d1 + 0.75f));
+    if (y > 0) *tb = y; else *ta = -y;
+}
+
+void smaa_area_texture(uint32_t out[kSmaaAreaSize * kSmaaAreaSize]) {
+    for (int cb = 0; cb < 4; cb++)
+        for (int ca = 0; ca < 4; ca++)
+            for (int d2 = 0; d2 < 8; d2++)
+                for (int d1 = 0; d1 < 8; d1++) {
+                    float tb, ta;
+                    smaa_area(cb, ca, d1, d2, &tb, &ta);
+                    uint32_t r = (uint32_t)(fclamp(tb * 2.0f, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    uint32_t g = (uint32_t)(fclamp(ta * 2.0f, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    out[(ca * 8 + d2) * kSmaaAreaSize + cb * 8 + d1] = (r << 16) | (g << 8);
+                }
+}
+
+void taa_jitter(uint32_t frame, float* x, float* y) {
+    auto halton = [](uint32_t i, uint32_t base) {
+        float f = 1.0f, r = 0.0f;
+        while (i > 0) { f /= (float)base; r += f * (float)(i % base); i /= base; }
+        return r;
+    };
+    uint32_t i = frame % 8u + 1u;
+    *x = halton(i, 2) - 0.5f;
+    *y = halton(i, 3) - 0.5f;
+}
+
+bool mat4_inverse(const Mat4& mm, Mat4* out) {
+    const float* m = mm.m;
+    float inv[16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (det > -1e-20f && det < 1e-20f) return false;
+    float id = 1.0f / det;
+    for (int i = 0; i < 16; i++) out->m[i] = inv[i] * id;
+    return true;
+}
+
 // ------------------------------------------------------------------ upscale
 
 void upscale_xrgb_to_rgba(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh) {

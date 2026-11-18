@@ -10,6 +10,7 @@
 // Post stack options (engine/gfx/post_stack.h):
 // --tonemap none|reinhard|aces|agx   --exposure EV   --auto-exposure   --grade warm|cool|bleach
 // --cascades N (1..3 sun shadow cascades)   --no-cascade-cache   --gi hemisphere|probes
+// --set name=value   any graphics setting by name (graphics_settings.h): --set aa=smaa --set ao=gtao --set ssr=on
 // --grain A   --ca A   --bloom-radius R   --scale S (internal resolution)   --frames N (frames to settle, default 2)
 #include "gfx/renderer.h"
 #include "gfx/meshgen.h"
@@ -33,10 +34,13 @@ int main(int argc, char** argv) {
     int frames = 2, cascades = 0;
     bool cascade_cache = true;
     const char* gi = nullptr;
+    const char* sets[16];
+    int nsets = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--cascades") && i + 1 < argc) { cascades = atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--no-cascade-cache")) { cascade_cache = false; continue; }
         if (!strcmp(argv[i], "--gi") && i + 1 < argc) { gi = argv[++i]; continue; }
+        if (!strcmp(argv[i], "--set") && i + 1 < argc) { if (nsets < 16) sets[nsets++] = argv[++i]; else ++i; continue; }
         if (!strcmp(argv[i], "--tonemap") && i + 1 < argc) tonemap = argv[++i];
         else if (!strcmp(argv[i], "--exposure") && i + 1 < argc) exposure = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--auto-exposure")) auto_exposure = true;
@@ -68,6 +72,15 @@ int main(int argc, char** argv) {
     gs.render_scale = scale;
     if (cascades) gs.shadow_cascades = cascades;
     gs.cascade_cache = cascade_cache;
+    for (int i = 0; i < nsets; i++) {
+        char name[64];
+        const char* eq = strchr(sets[i], '=');
+        if (!eq || (size_t)(eq - sets[i]) >= sizeof name) { fprintf(stderr, "--set name=value\n"); return 2; }
+        memcpy(name, sets[i], (size_t)(eq - sets[i]));
+        name[eq - sets[i]] = 0;
+        char err[200];
+        if (!fe::gfx::graphics_set_text(&gs, name, eq + 1, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 2; }
+    }
     if (gi && !fe::gfx::graphics_set_text(&gs, "gi", gi)) { fprintf(stderr, "--gi hemisphere|probes\n"); return 2; }
     fe::gfx::Renderer r;
     r.set_settings(gs);
@@ -104,6 +117,8 @@ int main(int argc, char** argv) {
     printf("quality %s on %s: gpu tier %s (shadows %d, ao %d, bloom %d, aa %d, pbr %d)\n", quality, r.backend(),
            f.gpu_tier ? "on" : "off", f.shadows, f.ambient_occlusion, f.bloom, f.antialiasing, f.pbr);
     const fe::gfx::GpuTierStats& t = r.gpu_tier_stats();
+    if (t.passes && (t.ssr_ms > 0 || t.taa_ms > 0 || t.smaa_ms > 0))
+        printf("more (ms): ssr %.1f taa %.1f smaa %.1f\n", t.ssr_ms, t.taa_ms, t.smaa_ms);
     if (t.passes)
         printf("stages (ms): shadow %.1f%s depth %.1f ssao %.1f blur %.1f lit %.1f bloom %.1f composite %.1f fxaa %.1f; %d passes\n",
                t.shadow_ms, t.shadow_reused ? " (reused)" : "", t.depth_ms, t.ssao_ms, t.blur_ms, t.lit_ms, t.bloom_ms, t.composite_ms,

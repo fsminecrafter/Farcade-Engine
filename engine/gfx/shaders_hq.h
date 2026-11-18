@@ -85,12 +85,24 @@ void hq_normal_fragment(char* out, size_t cap);
 void pp_vertex(char* out, size_t cap);
 void pp_skymask_fragment(char* out, size_t cap);               // sampler u_depth: discards geometry pixels
 void pp_ssao_fragment(char* out, size_t cap);                  // samplers u_depth, u_normal
+void pp_gtao_fragment(char* out, size_t cap);                  // as pp_ssao_fragment, plus u_gt.x (frame rotation)
+void pp_ao_accum_fragment(char* out, size_t cap);              // samplers u_cur, u_hist; u_q.x blend
+void pp_copy_fragment(char* out, size_t cap);                  // sampler u_src
+void hq_material_vertex(char* out, size_t cap);                // roughness / metallic G-buffer (u_mm.xy per item)
+void hq_material_fragment(char* out, size_t cap);
+void pp_ssrmask_fragment(char* out, size_t cap);               // samplers u_depth, u_mat; u_q.x roughness cutoff
+void pp_ssr_fragment(char* out, size_t cap);                   // samplers u_depth, u_normal, u_mat, u_scene
 void pp_blur_fragment(char* out, size_t cap);                  // u_dir: xy texel step
 void pp_bright_fragment(char* out, size_t cap, bool karis);    // u_q.x threshold; karis: weighted by 1 / (1 + luma)
 void pp_down_fragment(char* out, size_t cap, bool wide);       // wide: 13 taps, else a 4x4 box
 void pp_up_fragment(char* out, size_t cap);                    // sampler u_fine, u_coarse
-void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic);
+void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic, bool ssr);
                                                                // sampler u_scene, u_bloom; u_q.x strength; u_ca.x fringe (chromatic)
+void pp_taa_fragment(char* out, size_t cap);                    // samplers u_curl, u_curn, u_depth, u_hist (see the .cpp)
+void pp_smaa_edge_fragment(char* out, size_t cap);             // sampler u_src: r / g = edge left / top (discards the rest)
+void pp_smaa_mask_fragment(char* out, size_t cap);             // sampler u_edges: discards the edge pixels
+void pp_smaa_weights_fragment(char* out, size_t cap, bool vertical);   // samplers u_edges, u_area
+void pp_smaa_blend_fragment(char* out, size_t cap);            // samplers u_src, u_wh, u_wv
 void pp_fxaa_mask_fragment(char* out, size_t cap);             // sampler u_n: copies, discards the edge pixels
 void pp_fxaa_fragment(char* out, size_t cap);                  // samplers u_n (nearest), u_l (linear): the same image
 

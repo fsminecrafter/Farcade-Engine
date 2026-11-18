@@ -148,6 +148,9 @@ GraphicsFeatures make_features(const DeviceCaps& caps, const GraphicsSettings& s
     f.pbr = f.gpu_tier && settings.pbr;
     f.local_shadows = f.gpu_tier && settings.local_shadows;
     f.gi = settings.gi_mode == GiMode::Probes;
+    f.aa_mode = settings.aa_mode;
+    f.ao_mode = settings.ao_mode;
+    f.ssr = f.gpu_tier && settings.ssr;
     return f;
 }
 
@@ -948,11 +951,23 @@ struct Renderer::Impl {
         }
         int iw = DynamicResolution::internal_size(width, scale);
         int ih = DynamicResolution::internal_size(height, scale);
-        rw = banding ? width : iw;
-        rh = banding ? height : ih;
+        // TAA drives the upscale: the passes before its resolve draw at the internal size and the resolve writes the
+        // full size image (so there is no CPU upscale). Only when the GPU tier will really run.
+        bool taa_up = false;
+        if (!banding && (iw != width || ih != height) && settings.antialiasing && settings.aa_mode == AAMode::TAA && !scene.draft) {
+            GpuPlan tp = GpuTier::plan(scene, feature_set());
+            bool assets = false;
+            for (int i = 0; i < scene.item_count; i++)
+                assets |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
+                          (scene.items[i].shader_path && scene.items[i].shader_path[0]);
+            taa_up = tp.any() && tp.aa && !assets;
+        }
+        rw = banding || taa_up ? width : iw;
+        rh = banding || taa_up ? height : ih;
         stats.render_scale = (float)iw / (float)width;
-        stats.internal_width = rw;
-        stats.internal_height = banding ? rows : rh;
+        stats.taa_upscale = taa_up;
+        stats.internal_width = taa_up ? iw : rw;
+        stats.internal_height = banding ? rows : (taa_up ? ih : rh);
         if (!ensure_surface(rw, banding ? rows : rh)) return false;
         gl->error = 0;
         frame++;
@@ -1002,6 +1017,7 @@ struct Renderer::Impl {
             host.user = this;
             host.draw_mesh = &Impl::tier_draw_mesh;
             host.set_viewport = &Impl::tier_set_viewport;
+            if (taa_up) { host.iw = iw; host.ih = ih; }
             host.gi_on = gi_frame.on;
             host.gi_texture = gi_tex;
             memcpy(host.gi0, gi_frame.u0, sizeof host.gi0);

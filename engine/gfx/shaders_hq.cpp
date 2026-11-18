@@ -684,6 +684,212 @@ void pp_ssao_fragment(char* out, size_t cap) {
           "}\n");
 }
 
+// ---- GTAO (Jimenez et al., "Practical real-time strategies for accurate indirect occlusion"): the horizon
+// of each of 2 slice directions is searched with 3 steps on both sides (the 12 depth taps keep the shader
+// under the 16 samples the host JIT accepts), and the visibility of the cosine weighted hemisphere is
+// integrated analytically from the two horizon angles and the normal projected into the slice plane.
+// Same inputs and output as pp_ssao_fragment (u_ao.xy radius, strength; u_gt.x slice rotation per frame).
+const char* const kAcos =
+    "float acos_(float x) {\n"
+    "    float a = abs(x);\n"
+    "    float r = sqrt(max(1.0 - a, 0.0)) * (1.5707288 + a * (-0.2121144 + a * (0.074261 - a * 0.0187293)));\n"
+    "    return mix(r, 3.14159265 - r, 1.0 - step(0.0, x));\n"
+    "}\n";
+
+void pp_gtao_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    // Registers: every variable takes one of the 32 vec4 temporaries, so scalars live in vec4s (q, sc) and each
+    // tap is its own block (an inlined function's temporaries stay allocated until the block ends).
+    t.add("uniform sampler2D u_depth;\n"
+          "uniform sampler2D u_normal;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_ao;\n"                  // radius m, strength, ortho flag, far m
+          "uniform vec4 u_proj;\n"                // tan(fov/2) x, y
+          "uniform vec4 u_gt;\n");                // x: rotation offset of this frame (0..1)
+    t.add(kPack);
+    t.add(kAcos);
+    t.add("float depth_at(vec2 uv) {\n"
+          "    return unpack24(texture(u_depth, uv).rgb) * u_ao.w;\n"
+          "}\n"
+          "vec3 vpos(vec2 uv, float d) {\n"
+          "    float s = mix(d, 1.0, u_ao.z);\n"
+          "    return vec3((uv.x * 2.0 - 1.0) * u_proj.x * s, (1.0 - uv.y * 2.0) * u_proj.y * s, d);\n"
+          "}\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec3 P = vec3(0.0);\n"
+          "    vec4 q = vec4(0.0);\n"               // xy: uv radius of the search, z: noise, w: step jitter
+          "    {\n"
+          "        float d0 = depth_at(uv);\n"
+          "        P = vpos(uv, d0);\n"
+          "        q.xy = max(min(u_ao.x / (2.0 * u_proj.xy * mix(d0, 1.0, u_ao.z)), vec2(0.15, 0.15)), u_p.xy * 3.0);\n"
+          "        q.z = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
+          "        q.w = fract(q.z * 7.0 + u_gt.x * 3.0);\n"
+          "    }\n"
+          "    vec3 N = texture(u_normal, uv).rgb * 2.0 - 1.0;\n"
+          "    N = vec3(N.x, N.y, -N.z);\n"
+          "    vec3 V = normalize(-P);\n"
+          "    float vis = 0.0;\n");
+    for (int sl = 0; sl < 2; sl++) {
+        t.add("    {\n"
+              "        float phi = (fract(q.z + u_gt.x) + ");
+        t.flt(sl * 0.5f);
+        t.add(") * 3.14159265;\n"
+              "        vec3 dir3 = vec3(cos(phi), -sin(phi), 0.0);\n"
+              "        vec3 pn = N - cross(dir3, V) * dot(N, cross(dir3, V));\n"
+              "        vec4 sc = vec4(max(length(pn), 0.0001), 0.0, 0.0, 0.0);\n"        // x: |pn|, y: cos n, z: n
+              "        sc.y = clamp(dot(pn, V) / sc.x, -1.0, 1.0);\n"
+              "        sc.z = acos_(sc.y) * (step(0.0, dot(dir3 - dot(dir3, V) * V, pn)) * 2.0 - 1.0);\n"
+              "        vec2 duv = vec2(dir3.x, -dir3.y) * q.xy;\n"
+              "        vec2 h = vec2(-1.0, -1.0);\n");
+        for (int k = 0; k < 3; k++) {
+            for (int side = 0; side < 2; side++) {
+                const char* sg = side == 0 ? "+" : "-";
+                const char* hc = side == 0 ? "x" : "y";
+                t.add("        {\n            vec2 u1 = uv "); t.add(sg); t.add(" duv * ((");
+                t.flt((float)k + 0.5f);
+                t.add(" + q.w - 0.5) / 3.0);\n"
+                      "            vec3 d1 = vpos(u1, depth_at(u1)) - P;\n"
+                      "            float l1 = max(length(d1), 0.0001);\n"
+                      "            h."); t.add(hc); t.add(" = max(h."); t.add(hc);
+                t.add(", mix(-1.0, dot(d1, V) / l1, clamp(2.0 - l1 / u_ao.x, 0.0, 1.0)));\n"
+                      "        }\n");
+            }
+        }
+        t.add("        vec2 hh = vec2(-acos_(clamp(h.y, -1.0, 1.0)), acos_(clamp(h.x, -1.0, 1.0)));\n"
+              "        // h.x is the horizon on the +direction side (the positive angle), h.y on the other side\n"
+              "        hh = sc.z + vec2(max(hh.x - sc.z, -1.5707963), min(hh.y - sc.z, 1.5707963));\n"
+              "        float sn = sin(sc.z);\n"
+              "        vis += sc.x * 0.25 * ((-cos(2.0 * hh.x - sc.z) + sc.y + 2.0 * hh.x * sn) + (-cos(2.0 * hh.y - sc.z) + sc.y + 2.0 * hh.y * sn));\n"
+              "    }\n");
+    }
+    t.add("    float ao = pow(clamp(vis * 0.5, 0.0, 1.0), u_ao.y);\n"
+          "    float v16 = floor(clamp(P.z / u_ao.w, 0.0, 1.0) * 65535.0 + 0.5);\n"
+          "    float hi = floor(v16 / 256.0);\n"
+          "    gl_FragColor = vec4(ao, hi * 0.003921569, (v16 - hi * 256.0) * 0.003921569, 1.0);\n"
+          "}\n");
+}
+
+// Temporal accumulation of the AO (r) while nothing moves: out = mix(history, current, u_q.x); depth (g, b) from the
+// current frame. u_q.x = 1 takes the current frame as it is (the camera or the scene moved).
+void pp_ao_accum_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_cur;\n"
+          "uniform sampler2D u_hist;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_q;\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec3 c = texture(u_cur, uv).rgb;\n"
+          "    float h = texture(u_hist, uv).r;\n"
+          "    gl_FragColor = vec4(mix(h, c.r, u_q.x), c.g, c.b, 1.0);\n"
+          "}\n");
+}
+
+// A plain copy (nearest) of u_src: history updates.
+void pp_copy_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_src;\n"
+          "uniform vec4 u_p;\n"
+          "void main() {\n"
+          "    gl_FragColor = vec4(texture(u_src, gl_FragCoord.xy * u_p.xy).rgb, 1.0);\n"
+          "}\n");
+}
+
+// ---- material G-buffer for SSR: r = roughness, g = metallic (u_mm per item)
+void hq_material_vertex(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform mat4 fgl_ModelViewProjection;\n"
+          "attribute vec3 position;\n"
+          "void main() {\n"
+          "    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n"
+          "}\n");
+}
+
+void hq_material_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform vec4 u_mm;\n"
+          "void main() {\n"
+          "    gl_FragColor = vec4(u_mm.x, u_mm.y, 0.0, 1.0);\n"
+          "}\n");
+}
+
+// ---- SSR. The mask pass discards the pixels that get reflections (geometry smoother than the cutoff, u_q.x),
+// so the pixels it keeps (sky, rough surfaces) write a depth and the SSR pass skips them.
+void pp_ssrmask_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_depth;\n"
+          "uniform sampler2D u_mat;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_q;\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec3 c = texture(u_depth, uv).rgb;\n"
+          "    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);\n"
+          "    if (c.r + c.g < 1.99 && texture(u_mat, uv).r < u_q.x) discard;\n"
+          "}\n");
+}
+
+// Marches the reflection ray in view space (12 steps, spaced quadratically, jittered) against the depth buffer
+// and adds the scene colour found there, weighted by Fresnel and smoothness; u_ao.zw: ortho flag, far m;
+// u_q: x max distance m, y thickness m, z roughness cutoff. Output: the HDR encoded contribution.
+void pp_ssr_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_depth;\n"
+          "uniform sampler2D u_normal;\n"
+          "uniform sampler2D u_mat;\n"
+          "uniform sampler2D u_scene;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_ao;\n"                  // x: ortho flag, y: far m, z: frame jitter
+          "uniform vec4 u_proj;\n"
+          "uniform vec4 u_q;\n");
+    t.add(kPack);
+    t.add("float depth_at(vec2 uv) {\n"
+          "    return unpack24(texture(u_depth, uv).rgb) * u_ao.y;\n"
+          "}\n"
+          "vec3 vpos(vec2 uv, float d) {\n"
+          "    float s = mix(d, 1.0, u_ao.x);\n"
+          "    return vec3((uv.x * 2.0 - 1.0) * u_proj.x * s, (1.0 - uv.y * 2.0) * u_proj.y * s, d);\n"
+          "}\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec3 P = vpos(uv, depth_at(uv));\n"
+          "    vec3 N = texture(u_normal, uv).rgb * 2.0 - 1.0;\n"
+          "    N = vec3(N.x, N.y, -N.z);\n"
+          "    vec3 V = normalize(P);\n"
+          "    vec3 Rr = reflect(V, N);\n"
+          "    vec2 mat = texture(u_mat, uv).rg;\n"
+          "    vec4 st = vec4(uv, 0.0, 0.0);\n"        // xy: the hit uv, z: hit, w: jitter
+          "    st.w = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + u_ao.z);\n");
+    for (int i = 0; i < 12; i++) {
+        t.add("    {\n        vec3 S = P + Rr * (((");
+        t.flt((float)i + 0.5f);
+        t.add(" + st.w - 0.5) / 12.0) * ((");
+        t.flt((float)i + 0.5f);
+        t.add(" + st.w - 0.5) / 12.0) * u_q.x + 0.05);\n"
+              "        vec2 suv = mix(vec2(S.x / max(S.z, 0.05) / u_proj.x * 0.5 + 0.5, 0.5 - S.y / max(S.z, 0.05) / u_proj.y * 0.5),\n"
+              "                       vec2(S.x / u_proj.x * 0.5 + 0.5, 0.5 - S.y / u_proj.y * 0.5), u_ao.x);\n"
+              "        float diff = S.z - depth_at(suv);\n"
+              "        float ok = step(0.0, diff) * step(diff, u_q.y + 0.05 * S.z) * step(st.z, 0.5) * step(0.0, suv.x) * step(suv.x, 1.0) * step(0.0, suv.y) * step(suv.y, 1.0);\n"
+              "        st.xy = mix(st.xy, suv, ok);\n"
+              "        st.z = max(st.z, ok);\n"
+              "    }\n");
+    }
+    t.add("    float k = 0.0;\n"
+          "    {\n"
+          "        vec2 e = abs(st.xy - 0.5) * 2.0;\n"
+          "        float edge = clamp((1.0 - max(e.x, e.y)) * 8.0, 0.0, 1.0);\n"
+          "        float fr = pow(1.0 - clamp(dot(N, -V), 0.0, 1.0), 5.0);\n"
+          "        float f0 = mix(0.04, 0.8, mat.g);\n"
+          "        float sm = clamp(1.0 - mat.r / u_q.z, 0.0, 1.0);\n"
+          "        k = (f0 + (1.0 - f0) * fr) * sm * sm * st.z * edge * clamp(Rr.z * 4.0 + 0.2, 0.0, 1.0);\n"
+          "    }\n"
+          "    vec3 c = texture(u_scene, st.xy).rgb;\n"
+          "    c = c * c * 8.0 * mix(1.0, 0.8, mat.g);\n"
+          "    gl_FragColor = vec4(sqrt(clamp(c * k, 0.0, 8.0) * 0.125), 1.0);\n"
+          "}\n");
+}
+
 void pp_blur_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("uniform sampler2D u_src;\n"
@@ -799,9 +1005,10 @@ void pp_up_fragment(char* out, size_t cap) {
           "}\n");
 }
 
-void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic) {
+void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic, bool ssr) {
     Text t(out, cap);
     t.add("uniform sampler2D u_scene;\n");
+    if (ssr) t.add("uniform sampler2D u_ssr;\n");
     if (bloom) t.add("uniform sampler2D u_bloom;\nuniform vec4 u_q;\n");
     t.add("uniform vec4 u_p;\n");
     if (chromatic) t.add("uniform vec4 u_ca;\n");
@@ -820,7 +1027,169 @@ void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& pos
     else
         t.add("    vec3 c = hdr_dec(texture(u_scene, uv).rgb);\n");
     if (bloom) t.add("    c += hdr_dec(texture(u_bloom, uv).rgb) * u_q.x;\n");
+    if (ssr) t.add("    c += hdr_dec(texture(u_ssr, uv).rgb);\n");
     t.add("    gl_FragColor = vec4(tone(c), 1.0);\n"
+          "}\n");
+}
+
+// ---- SMAA-style morphological AA (see post_stack.h smaa_area for the model and its limits)
+// Edge detection on luma (threshold 0.1, local contrast adaptation): r = an edge on the left side of the pixel,
+// g = an edge on its top side. Pixels without an edge are discarded (they stay black).
+void pp_smaa_edge_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_src;\n"
+          "uniform vec4 u_p;\n"
+          "float luma(vec2 uv) {\n"
+          "    return dot(texture(u_src, uv).rgb, vec3(0.299, 0.587, 0.114));\n"
+          "}\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    float L = luma(uv);\n"
+          "    vec2 lt = vec2(luma(uv - vec2(u_p.x, 0.0)), luma(uv - vec2(0.0, u_p.y)));\n"
+          "    vec2 delta = abs(L - lt);\n"
+          "    vec2 maxd = max(delta, abs(L - vec2(luma(uv + vec2(u_p.x, 0.0)), luma(uv + vec2(0.0, u_p.y)))));\n"
+          "    maxd = max(maxd, abs(lt - vec2(luma(uv - vec2(2.0 * u_p.x, 0.0)), luma(uv - vec2(0.0, 2.0 * u_p.y)))));\n"
+          "    vec2 e = step(0.1, delta) * step(maxd * 0.5, delta);\n"
+          "    gl_FragColor = vec4(e, 0.0, 1.0);\n"
+          "    if (e.x + e.y < 0.5) discard;\n"
+          "}\n");
+}
+
+// Marks the pixels without an edge (they get a depth, so the next passes skip them).
+void pp_smaa_mask_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_edges;\n"
+          "uniform vec4 u_p;\n"
+          "void main() {\n"
+          "    vec2 e = texture(u_edges, gl_FragCoord.xy * u_p.xy).rg;\n"
+          "    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);\n"
+          "    if (e.x + e.y > 0.5) discard;\n"
+          "}\n");
+}
+
+// Blend weights of the edges that run along x (vertical = false: the edge on the top of the pixel, searched to the
+// left and right) or along y (vertical = true: the edge on its left, searched up and down), by the area model:
+// the length of the run in each direction (up to 8) and the perpendicular edges that end it pick a texel of the area
+// texture. Output: the texel (the two shares * 2).
+void pp_smaa_weights_fragment(char* out, size_t cap, bool vertical) {
+    Text t(out, cap);
+    const char* ch = vertical ? "r" : "g";           // the edge channel along the run
+    const char* cc = vertical ? "g" : "r";           // the channel of the edges that cross it
+    t.add("uniform sampler2D u_edges;\n"
+          "uniform sampler2D u_area;\n"
+          "uniform vec4 u_p;\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n");
+    t.add(vertical ? "    vec2 a = vec2(0.0, u_p.y);\n    vec2 n = vec2(u_p.x, 0.0);\n"
+                   : "    vec2 a = vec2(u_p.x, 0.0);\n    vec2 n = vec2(0.0, u_p.y);\n");
+    t.add("    vec4 res = vec4(0.0);\n"
+          "    if (texture(u_edges, uv).");
+    t.add(ch);
+    t.add(" > 0.5) {\n"
+          "        vec2 d = vec2(0.0);\n"            // run lengths before / after the pixel
+          "        vec2 alive = vec2(1.0);\n");
+    for (int k = 1; k <= 7; k++) {
+        t.add("        {\n            alive.x = alive.x * texture(u_edges, uv - a * ");
+        t.flt((float)k);
+        t.add(").");
+        t.add(ch);
+        t.add(";\n            alive.y = alive.y * texture(u_edges, uv + a * ");
+        t.flt((float)k);
+        t.add(").");
+        t.add(ch);
+        t.add(";\n            d = d + alive;\n        }\n");
+    }
+    t.add("        vec2 cr = vec2(0.0);\n"            // crossing flags: x before, y after (bit 0 the -n side, bit 1 the +n side)
+          "        {\n"
+          "            vec2 pb = uv - a * d.x;\n"
+          "            vec2 pa = uv + a * (d.y + 1.0);\n"
+          "            cr.x = texture(u_edges, pb - n).");
+    t.add(cc);
+    t.add(" + 2.0 * texture(u_edges, pb).");
+    t.add(cc);
+    t.add(";\n"
+          "            cr.y = texture(u_edges, pa - n).");
+    t.add(cc);
+    t.add(" + 2.0 * texture(u_edges, pa).");
+    t.add(cc);
+    t.add(";\n"
+          "        }\n"
+          "        res = vec4(texture(u_area, vec2(cr.x * 8.0 + d.x + 0.5, cr.y * 8.0 + d.y + 0.5) * 0.03125).rg, 0.0, 1.0);\n"
+          "    }\n"
+          "    gl_FragColor = res;\n"
+          "}\n");
+}
+
+// Neighbourhood blending: the pixel takes a share of the neighbour across the contour, from its own weights and
+// those its neighbours stored for it (the bottom share is in the weights of the pixel below, the right share in
+// the pixel to the right). u_wh, u_wv: the weight targets of the two axes.
+void pp_smaa_blend_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_src;\n"
+          "uniform sampler2D u_wh;\n"
+          "uniform sampler2D u_wv;\n"
+          "uniform vec4 u_p;\n"
+          "void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec4 w = vec4(texture(u_wh, uv).r, texture(u_wh, uv + vec2(0.0, u_p.y)).g,\n"
+          "                  texture(u_wv, uv).r, texture(u_wv, uv + vec2(u_p.x, 0.0)).g) * 0.5;\n"
+          "    float h = max(w.x, w.y);\n"
+          "    float v = max(w.z, w.w);\n"
+          "    float isH = step(v, h);\n"
+          "    vec2 off = mix(vec2(mix(u_p.x, -u_p.x, step(w.w, w.z)), 0.0), vec2(0.0, mix(u_p.y, -u_p.y, step(w.y, w.x))), isH);\n"
+          "    vec3 c = texture(u_src, uv).rgb;\n"
+          "    gl_FragColor = vec4(mix(c, texture(u_src, uv + off).rgb, mix(v, h, isH)), 1.0);\n"
+          "}\n");
+}
+
+// ---- TAA resolve. Renders at the output size: the jittered current frame (internal size, HDR encoded) is sampled
+// bilinearly where the unjittered pixel landed (u_j.xy), the history is fetched where the pixel was last frame
+// (the depth gives the position, u_r0..3 = previous view-projection * inverse(current), no motion vectors:
+// moving objects are left to the clamp), clamped to the 3x3 neighbourhood of the current frame, and blended.
+// u_p: xy 1 / output size, zw 1 / internal size; u_j: xy jitter in uv, z far (m), w base blend;
+// u_zp: x, y: ndc z = x + y / z (perspective), z: ortho flag, w: history valid; u_zq: m10, m14 (ortho).
+void pp_taa_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_curl;\n"
+          "uniform sampler2D u_curn;\n"
+          "uniform sampler2D u_depth;\n"
+          "uniform sampler2D u_hist;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_j;\n"
+          "uniform vec4 u_zp;\n"
+          "uniform vec4 u_zq;\n"
+          "uniform vec4 u_r0;\n"
+          "uniform vec4 u_r1;\n"
+          "uniform vec4 u_r2;\n"
+          "uniform vec4 u_r3;\n");
+    t.add(kPack);
+    t.add("void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec2 cuv = uv + u_j.xy;\n"
+          "    vec2 t0 = (floor(cuv / u_p.zw) + 0.5) * u_p.zw;\n"
+          "    vec3 c = texture(u_curl, cuv).rgb;\n"
+          "    vec3 mn = c;\n"
+          "    vec3 mx = c;\n");
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            t.add("    {\n        vec3 n = texture(u_curn, t0 + vec2(");
+            t.flt((float)dx); t.add(", "); t.flt((float)dy);
+            t.add(") * u_p.zw).rgb;\n        mn = min(mn, n);\n        mx = max(mx, n);\n    }\n");
+        }
+    t.add("    vec3 h = c;\n"
+          "    float alpha = 1.0;\n"
+          "    {\n"
+          "        float zv = unpack24(texture(u_depth, t0).rgb) * u_j.z;\n"
+          "        vec4 nd = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, mix(u_zp.x + u_zp.y / max(zv, 0.0001), u_zq.x * -zv + u_zq.y, u_zp.z), 1.0);\n"
+          "        vec4 pc = u_r0 * nd.x + u_r1 * nd.y + u_r2 * nd.z + u_r3;\n"
+          "        vec2 puv = vec2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);\n"
+          "        float inside = step(0.0, puv.x) * step(puv.x, 1.0) * step(0.0, puv.y) * step(puv.y, 1.0) * u_zp.w;\n"
+          "        vec3 hp = texture(u_hist, puv).rgb;\n"
+          "        vec3 hc = clamp(hp, mn, mx);\n"
+          "        alpha = mix(1.0, mix(u_j.w, 0.6, clamp(length(hp - hc) * 6.0, 0.0, 1.0)), inside);\n"
+          "        h = hc;\n"
+          "    }\n"
+          "    gl_FragColor = vec4(mix(h, c, alpha), 1.0);\n"
           "}\n");
 }
 

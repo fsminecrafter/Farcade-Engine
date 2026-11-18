@@ -1398,6 +1398,9 @@ void test_gpu_tier_everything() {
     Renderer r;
     GraphicsSettings g;
     g.apply_preset(GraphicsPreset::Ultra);
+    g.aa_mode = AAMode::FXAA;                // the new modes (TAA, SMAA, GTAO, SSR) are in gfx_stack_tests
+    g.ao_mode = AOMode::SSAO;
+    g.ssr = false;
     g.shadow_resolution = 1024;
     g.allow_gpu_effects_on_cpu = true;
     r.set_settings(g);

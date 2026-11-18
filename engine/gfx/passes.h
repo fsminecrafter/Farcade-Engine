@@ -51,6 +51,9 @@ struct PassHost {
     // resets it); w == 0 turns it off.
     void (*set_viewport)(void* user, int x, int y, int w, int h) = nullptr;
     // Probe GI (gi.h): the probe texture and the window uniforms (u_gi0, u_gi1) when it is on.
+    // The size the passes before the TAA resolve render at (0: the context's size). Smaller than the context
+    // when TAA upscales (render_scale < 1): the resolve then writes the full size image.
+    int iw = 0, ih = 0;
     bool gi_on = false;
     FGLTexture gi_texture = 0;
     float gi0[4] = {}, gi1[4] = {};
@@ -59,9 +62,11 @@ struct PassHost {
 // What runs this frame: the features, limited by what the scene has.
 struct GpuPlan {
     bool shadows = false, ao = false, bloom = false, aa = false, pbr = false, fog = false;
+    bool gtao = false, ssr = false;         // GTAO instead of SSAO; screen space reflections
+    AAMode aa_mode = AAMode::FXAA;
     bool local_shadows = false;             // a point or spot light with Shadows on
     bool hw = false;                        // FarcadeGL runs on a graphics card
-    bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows; }
+    bool any() const { return shadows || ao || bloom || aa || pbr || fog || local_shadows || ssr; }
 };
 
 class GpuTier {

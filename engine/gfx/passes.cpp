@@ -148,8 +148,8 @@ struct GpuTier::Impl {
     FGLShader* bright_p[2] = {};            // [karis]
     FGLShader* down_p[2] = {};              // [wide]
     FGLShader* up_p = nullptr;
-    FGLShader* comp_p[4] = {};              // [chromatic * 2 + bloom]
-    shaders::PostKey comp_key[4], unlit_key[4], sky_key[2];
+    FGLShader* comp_p[8] = {};              // [ssr * 4 + chromatic * 2 + bloom]
+    shaders::PostKey comp_key[8], unlit_key[4], sky_key[2];
     const PostFrame* pf = nullptr;          // this frame's post chain values
     FGLShader* fxaa_p = nullptr;
     FGLShader* unlit_p[4] = {};             // [fog * 2 + hdr]
@@ -157,6 +157,27 @@ struct GpuTier::Impl {
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
+    Target gmat, ao_c, ao_hist, ssr_t;      // roughness / metal G-buffer, GTAO raw and history, the SSR result
+    uint64_t ao_scene_hash = 0;             // what the GTAO history was accumulated for
+    FGLShader* gtao_p = nullptr;
+    FGLShader* ao_accum_p = nullptr;
+    FGLShader* copy_p = nullptr;
+    FGLShader* material_p = nullptr;
+    FGLShader* ssrmask_p = nullptr;
+    FGLShader* ssr_p = nullptr;
+    Target sm_edges, sm_wh, sm_wv;          // SMAA: edges, blend weights of the two axes
+    FGLTexture sm_area = 0;                 // the area texture (post_stack.h smaa_area), made on first use
+    FGLShader* sm_edge_p = nullptr;
+    FGLShader* sm_mask_p = nullptr;
+    FGLShader* sm_w_p[2] = {};
+    FGLShader* sm_blend_p = nullptr;
+    Target taa_hist[2], tdepth;             // TAA: the resolved image of the last two frames (output size), full size linear depth
+    int taa_cur = 0;                        // which of taa_hist holds the latest resolve
+    bool taa_valid = false;                 // taa_hist[taa_cur] is a real previous frame
+    Mat4 taa_prev_vp;                       // the unjittered view-projection that frame had
+    FGLShader* taa_p = nullptr;
+    int iw = 0, ih = 0;                     // the size the scene is drawn at (the context's unless TAA upscales)
+    Mat4 cur_proj;                          // the projection of the lit pass: jittered with TAA
     CascadeState cstate[kMaxCascades];
     FGLShader* white_p = nullptr;           // fills a tile with white (the far end of the packed depth)
     Target atlas;
@@ -527,6 +548,7 @@ struct GpuTier::Impl {
     }
 
     static float floorf_(float x) { return (float)(int)(x < 0 ? x - 0.999999f : x); }
+    static float fmodf_(float x, float m) { return x - floorf_(x / m) * m; }
 
     // ---- lit shaders
 
@@ -836,23 +858,30 @@ struct GpuTier::Impl {
     // and are rejected where a depth was written. Depth is ndc z * 0.5 + 0.5.
     static constexpr float kMaskZ = -0.4f;       // depth 0.3
 
-    bool ao_passes(const RenderScene& s, const PassHost& host, const GraphicsSettings& gs) {
-        int w = gl->desc.width, h = gl->desc.height;
+    // The half resolution G-buffer (linear depth, view normals, and with SSR the roughness / metal), then the AO:
+    // SSAO (12 taps) or GTAO (2 slices x 6 steps, accumulated over frames while nothing moves), blurred twice.
+    bool ao_passes(const RenderScene& s, const PassHost& host, const GraphicsSettings& gs, bool want_ao, bool gtao, bool want_ssr) {
+        int w = iw, h = ih;
         int hw = (w + 1) / 2, hh = (h + 1) / 2;
-        if (!ensure(gdepth, hw, hh, true) || !ensure(gnormal, hw, hh, false) || !ensure(ao_a, hw, hh, false) ||
-            !ensure(ao_b, hw, hh, false)) return false;
+        if (!ensure(gdepth, hw, hh, true) || !ensure(gnormal, hw, hh, false)) return false;
+        if (want_ao && (!ensure(ao_a, hw, hh, false) || !ensure(ao_b, hw, hh, false))) return false;
+        if (want_ssr && !ensure(gmat, hw, hh, false)) return false;
+        bool hist_fresh = false;
+        if (want_ao && gtao && (!ensure(ao_c, hw, hh, false) || !ensure(ao_hist, hw, hh, false, &hist_fresh))) return false;
         if (!make_tri()) return false;
         Cam c = read_camera(s.camera);
         float far_m = fminf_(c.f, 1000.0f);
         bool failed = false;
 
-        // linear depth, then view space normals, of all items at half resolution
+        // linear depth, then view space normals (and materials), of all items at half resolution
         double t0 = now_ms();
         if (!make(&depth_p, shaders::hq_depth_vertex, shaders::hq_depth_fragment, "depth")) return false;
         if (!make(&normal_p, shaders::hq_normal_vertex, shaders::hq_normal_fragment, "normal")) return false;
-        for (int pass = 0; pass < 2 && !failed; pass++) {
-            FGLShader* sh = pass == 0 ? depth_p : normal_p;
-            set_target(pass == 0 ? gdepth.color : gnormal.color, gdepth.depth);
+        if (want_ssr && !make(&material_p, shaders::hq_material_vertex, shaders::hq_material_fragment, "material")) return false;
+        const int passes = want_ssr ? 3 : 2;
+        for (int pass = 0; pass < passes && !failed; pass++) {
+            FGLShader* sh = pass == 0 ? depth_p : (pass == 1 ? normal_p : material_p);
+            set_target(pass == 0 ? gdepth.color : (pass == 1 ? gnormal.color : gmat.color), gdepth.depth);
             fglClearColor(gl, 1, 1, 1);
             fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
             fglSetProjection(gl, to_fgl(s.camera.proj));
@@ -860,16 +889,27 @@ struct GpuTier::Impl {
             fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
             if (pass == 0) u4(sh, "u_pp", 1.0f / far_m, 0, 0, 0);
             fglUseShader(gl, sh);
-            for (int i = 0; i < s.item_count && !failed; i++) host.draw_mesh(host.user, s.items[i], false, &failed);
+            for (int i = 0; i < s.item_count && !failed; i++) {
+                if (pass == 2) u4(sh, "u_mm", fclamp(s.items[i].roughness, 0.0f, 1.0f), fclamp(s.items[i].metallic, 0.0f, 1.0f), 0, 0);
+                host.draw_mesh(host.user, s.items[i], false, &failed);
+            }
         }
         if (!end_pass(t0, &stats.depth_ms) || failed) return false;
+        if (!want_ao) return true;
 
-        // ssao: the sky is masked out; its pixels stay white (no occlusion)
+        // ao: the sky is masked out; its pixels stay white (no occlusion)
         t0 = now_ms();
         if (!make(&skymask_p, shaders::pp_vertex, shaders::pp_skymask_fragment, "sky mask")) return false;
-        if (!make(&ssao_p, shaders::pp_vertex, shaders::pp_ssao_fragment, "ssao")) return false;
+        if (gtao) {
+            if (!make(&gtao_p, shaders::pp_vertex, shaders::pp_gtao_fragment, "gtao")) return false;
+            if (!make(&ao_accum_p, shaders::pp_vertex, shaders::pp_ao_accum_fragment, "ao accumulate")) return false;
+            if (!make(&copy_p, shaders::pp_vertex, shaders::pp_copy_fragment, "copy")) return false;
+        } else if (!make(&ssao_p, shaders::pp_vertex, shaders::pp_ssao_fragment, "ssao")) {
+            return false;
+        }
         float px = 1.0f / (float)hw, py = 1.0f / (float)hh;
-        set_target(ao_a.color, gdepth.depth);
+        const Target& first_dst = gtao ? ao_c : ao_a;
+        set_target(first_dst.color, gdepth.depth);
         fglClearColor(gl, 1, 1, 1);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
         fglEnable(gl, FGL_DEPTH_TEST);
@@ -878,14 +918,48 @@ struct GpuTier::Impl {
         u4(skymask_p, "u_z", kMaskZ, 0, 0, 0);
         bind_tex(skymask_p, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
         fs_draw(skymask_p);
-        u4(ssao_p, "u_p", px, py, px, py);
-        u4(ssao_p, "u_ao", fclamp(gs.ao_radius, 0.05f, 5.0f), fclamp(gs.ao_strength, 0.0f, 2.0f),
+        FGLShader* ao_sh = gtao ? gtao_p : ssao_p;
+        u4(ao_sh, "u_p", px, py, px, py);
+        u4(ao_sh, "u_ao", fclamp(gs.ao_radius, 0.05f, 5.0f), fclamp(gs.ao_strength, 0.0f, 2.0f),
            c.ortho ? 1.0f : 0.0f, far_m);
-        u4(ssao_p, "u_proj", c.tx, c.ty, 0, 0);
-        u4(ssao_p, "u_z", 0, 0, 0, 0);
-        bind_tex(ssao_p, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
-        bind_tex(ssao_p, "u_normal", gnormal, FGL_TEXTURE_CLAMP);
-        fs_draw(ssao_p);
+        u4(ao_sh, "u_proj", c.tx, c.ty, 0, 0);
+        u4(ao_sh, "u_z", 0, 0, 0, 0);
+        // the slice rotation moves every frame (golden ratio steps), so the accumulated frames see different slices
+        if (gtao) u4(ao_sh, "u_gt", fmodf_(0.381966f * (float)(frame % 64), 1.0f), 0, 0, 0);
+        bind_tex(ao_sh, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
+        bind_tex(ao_sh, "u_normal", gnormal, FGL_TEXTURE_CLAMP);
+        fs_draw(ao_sh);
+        float zb0 = -0.2f, zb1 = -0.3f;                  // the blurs' depths, each nearer than the pass before
+        if (gtao) {
+            // temporal accumulation while the camera and the items stand still, else the current frame alone
+            uint64_t sh = 1469598103934665603ull;
+            sh = fnv(sh, s.camera.view.m, sizeof s.camera.view.m);
+            sh = fnv(sh, s.camera.proj.m, sizeof s.camera.proj.m);
+            for (int i = 0; i < s.item_count; i++) sh = fnv(sh, s.items[i].model.m, sizeof s.items[i].model.m);
+            bool still = !hist_fresh && sh == ao_scene_hash;
+            ao_scene_hash = sh;
+            set_target(ao_a.color, gdepth.depth);
+            fglClearColor(gl, 1, 1, 1);
+            fglClear(gl, FGL_COLOR_BUFFER_BIT);
+            fglEnable(gl, FGL_DEPTH_TEST);
+            fglDisable(gl, FGL_CULL_FACE);
+            u4(ao_accum_p, "u_p", px, py, 0, 0);
+            u4(ao_accum_p, "u_q", still ? 0.2f : 1.0f, 0, 0, 0);
+            u4(ao_accum_p, "u_z", -0.2f, 0, 0, 0);
+            bind_tex(ao_accum_p, "u_cur", ao_c, FGL_TEXTURE_CLAMP);
+            bind_tex(ao_accum_p, "u_hist", ao_hist, FGL_TEXTURE_CLAMP);
+            fs_draw(ao_accum_p);
+            set_target(ao_hist.color, gdepth.depth);
+            fglClearColor(gl, 1, 1, 1);
+            fglClear(gl, FGL_COLOR_BUFFER_BIT);
+            fglEnable(gl, FGL_DEPTH_TEST);
+            fglDisable(gl, FGL_CULL_FACE);
+            u4(copy_p, "u_p", px, py, 0, 0);
+            u4(copy_p, "u_z", -0.25f, 0, 0, 0);
+            bind_tex(copy_p, "u_src", ao_a, FGL_TEXTURE_CLAMP);
+            fs_draw(copy_p);
+            zb0 = -0.36f; zb1 = -0.38f;
+        }
         if (!end_pass(t0, &stats.ssao_ms)) return false;
 
         // blur: ao_a -> ao_b -> ao_a, over the same mask (each pass a little nearer)
@@ -904,11 +978,49 @@ struct GpuTier::Impl {
             u4(blur_p, "u_p", px, py, px, py);
             u4(blur_p, "u_dir", pass == 0 ? px : 0.0f, pass == 0 ? 0.0f : py, 0, 0);
             u4(blur_p, "u_q", far_m, 0, 0, 0);
-            u4(blur_p, "u_z", pass == 0 ? -0.2f : -0.3f, 0, 0, 0);
+            u4(blur_p, "u_z", pass == 0 ? zb0 : zb1, 0, 0, 0);
             bind_tex(blur_p, "u_src", src, FGL_TEXTURE_CLAMP);
             fs_draw(blur_p);
         }
         return end_pass(t0, &stats.blur_ms);
+    }
+
+    // Screen space reflections, half resolution: the pixels that get one (smooth enough geometry) are picked by
+    // a depth mask, the ray march adds the scene colour found at the hit. The result is read by the composite pass.
+    bool ssr_pass(const RenderScene& s, const Target& scene_t, const GraphicsSettings& gs) {
+        (void)gs;
+        int hw = gdepth.w, hh = gdepth.h;
+        if (!ensure(ssr_t, hw, hh, false)) return false;
+        double t0 = now_ms();
+        if (!make(&ssrmask_p, shaders::pp_vertex, shaders::pp_ssrmask_fragment, "ssr mask")) return false;
+        if (!make(&ssr_p, shaders::pp_vertex, shaders::pp_ssr_fragment, "ssr")) return false;
+        Cam c = read_camera(s.camera);
+        float far_m = fminf_(c.f, 1000.0f);
+        float px = 1.0f / (float)hw, py = 1.0f / (float)hh;
+        const float cutoff = 0.55f;
+        set_target(ssr_t.color, gdepth.depth);
+        fglClearColor(gl, 0, 0, 0);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglEnable(gl, FGL_DEPTH_TEST);
+        fglDisable(gl, FGL_CULL_FACE);
+        u4(ssrmask_p, "u_p", px, py, 0, 0);
+        u4(ssrmask_p, "u_q", cutoff, 0, 0, 0);
+        u4(ssrmask_p, "u_z", kMaskZ, 0, 0, 0);
+        bind_tex(ssrmask_p, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
+        bind_tex(ssrmask_p, "u_mat", gmat, FGL_TEXTURE_CLAMP);
+        fs_draw(ssrmask_p);
+        u4(ssr_p, "u_p", px, py, 0, 0);
+        u4(ssr_p, "u_ao", c.ortho ? 1.0f : 0.0f, far_m, (float)(frame % 8) * 0.125f, 0);
+        u4(ssr_p, "u_proj", c.tx, c.ty, 0, 0);
+        u4(ssr_p, "u_q", 10.0f, 0.4f, cutoff, 0);
+        u4(ssr_p, "u_z", 0, 0, 0, 0);
+        bind_tex(ssr_p, "u_depth", gdepth, FGL_TEXTURE_CLAMP);
+        bind_tex(ssr_p, "u_normal", gnormal, FGL_TEXTURE_CLAMP);
+        bind_tex(ssr_p, "u_mat", gmat, FGL_TEXTURE_CLAMP);
+        bind_tex(ssr_p, "u_scene", scene_t, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        fs_draw(ssr_p);
+        if (!end_pass(t0, &stats.ssr_ms)) return false;
+        return true;
     }
 
     static void set_sky_uniforms(FGLShader* sky, const RenderScene& scene, const PackedLights& ls) {
@@ -940,7 +1052,7 @@ struct GpuTier::Impl {
 
     bool lit_pass(const RenderScene& s, const PackedLights& ls, const GpuPlan& plan, const PassHost& host,
                   const GraphicsSettings& gs, const CascadeSet& cs, int shadow_light, const Target& dst, bool hdr) {
-        int w = gl->desc.width, h = gl->desc.height;
+        int w = iw, h = ih;
         bool any_lit = false;
         for (int i = 0; i < s.item_count; i++) if (!s.items[i].unlit) { any_lit = true; break; }
         bool use_shadow = cs.any();
@@ -1002,7 +1114,7 @@ struct GpuTier::Impl {
             }
         }
 
-        set_target(dst.color, main_depth);
+        set_target(dst.color, dst.depth ? dst.depth : main_depth);
         if (lit) {
             if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
             if (use_ao) bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
@@ -1011,7 +1123,7 @@ struct GpuTier::Impl {
         }
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
-        fglSetProjection(gl, to_fgl(s.camera.proj));
+        fglSetProjection(gl, to_fgl(cur_proj));
         fglSetView(gl, to_fgl(s.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         bool failed = false;
@@ -1088,16 +1200,16 @@ struct GpuTier::Impl {
         return end_pass(t0, &stats.bloom_ms);
     }
 
-    bool composite(const RenderScene& s, const Target& scene_t, bool with_bloom, FGLSurface dst_color) {
+    bool composite(const RenderScene& s, const Target& scene_t, bool with_bloom, bool with_ssr, FGLSurface dst_color) {
         int w = gl->desc.width, h = gl->desc.height;
         double t0 = now_ms();
         bool ca = pf->chromatic > 0.001f;
-        int ci = (ca ? 2 : 0) + (with_bloom ? 1 : 0);
+        int ci = (with_ssr ? 4 : 0) + (ca ? 2 : 0) + (with_bloom ? 1 : 0);
         FGLShader** slot = &comp_p[ci];
         bool b = with_bloom;
         shaders::PostKey pk = pf->key;
         if (!make_keyed(slot, &comp_key[ci], shaders::pp_vertex,
-                        [b, pk, ca](char* o, size_t c) { shaders::pp_composite_fragment(o, c, b, pk, ca); }, "composite"))
+                        [b, pk, ca, with_ssr](char* o, size_t c) { shaders::pp_composite_fragment(o, c, b, pk, ca, with_ssr); }, "composite"))
             return false;
         FGLShader* sh = *slot;
         set_target(dst_color, 0);
@@ -1106,12 +1218,146 @@ struct GpuTier::Impl {
         u4(sh, "u_p", 1.0f / (float)w, 1.0f / (float)h, 0, 0);
         bind_tex(sh, "u_scene", scene_t, ca ? (FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP) : FGL_TEXTURE_CLAMP);
         if (ca) u4(sh, "u_ca", pf->chromatic * 0.012f, 0, 0, 0);
+        if (with_ssr) bind_tex(sh, "u_ssr", ssr_t, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         if (with_bloom) {
             u4(sh, "u_q", fclamp(s.post.bloom, 0.0f, 1.0f) * 0.3f, 0, 0, 0);
             bind_tex(sh, "u_bloom", bl_up[0], FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         }
         fs_draw(sh);
         return end_pass(t0, &stats.composite_ms);
+    }
+
+    // The projection with a sub-pixel jitter (pixels of the internal image): ndc moves by 2 j / size.
+    static Mat4 jittered(const Mat4& p, float jx, float jy, int w, int h) {
+        Mat4 r = p;
+        float dx = 2.0f * jx / (float)w, dy = 2.0f * jy / (float)h;
+        bool ortho = p.m[15] == 1.0f && p.m[11] == 0.0f;
+        if (ortho) { r.m[12] += dx; r.m[13] += dy; }
+        else { r.m[8] -= dx; r.m[9] -= dy; }
+        return r;
+    }
+
+    // TAA: depth at the jittered camera, then the resolve into the other history target (output size). Returns
+    // the resolved image in *out.
+    bool taa_pass(const RenderScene& s, const PassHost& host, const Target& scene_t, float jx, float jy, const Target** out) {
+        int ow = gl->desc.width, oh = gl->desc.height;
+        double t0 = now_ms();
+        bool fresh = false;
+        if (!ensure(taa_hist[0], ow, oh, false, &fresh) || !ensure(taa_hist[1], ow, oh, false, &fresh)) return false;
+        if (!ensure(tdepth, iw, ih, true)) return false;
+        if (fresh) taa_valid = false;
+        if (!make(&depth_p, shaders::hq_depth_vertex, shaders::hq_depth_fragment, "depth")) return false;
+        if (!make(&taa_p, shaders::pp_vertex, shaders::pp_taa_fragment, "taa")) return false;
+        Cam c = read_camera(s.camera);
+        float far_m = fminf_(c.f, 1000.0f);
+        bool failed = false;
+        set_target(tdepth.color, tdepth.depth);
+        fglClearColor(gl, 1, 1, 1);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglSetProjection(gl, to_fgl(cur_proj));
+        fglSetView(gl, to_fgl(s.camera.view));
+        fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(depth_p, "u_pp", 1.0f / far_m, 0, 0, 0);
+        fglUseShader(gl, depth_p);
+        for (int i = 0; i < s.item_count && !failed; i++) host.draw_mesh(host.user, s.items[i], false, &failed);
+        if (failed) return false;
+        // reprojection: previous view-projection * inverse(current), both unjittered
+        Mat4 vp = s.camera.proj * s.camera.view, inv, rep = Mat4::identity();
+        bool ok = mat4_inverse(vp, &inv);
+        if (ok) rep = taa_prev_vp * inv;
+        int dst = 1 - taa_cur;
+        set_target(taa_hist[dst].color, 0);
+        fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(taa_p, "u_p", 1.0f / (float)ow, 1.0f / (float)oh, 1.0f / (float)iw, 1.0f / (float)ih);
+        u4(taa_p, "u_j", jx / (float)iw, -jy / (float)ih, far_m, 0.1f);
+        const Mat4& pj = s.camera.proj;
+        u4(taa_p, "u_zp", -pj.m[10], pj.m[14], c.ortho ? 1.0f : 0.0f, (taa_valid && ok) ? 1.0f : 0.0f);
+        u4(taa_p, "u_zq", pj.m[10], pj.m[14], 0, 0);
+        u4(taa_p, "u_r0", rep.m[0], rep.m[1], rep.m[2], rep.m[3]);
+        u4(taa_p, "u_r1", rep.m[4], rep.m[5], rep.m[6], rep.m[7]);
+        u4(taa_p, "u_r2", rep.m[8], rep.m[9], rep.m[10], rep.m[11]);
+        u4(taa_p, "u_r3", rep.m[12], rep.m[13], rep.m[14], rep.m[15]);
+        u4(taa_p, "u_z", 0, 0, 0, 0);
+        bind_tex(taa_p, "u_curl", scene_t, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_curn", scene_t, FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_depth", tdepth, FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_hist", taa_hist[taa_cur], FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        fs_draw(taa_p);
+        if (!end_pass(t0, &stats.taa_ms)) return false;
+        taa_cur = dst;
+        taa_valid = true;
+        taa_prev_vp = vp;
+        *out = &taa_hist[taa_cur];
+        return true;
+    }
+
+    // SMAA 1x style (shaders_hq.cpp): edges, then blend weights from the area texture over the edge pixels only,
+    // then the neighbourhood blend over a copy of the image.
+    bool smaa(const Target& src) {
+        int w = gl->desc.width, h = gl->desc.height;
+        double t0 = now_ms();
+        if (!ensure(sm_edges, w, h, false) || !ensure(sm_wh, w, h, false) || !ensure(sm_wv, w, h, false)) return false;
+        if (!sm_area) {
+            uint32_t px[kSmaaAreaSize * kSmaaAreaSize];
+            smaa_area_texture(px);
+            sm_area = fglCreateTexture(gl, kSmaaAreaSize, kSmaaAreaSize, px);
+            if (!sm_area) return fail("FarcadeGL: cannot create the SMAA area texture");
+        }
+        if (!make(&sm_edge_p, shaders::pp_vertex, shaders::pp_smaa_edge_fragment, "smaa edges")) return false;
+        if (!make(&sm_mask_p, shaders::pp_vertex, shaders::pp_smaa_mask_fragment, "smaa mask")) return false;
+        for (int v = 0; v < 2; v++)
+            if (!make(&sm_w_p[v], shaders::pp_vertex, [v](char* o, size_t c) { shaders::pp_smaa_weights_fragment(o, c, v != 0); }, "smaa weights")) return false;
+        if (!make(&sm_blend_p, shaders::pp_vertex, shaders::pp_smaa_blend_fragment, "smaa blend")) return false;
+        if (!make(&copy_p, shaders::pp_vertex, shaders::pp_copy_fragment, "copy")) return false;
+        float px = 1.0f / (float)w, py = 1.0f / (float)h;
+        // 1. edges (nearest taps of the LDR image); pixels without an edge stay black
+        set_target(sm_edges.color, 0);
+        fglClearColor(gl, 0, 0, 0);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT);
+        fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(sm_edge_p, "u_p", px, py, 0, 0);
+        u4(sm_edge_p, "u_z", 0, 0, 0, 0);
+        bind_tex(sm_edge_p, "u_src", src, FGL_TEXTURE_CLAMP);
+        fs_draw(sm_edge_p);
+        // 2. the weights, only where there is an edge: a mask first (it takes a depth where there is none)
+        set_target(sm_wh.color, main_depth);
+        fglClearColor(gl, 0, 0, 0);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglEnable(gl, FGL_DEPTH_TEST);
+        fglDisable(gl, FGL_CULL_FACE);
+        u4(sm_mask_p, "u_p", px, py, 0, 0);
+        u4(sm_mask_p, "u_z", kMaskZ, 0, 0, 0);
+        bind_tex(sm_mask_p, "u_edges", sm_edges, FGL_TEXTURE_CLAMP);
+        fs_draw(sm_mask_p);
+        for (int v = 0; v < 2; v++) {
+            if (v == 1) {
+                set_target(sm_wv.color, main_depth);
+                fglClearColor(gl, 0, 0, 0);
+                fglClear(gl, FGL_COLOR_BUFFER_BIT);
+                fglEnable(gl, FGL_DEPTH_TEST);
+                fglDisable(gl, FGL_CULL_FACE);
+            }
+            u4(sm_w_p[v], "u_p", px, py, 0, 0);
+            u4(sm_w_p[v], "u_z", v == 0 ? 0.0f : -0.1f, 0, 0, 0);
+            bind_tex(sm_w_p[v], "u_edges", sm_edges, FGL_TEXTURE_CLAMP);
+            fglUniformTexture(gl, sm_w_p[v], fglUniformLocation(sm_w_p[v], "u_area"), sm_area, FGL_TEXTURE_CLAMP);
+            fs_draw(sm_w_p[v]);
+        }
+        // 3. a copy of the image, then the blend over the edge pixels
+        set_target(main_color, main_depth);
+        fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(copy_p, "u_p", px, py, 0, 0);
+        u4(copy_p, "u_z", 0, 0, 0, 0);
+        bind_tex(copy_p, "u_src", src, FGL_TEXTURE_CLAMP);
+        fs_draw(copy_p);
+        fglEnable(gl, FGL_DEPTH_TEST);
+        u4(sm_blend_p, "u_p", px, py, 0, 0);
+        u4(sm_blend_p, "u_z", -0.3f, 0, 0, 0);
+        bind_tex(sm_blend_p, "u_src", src, FGL_TEXTURE_CLAMP);
+        bind_tex(sm_blend_p, "u_wh", sm_wh, FGL_TEXTURE_CLAMP);
+        bind_tex(sm_blend_p, "u_wv", sm_wv, FGL_TEXTURE_CLAMP);
+        fs_draw(sm_blend_p);
+        return end_pass(t0, &stats.smaa_ms);
     }
 
     // FXAA in two draws over one depth mask (see kMaskZ): the first copies the pixels
@@ -1149,6 +1395,8 @@ struct GpuTier::Impl {
         main_color = gl->color;
         main_depth = gl->depth;
         int w = gl->desc.width, h = gl->desc.height;
+        iw = host.iw > 0 ? host.iw : w;
+        ih = host.ih > 0 ? host.ih : h;
         bool ok = run(s, ls, gs, plan, host, w, h);
         // leave the context on its own surfaces whatever happened
         restore_main();
@@ -1199,26 +1447,41 @@ struct GpuTier::Impl {
         stats.atlas_reused = false;
         stats.local_shadow_ms = 0;
         if (ls.nps + ls.nss > 0 && !atlas_pass(s, ls, host, gs, plan.hw)) return false;
-        if (plan.ao && !ao_passes(s, host, gs)) return false;
+        if ((plan.ao || plan.ssr) && !ao_passes(s, host, gs, plan.ao, plan.gtao, plan.ssr)) return false;
 
         // the scene
-        bool bloom = plan.bloom, aa = plan.aa;
-        if (bloom || aa) {
-            if (!ensure(scene, w, h, false)) return false;
-            if (bloom && aa && !ensure(ldr, w, h, false)) return false;
+        bool bloom = plan.bloom, aa = plan.aa, ssr = plan.ssr;
+        const bool taa = aa && plan.aa_mode == AAMode::TAA;
+        const bool fx = aa && !taa;                  // FXAA or SMAA after the composite
+        const bool hdr = bloom || ssr || taa;        // the lit pass writes HDR encoded values, the composite pass finishes
+        cur_proj = s.camera.proj;
+        if (!taa) taa_valid = false;                 // the history is only good for consecutive TAA frames
+        float jx = 0, jy = 0;
+        if (taa) {
+            taa_jitter((uint32_t)frame, &jx, &jy);
+            cur_proj = jittered(s.camera.proj, jx, jy, iw, ih);
+        }
+        if (hdr || aa) {
+            // the scene is drawn at the internal size (with its own depth when that is not the context's)
+            if (!ensure(scene, iw, ih, iw != w || ih != h)) return false;
+            if (hdr && fx && !ensure(ldr, w, h, false)) return false;
         }
         Target main_t;
         main_t.color = main_color;
         main_t.w = w;
         main_t.h = h;
-        if (!lit_pass(s, ls, plan, host, gs, cs, shadow_light, (bloom || aa) ? scene : main_t, bloom)) return false;
+        if (!lit_pass(s, ls, plan, host, gs, cs, shadow_light, (hdr || aa) ? scene : main_t, hdr)) return false;
 
-        if (bloom) {
-            if (!bloom_passes(s, s.post, scene, gs.bloom_mode == BloomMode::Chain)) return false;
-            if (!composite(s, scene, true, aa ? ldr.color : main_color)) return false;
+        if (ssr && !ssr_pass(s, scene, gs)) return false;
+        const Target* resolved = &scene;
+        if (taa && !taa_pass(s, host, scene, jx, jy, &resolved)) return false;
+        if (hdr) {
+            if (bloom && !bloom_passes(s, s.post, *resolved, gs.bloom_mode == BloomMode::Chain)) return false;
+            if (!composite(s, *resolved, bloom, ssr, fx ? ldr.color : main_color)) return false;
         }
-        if (aa) {
-            if (!fxaa(bloom ? ldr : scene)) return false;
+        if (fx) {
+            const Target& src = hdr ? ldr : scene;
+            if (plan.aa_mode == AAMode::SMAA ? !smaa(src) : !fxaa(src)) return false;
         }
         return true;
     }
@@ -1227,10 +1490,19 @@ struct GpuTier::Impl {
         if (!gl) return;
         drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); for (FGLShader*& b : bright_p) drop(&b); for (FGLShader*& d : down_p) drop(&d);
         drop(&up_p); for (FGLShader*& c : comp_p) drop(&c); drop(&fxaa_p);
+        drop(&taa_p);
+        free_target(taa_hist[0]); free_target(taa_hist[1]); free_target(tdepth);
+        taa_valid = false;
+        drop(&sm_edge_p); drop(&sm_mask_p); drop(&sm_w_p[0]); drop(&sm_w_p[1]); drop(&sm_blend_p);
+        if (sm_area) fglDestroyTexture(gl, sm_area);
+        sm_area = 0;
+        free_target(sm_edges); free_target(sm_wh); free_target(sm_wv);
+        drop(&gtao_p); drop(&ao_accum_p); drop(&copy_p); drop(&material_p); drop(&ssrmask_p); drop(&ssr_p);
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
         for (LitProg& v : lit_p) { drop(&v.sh); v = LitProg(); }
         free_target(shadow); free_target(atlas); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
+        free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t);
         free_target(scene); free_target(ldr);
         for (Target& t : bl_down) free_target(t);
         for (Target& t : bl_up) free_target(t);
@@ -1239,6 +1511,7 @@ struct GpuTier::Impl {
         tri = 0;
         frame_data = 0;
         for (CascadeState& st : cstate) st = CascadeState();
+        ao_scene_hash = 0;
         atlas_hash = 0;
         gl = nullptr;
     }
@@ -1264,6 +1537,9 @@ GpuPlan GpuTier::plan(const RenderScene& scene, const GraphicsFeatures& f) {
     p.ao = f.ambient_occlusion && scene.item_count > 0;
     p.bloom = f.bloom && scene.post.bloom > 0.0f;
     p.aa = f.antialiasing;
+    p.aa_mode = f.aa_mode;
+    p.gtao = f.ambient_occlusion && f.ao_mode == AOMode::GTAO;
+    p.ssr = f.ssr && scene.item_count > 0;
     p.pbr = f.pbr;
     p.fog = scene.sky.fog > 0.0005f;
     p.hw = f.gpu;

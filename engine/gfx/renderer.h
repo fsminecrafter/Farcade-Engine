@@ -110,6 +110,7 @@ struct RendererStats {
     // the exposure that was applied (manual + automatic, EV) and what the
     // meter saw (log2 of the scene's average luminance, auto exposure on).
     float render_scale = 1.0f;
+    bool taa_upscale = false;               // TAA drew at the internal size and resolved to the full size
     int internal_width = 0, internal_height = 0;
     float exposure_ev = 0, meter_log2 = 0;
     double gi_ms = 0;                       // the probe GI's CPU update (gi.h)
@@ -120,13 +121,14 @@ struct RendererStats {
 struct GpuTierStats {
     double shadow_ms = 0, depth_ms = 0, ssao_ms = 0, blur_ms = 0, lit_ms = 0, bloom_ms = 0, composite_ms = 0, fxaa_ms = 0;
     double local_shadow_ms = 0;             // the point / spot shadow atlas
+    double ssr_ms = 0, taa_ms = 0, smaa_ms = 0;
     int passes = 0;                         // render passes of the frame
     bool shadow_reused = false;             // every sun cascade of the last frame was still valid
     int cascades = 0, cascades_drawn = 0, cascades_reused = 0;   // the sun's cascades and what the frame did with them
     float cascade_texel[3] = {};            // meters per shadow texel of each cascade
     int local_shadows = 0;                  // point / spot lights that got an atlas shadow
     bool atlas_reused = false;              // the atlas of the last frame was still valid
-    double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms + local_shadow_ms; }
+    double total_ms() const { return shadow_ms + depth_ms + ssao_ms + blur_ms + lit_ms + bloom_ms + composite_ms + fxaa_ms + local_shadow_ms + ssr_ms + taa_ms + smaa_ms; }
 };
 
 class Renderer {

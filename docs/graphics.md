@@ -150,8 +150,8 @@ before. Names and allowed values:
 | `shadows` | off, single (one map), cascades; `shadow_cascades` 2 or 3 (with cascades) |
 | `shadow_resolution` | 512, 1024, 2048, 4096; `shadow_distance` 1 to 2000 m; `soft_shadows`, `cascade_cache` bool |
 | `local_shadows` | bool; `local_shadow_lights` 1 to 4; `local_shadow_resolution` 512 to 4096 |
-| `ao` | off, ssao; `ao_radius` 0.05 to 5; `ao_strength` 0 to 2 |
-| `aa` | off, fxaa |
+| `ao` | off, ssao, gtao; `ao_radius` 0.05 to 5; `ao_strength` 0 to 2; `ssr` off, on |
+| `aa` | off, fxaa, smaa, taa |
 | `bloom` | off, simple (4 levels, the first version), chain (5 levels, radius) |
 | `pbr` | bool (GGX, else Blinn-Phong) |
 | `allow_gpu_effects_on_cpu` | bool (run the GPU tier on the CPU backend, slow) |
@@ -209,6 +209,45 @@ once (the first frame), then about 1 to 2.5 ms a frame (the update-rate setting 
 linear taps a pixel: the demo at 800 x 530 on the CPU backend goes from 175 to 278 ms in the base tier. That is why
 it is a choice and off at Low. Screenshots: `gfx-gi-hemisphere.png`, `gfx-gi-probes.png` (`fe-gfx-shot --gi probes`).
 Not done: toroidal voxel scrolling, probe specular / the sky atlas, shadows from local lights in the voxels.
+
+## Anti-aliasing, ambient occlusion and reflections: the choices
+
+Each technique is a choice next to the older one (Settings > Graphics, `graphics_settings.h`, text, Lua):
+`aa` = off | fxaa | smaa | taa, `ao` = off | ssao | gtao, `ssr` = off | on. Low and Medium keep FXAA / SSAO / no SSR
+(Low is bit-identical to before: the base tier smoke checksum `214c411e` and the demo PNG md5 did not change); High
+takes SMAA, Ultra TAA + GTAO + SSR. All three are GPU tier passes (on the CPU backend they only run when the GPU tier is forced);
+`features().ssr` and `aa_mode` / `ao_mode` say what runs. FXAA stays selectable after SMAA and TAA exist.
+
+| Pass | What it does | Measured on the host (800 x 530, High, forced GPU tier) |
+|---|---|---|
+| FXAA | one cheap pass over edge pixels | 44 ms |
+| SMAA | luma edges (threshold 0.1, contrast adaptation), blend weights from an area texture, neighbourhood blend over the edge pixels only | 80 ms |
+| TAA | jittered camera (Halton 2,3, 8 frames), full size linear depth, resolve with reprojection + 3x3 neighbourhood clamp | 104 ms (with its depth pass) |
+| SSAO | 12 taps | 21 ms |
+| GTAO | half resolution, 2 slices x 3 steps per side, horizon integral; accumulated over frames while the camera and items stand still; then the same two blurs | 30 ms |
+| SSR | half resolution, 12 step view space march, roughness cutoff 0.55, Fresnel / smoothness weight | 10 ms (+ a material pass of about 2 ms) |
+
+**SMAA** is SMAA 1x in structure (edges, weights, blend) but not the reference tables: the area texture (32 x 32,
+`smaa_area_texture`, generated at startup, post_stack.h) comes from a small analytic model (the contour as a line between
+the end heights of the edge run; orthogonal patterns only, no diagonal or corner patterns), and the search is done by
+the shader with up to 8 nearest taps per side (no search texture, so the weights shader takes more than 16 samples and
+the host JIT runs it as an interpreter, but only on edge pixels because the others are skipped with a depth mask). The weights go into two
+targets (one per axis) because the targets have no alpha. Four texture units are enough (weights: edges + area).
+
+**TAA** resolves in the HDR encoded space (before bloom and tonemap). The reprojection comes from the depth and the previous
+view-projection only: **no motion vectors**, so moving objects are left to the neighbourhood clamp (a little ghosting, history
+blend 0.1 rising to 0.6 where the history disagrees) and per-object previous transforms are not used. The history is dropped when the
+size changes, the mode changes, or the pixel was off screen last frame. **TAA drives the upscale**: with `render_scale` < 1 the
+lit pass, depth, AO and SSR run at the internal size, the resolve reads the jittered internal image (bilinear for the colour,
+nearest 3x3 for the clamp) and writes the full size image, so there is no CPU upscale (`RendererStats::taa_upscale`). Test: at 0.6 it is closer to
+the converged full size TAA picture than a plain bilinear upscale.
+
+**GTAO / SSR notes.** GTAO needs the normal and depth G-buffer of the AO pass; SSR adds a roughness / metal G-buffer pass (a third
+geometry pass at half size, only with SSR on). SSR adds the reflected scene colour in the composite pass (it reflects what is on screen;
+anything that leaves the screen or the depth falls back to the existing hemisphere / probe specular, nothing is subtracted from it). The
+shaders had to be written around the 32 temporary registers (scalars packed into vec4s, one block per tap) and the host JIT limit of 16 texture samples:
+GTAO uses 14 samples, SSR 16 + 12 depth taps (it also runs as an interpreter, on the glossy pixels only).
+Screenshots: `gfx-smaa.png`, `gfx-taa.png`, `gfx-gtao.png`, `gfx-ssr.png` (`fe-gfx-shot --quality high --set aa=smaa --set ao=gtao --set ssr=on`).
 
 ## Cascaded sun shadows
 

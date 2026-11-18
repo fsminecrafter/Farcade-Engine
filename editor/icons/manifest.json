@@ -1,0 +1,445 @@
+[
+ {
+  "title": "Tools and gizmos",
+  "icons": [
+   {
+    "name": "pointer",
+    "meaning": "Select tool / arrow cursor"
+   },
+   {
+    "name": "move",
+    "meaning": "Move gizmo (four-way arrows)"
+   },
+   {
+    "name": "rotate",
+    "meaning": "Rotate gizmo (ring with arrow and pivot)"
+   },
+   {
+    "name": "scale",
+    "meaning": "Scale gizmo (box with diagonal arrow)"
+   },
+   {
+    "name": "world",
+    "meaning": "World space (globe)"
+   },
+   {
+    "name": "local",
+    "meaning": "Local space (tilted box with its own axes)"
+   },
+   {
+    "name": "magnet",
+    "meaning": "Magnet"
+   },
+   {
+    "name": "grid",
+    "meaning": "Grid"
+   },
+   {
+    "name": "snap",
+    "meaning": "Snapping (crosshair target)"
+   },
+   {
+    "name": "play",
+    "meaning": "Play the scene (solid)"
+   },
+   {
+    "name": "pause",
+    "meaning": "Pause"
+   },
+   {
+    "name": "stop",
+    "meaning": "Stop"
+   }
+  ]
+ },
+ {
+  "title": "Files",
+  "icons": [
+   {
+    "name": "folder",
+    "meaning": "Folder"
+   },
+   {
+    "name": "folder_open",
+    "meaning": "Open folder / open project"
+   },
+   {
+    "name": "file",
+    "meaning": "Generic file"
+   },
+   {
+    "name": "script",
+    "meaning": "Script file"
+   },
+   {
+    "name": "image",
+    "meaning": "Image file"
+   },
+   {
+    "name": "model",
+    "meaning": "3D model file (faceted mesh)"
+   },
+   {
+    "name": "audio_file",
+    "meaning": "Audio file"
+   },
+   {
+    "name": "scene_file",
+    "meaning": "Scene file"
+   },
+   {
+    "name": "shader_file",
+    "meaning": "Shader file"
+   },
+   {
+    "name": "save",
+    "meaning": "Save (floppy)"
+   },
+   {
+    "name": "export",
+    "meaning": "Export (arrow out of tray)"
+   },
+   {
+    "name": "import",
+    "meaning": "Import (arrow into tray)"
+   },
+   {
+    "name": "package",
+    "meaning": "Package / build bundle"
+   }
+  ]
+ },
+ {
+  "title": "3D objects",
+  "icons": [
+   {
+    "name": "cube",
+    "meaning": "Cube mesh"
+   },
+   {
+    "name": "sphere",
+    "meaning": "Sphere mesh"
+   },
+   {
+    "name": "cylinder",
+    "meaning": "Cylinder mesh"
+   },
+   {
+    "name": "plane",
+    "meaning": "Plane mesh (thin slab)"
+   },
+   {
+    "name": "collider",
+    "meaning": "Collider (wireframe box)"
+   },
+   {
+    "name": "body",
+    "meaning": "Rigid body (ball on ground)"
+   },
+   {
+    "name": "physics",
+    "meaning": "Physics (atom orbits)"
+   },
+   {
+    "name": "joint",
+    "meaning": "Joint (linked nodes)"
+   },
+   {
+    "name": "empty",
+    "meaning": "Empty object (pivot with dashed ring)"
+   },
+   {
+    "name": "sprite",
+    "meaning": "Billboard / sprite (ghost)"
+   },
+   {
+    "name": "text_t",
+    "meaning": "3D text"
+   },
+   {
+    "name": "material",
+    "meaning": "Material (glossy ball)"
+   }
+  ]
+ },
+ {
+  "title": "Scene objects and modules",
+  "icons": [
+   {
+    "name": "camera",
+    "meaning": "Camera"
+   },
+   {
+    "name": "bulb",
+    "meaning": "Light module"
+   },
+   {
+    "name": "light_point",
+    "meaning": "Point light"
+   },
+   {
+    "name": "light_spot",
+    "meaning": "Spot light"
+   },
+   {
+    "name": "light_directional",
+    "meaning": "Directional light"
+   },
+   {
+    "name": "sun",
+    "meaning": "Sky light / sun / quality"
+   },
+   {
+    "name": "cloud",
+    "meaning": "Sky"
+   },
+   {
+    "name": "wand",
+    "meaning": "Post process / effects"
+   },
+   {
+    "name": "sparks",
+    "meaning": "Particle effects / sparkles"
+   },
+   {
+    "name": "particles",
+    "meaning": "Particle emitter"
+   },
+   {
+    "name": "wind",
+    "meaning": "Force field"
+   },
+   {
+    "name": "spawn",
+    "meaning": "Spawner (pad with arrow)"
+   },
+   {
+    "name": "speaker",
+    "meaning": "Audio sampler / speaker"
+   },
+   {
+    "name": "wave",
+    "meaning": "Audio stream / waveform"
+   },
+   {
+    "name": "ear",
+    "meaning": "Audio listener"
+   },
+   {
+    "name": "reverb",
+    "meaning": "Reverb zone"
+   },
+   {
+    "name": "clip",
+    "meaning": "Animator clip (film strip)"
+   },
+   {
+    "name": "animation",
+    "meaning": "Animation (keyframes)"
+   },
+   {
+    "name": "layers",
+    "meaning": "Layers / scene (stacked sheets)"
+   },
+   {
+    "name": "monitor",
+    "meaning": "Device / display"
+   },
+   {
+    "name": "orthographic",
+    "meaning": "Orthographic projection"
+   },
+   {
+    "name": "perspective",
+    "meaning": "Perspective projection"
+   },
+   {
+    "name": "star",
+    "meaning": "Favorite / main object"
+   }
+  ]
+ },
+ {
+  "title": "Panels",
+  "icons": [
+   {
+    "name": "hierarchy",
+    "meaning": "Hierarchy panel"
+   },
+   {
+    "name": "inspector",
+    "meaning": "Inspector panel"
+   },
+   {
+    "name": "files",
+    "meaning": "Files panel"
+   },
+   {
+    "name": "console",
+    "meaning": "Console panel"
+   },
+   {
+    "name": "settings_sliders",
+    "meaning": "Settings / properties (sliders)"
+   },
+   {
+    "name": "palette",
+    "meaning": "Theme (palette)"
+   },
+   {
+    "name": "keyboard",
+    "meaning": "Keyboard shortcuts"
+   },
+   {
+    "name": "gear",
+    "meaning": "Settings (cog)"
+   }
+  ]
+ },
+ {
+  "title": "Actions",
+  "icons": [
+   {
+    "name": "plus",
+    "meaning": "Add"
+   },
+   {
+    "name": "minus",
+    "meaning": "Remove / collapse"
+   },
+   {
+    "name": "close",
+    "meaning": "Close / clear"
+   },
+   {
+    "name": "check",
+    "meaning": "Confirm / checked"
+   },
+   {
+    "name": "search",
+    "meaning": "Search"
+   },
+   {
+    "name": "filter",
+    "meaning": "Filter (funnel)"
+   },
+   {
+    "name": "sort",
+    "meaning": "Sort (up/down arrows)"
+   },
+   {
+    "name": "refresh",
+    "meaning": "Refresh / reload"
+   },
+   {
+    "name": "up",
+    "meaning": "Up one level / move up"
+   },
+   {
+    "name": "trash",
+    "meaning": "Delete"
+   },
+   {
+    "name": "undo",
+    "meaning": "Undo"
+   },
+   {
+    "name": "redo",
+    "meaning": "Redo"
+   },
+   {
+    "name": "copy",
+    "meaning": "Copy"
+   },
+   {
+    "name": "paste",
+    "meaning": "Paste"
+   },
+   {
+    "name": "duplicate",
+    "meaning": "Duplicate"
+   },
+   {
+    "name": "lock",
+    "meaning": "Locked"
+   },
+   {
+    "name": "unlock",
+    "meaning": "Unlocked"
+   },
+   {
+    "name": "link",
+    "meaning": "Linked"
+   },
+   {
+    "name": "unlink",
+    "meaning": "Unlinked"
+   },
+   {
+    "name": "eye",
+    "meaning": "Visible"
+   },
+   {
+    "name": "eye_off",
+    "meaning": "Hidden"
+   },
+   {
+    "name": "chevron_down",
+    "meaning": "Expanded disclosure"
+   },
+   {
+    "name": "chevron_right",
+    "meaning": "Collapsed disclosure"
+   },
+   {
+    "name": "more_horizontal",
+    "meaning": "More actions (three dots)"
+   },
+   {
+    "name": "drag_handle",
+    "meaning": "Drag handle (grip dots)"
+   },
+   {
+    "name": "maximize",
+    "meaning": "Maximize"
+   },
+   {
+    "name": "restore",
+    "meaning": "Restore down"
+   },
+   {
+    "name": "fullscreen",
+    "meaning": "Enter fullscreen"
+   },
+   {
+    "name": "fullscreen_exit",
+    "meaning": "Exit fullscreen"
+   },
+   {
+    "name": "bug",
+    "meaning": "Debug / bug"
+   },
+   {
+    "name": "help",
+    "meaning": "Help"
+   }
+  ]
+ },
+ {
+  "title": "Status badges (filled glyphs)",
+  "icons": [
+   {
+    "name": "info",
+    "meaning": "Information badge"
+   },
+   {
+    "name": "warning",
+    "meaning": "Warning badge"
+   },
+   {
+    "name": "error",
+    "meaning": "Error badge"
+   }
+  ]
+ }
+]

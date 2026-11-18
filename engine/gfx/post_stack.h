@@ -6,6 +6,7 @@
 
 #include "gfx/shaders_post.h"
 #include "scene/modules.h"
+#include "core/math.h"
 #include <stdint.h>
 
 namespace fe::gfx {
@@ -77,6 +78,9 @@ void smaa_area_texture(uint32_t out[kSmaaAreaSize * kSmaaAreaSize]);     // r, g
 
 // Temporal anti-aliasing: the Halton(2, 3) jitter of frame `i` in pixels (-0.5..0.5), 8 frame cycle.
 void taa_jitter(uint32_t frame, float* x, float* y);
+
+// The inverse of a general 4x4 matrix (TAA reprojection). False when it is singular.
+bool mat4_inverse(const Mat4& m, Mat4* out);
 
 // Writes the XRGB image `src` (sw x sh) as an RGBA image `dst` (dw x dh,
 // R in the low byte, opaque), bilinearly when the sizes differ.

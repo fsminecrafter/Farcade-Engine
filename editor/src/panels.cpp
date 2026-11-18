@@ -966,7 +966,7 @@ void Editor::settings_graphics() {
             if (ImGui::Combo("##lsres", &ai, asize_names, 4)) { g.local_shadow_resolution = asizes[ai]; changed = true; }
             faint("A spot light takes one of 16 atlas tiles, a point light six.");
         }
-        static const char* ao_modes[] = { "Off", "SSAO" };
+        static const char* ao_modes[] = { "Off", "SSAO", "GTAO" };
         choice("Ambient occlusion", "##aomode", "ao", ao_modes);
         if (g.ambient_occlusion) {
             prop_label("  Radius");
@@ -976,8 +976,11 @@ void Editor::settings_graphics() {
         }
         static const char* bloom_modes[] = { "Off", "Simple", "Chain" };
         choice("Bloom", "##bloommode", "bloom", bloom_modes);
-        static const char* aa_modes[] = { "Off", "FXAA" };
+        static const char* aa_modes[] = { "Off", "FXAA", "SMAA", "TAA" };
         choice("Antialiasing", "##aamode", "aa", aa_modes);
+        if (g.antialiasing && g.aa_mode == gfx::AAMode::TAA) faint("TAA jitters the camera and keeps a history; with Render scale below 1 it also upscales. Moving objects can ghost a little. FXAA and SMAA stay available.");
+        static const char* ssr_modes[] = { "Off", "On" };
+        choice("Reflections (SSR)", "##ssrmode", "ssr", ssr_modes);
         prop_label("PBR shading");
         changed |= toggle_switch("##pbr", &g.pbr);
         track("gfx:pbr");

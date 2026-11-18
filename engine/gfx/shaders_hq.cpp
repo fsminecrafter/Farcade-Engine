@@ -756,7 +756,8 @@ void pp_gtao_fragment(char* out, size_t cap) {
                       "        }\n");
             }
         }
-        t.add("        vec2 hh = vec2(-acos_(clamp(h.x, -1.0, 1.0)), acos_(clamp(h.y, -1.0, 1.0)));\n"
+        t.add("        vec2 hh = vec2(-acos_(clamp(h.y, -1.0, 1.0)), acos_(clamp(h.x, -1.0, 1.0)));\n"
+              "        // h.x is the horizon on the +direction side (the positive angle), h.y on the other side\n"
               "        hh = sc.z + vec2(max(hh.x - sc.z, -1.5707963), min(hh.y - sc.z, 1.5707963));\n"
               "        float sn = sin(sc.z);\n"
               "        vis += sc.x * 0.25 * ((-cos(2.0 * hh.x - sc.z) + sc.y + 2.0 * hh.x * sn) + (-cos(2.0 * hh.y - sc.z) + sc.y + 2.0 * hh.y * sn));\n"
@@ -1138,6 +1139,57 @@ void pp_smaa_blend_fragment(char* out, size_t cap) {
           "    vec2 off = mix(vec2(mix(u_p.x, -u_p.x, step(w.w, w.z)), 0.0), vec2(0.0, mix(u_p.y, -u_p.y, step(w.y, w.x))), isH);\n"
           "    vec3 c = texture(u_src, uv).rgb;\n"
           "    gl_FragColor = vec4(mix(c, texture(u_src, uv + off).rgb, mix(v, h, isH)), 1.0);\n"
+          "}\n");
+}
+
+// ---- TAA resolve. Renders at the output size: the jittered current frame (internal size, HDR encoded) is sampled
+// bilinearly where the unjittered pixel landed (u_j.xy), the history is fetched where the pixel was last frame
+// (the depth gives the position, u_r0..3 = previous view-projection * inverse(current), no motion vectors:
+// moving objects are left to the clamp), clamped to the 3x3 neighbourhood of the current frame, and blended.
+// u_p: xy 1 / output size, zw 1 / internal size; u_j: xy jitter in uv, z far (m), w base blend;
+// u_zp: x, y: ndc z = x + y / z (perspective), z: ortho flag, w: history valid; u_zq: m10, m14 (ortho).
+void pp_taa_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_curl;\n"
+          "uniform sampler2D u_curn;\n"
+          "uniform sampler2D u_depth;\n"
+          "uniform sampler2D u_hist;\n"
+          "uniform vec4 u_p;\n"
+          "uniform vec4 u_j;\n"
+          "uniform vec4 u_zp;\n"
+          "uniform vec4 u_zq;\n"
+          "uniform vec4 u_r0;\n"
+          "uniform vec4 u_r1;\n"
+          "uniform vec4 u_r2;\n"
+          "uniform vec4 u_r3;\n");
+    t.add(kPack);
+    t.add("void main() {\n"
+          "    vec2 uv = gl_FragCoord.xy * u_p.xy;\n"
+          "    vec2 cuv = uv + u_j.xy;\n"
+          "    vec2 t0 = (floor(cuv / u_p.zw) + 0.5) * u_p.zw;\n"
+          "    vec3 c = texture(u_curl, cuv).rgb;\n"
+          "    vec3 mn = c;\n"
+          "    vec3 mx = c;\n");
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            t.add("    {\n        vec3 n = texture(u_curn, t0 + vec2(");
+            t.flt((float)dx); t.add(", "); t.flt((float)dy);
+            t.add(") * u_p.zw).rgb;\n        mn = min(mn, n);\n        mx = max(mx, n);\n    }\n");
+        }
+    t.add("    vec3 h = c;\n"
+          "    float alpha = 1.0;\n"
+          "    {\n"
+          "        float zv = unpack24(texture(u_depth, t0).rgb) * u_j.z;\n"
+          "        vec4 nd = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, mix(u_zp.x + u_zp.y / max(zv, 0.0001), u_zq.x * -zv + u_zq.y, u_zp.z), 1.0);\n"
+          "        vec4 pc = u_r0 * nd.x + u_r1 * nd.y + u_r2 * nd.z + u_r3;\n"
+          "        vec2 puv = vec2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);\n"
+          "        float inside = step(0.0, puv.x) * step(puv.x, 1.0) * step(0.0, puv.y) * step(puv.y, 1.0) * u_zp.w;\n"
+          "        vec3 hp = texture(u_hist, puv).rgb;\n"
+          "        vec3 hc = clamp(hp, mn, mx);\n"
+          "        alpha = mix(1.0, mix(u_j.w, 0.6, clamp(length(hp - hc) * 6.0, 0.0, 1.0)), inside);\n"
+          "        h = hc;\n"
+          "    }\n"
+          "    gl_FragColor = vec4(mix(h, c, alpha), 1.0);\n"
           "}\n");
 }
 

@@ -117,6 +117,8 @@ int main(int argc, char** argv) {
     printf("quality %s on %s: gpu tier %s (shadows %d, ao %d, bloom %d, aa %d, pbr %d)\n", quality, r.backend(),
            f.gpu_tier ? "on" : "off", f.shadows, f.ambient_occlusion, f.bloom, f.antialiasing, f.pbr);
     const fe::gfx::GpuTierStats& t = r.gpu_tier_stats();
+    if (t.passes && (t.ssr_ms > 0 || t.taa_ms > 0 || t.smaa_ms > 0))
+        printf("more (ms): ssr %.1f taa %.1f smaa %.1f\n", t.ssr_ms, t.taa_ms, t.smaa_ms);
     if (t.passes)
         printf("stages (ms): shadow %.1f%s depth %.1f ssao %.1f blur %.1f lit %.1f bloom %.1f composite %.1f fxaa %.1f; %d passes\n",
                t.shadow_ms, t.shadow_reused ? " (reused)" : "", t.depth_ms, t.ssao_ms, t.blur_ms, t.lit_ms, t.bloom_ms, t.composite_ms,

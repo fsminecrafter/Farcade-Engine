@@ -51,6 +51,9 @@ struct PassHost {
     // resets it); w == 0 turns it off.
     void (*set_viewport)(void* user, int x, int y, int w, int h) = nullptr;
     // Probe GI (gi.h): the probe texture and the window uniforms (u_gi0, u_gi1) when it is on.
+    // The size the passes before the TAA resolve render at (0: the context's size). Smaller than the context
+    // when TAA upscales (render_scale < 1): the resolve then writes the full size image.
+    int iw = 0, ih = 0;
     bool gi_on = false;
     FGLTexture gi_texture = 0;
     float gi0[4] = {}, gi1[4] = {};

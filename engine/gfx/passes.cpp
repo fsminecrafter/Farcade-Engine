@@ -171,6 +171,13 @@ struct GpuTier::Impl {
     FGLShader* sm_mask_p = nullptr;
     FGLShader* sm_w_p[2] = {};
     FGLShader* sm_blend_p = nullptr;
+    Target taa_hist[2], tdepth;             // TAA: the resolved image of the last two frames (output size), full size linear depth
+    int taa_cur = 0;                        // which of taa_hist holds the latest resolve
+    bool taa_valid = false;                 // taa_hist[taa_cur] is a real previous frame
+    Mat4 taa_prev_vp;                       // the unjittered view-projection that frame had
+    FGLShader* taa_p = nullptr;
+    int iw = 0, ih = 0;                     // the size the scene is drawn at (the context's unless TAA upscales)
+    Mat4 cur_proj;                          // the projection of the lit pass: jittered with TAA
     CascadeState cstate[kMaxCascades];
     FGLShader* white_p = nullptr;           // fills a tile with white (the far end of the packed depth)
     Target atlas;
@@ -854,7 +861,7 @@ struct GpuTier::Impl {
     // The half resolution G-buffer (linear depth, view normals, and with SSR the roughness / metal), then the AO:
     // SSAO (12 taps) or GTAO (2 slices x 6 steps, accumulated over frames while nothing moves), blurred twice.
     bool ao_passes(const RenderScene& s, const PassHost& host, const GraphicsSettings& gs, bool want_ao, bool gtao, bool want_ssr) {
-        int w = gl->desc.width, h = gl->desc.height;
+        int w = iw, h = ih;
         int hw = (w + 1) / 2, hh = (h + 1) / 2;
         if (!ensure(gdepth, hw, hh, true) || !ensure(gnormal, hw, hh, false)) return false;
         if (want_ao && (!ensure(ao_a, hw, hh, false) || !ensure(ao_b, hw, hh, false))) return false;
@@ -1045,7 +1052,7 @@ struct GpuTier::Impl {
 
     bool lit_pass(const RenderScene& s, const PackedLights& ls, const GpuPlan& plan, const PassHost& host,
                   const GraphicsSettings& gs, const CascadeSet& cs, int shadow_light, const Target& dst, bool hdr) {
-        int w = gl->desc.width, h = gl->desc.height;
+        int w = iw, h = ih;
         bool any_lit = false;
         for (int i = 0; i < s.item_count; i++) if (!s.items[i].unlit) { any_lit = true; break; }
         bool use_shadow = cs.any();
@@ -1107,7 +1114,7 @@ struct GpuTier::Impl {
             }
         }
 
-        set_target(dst.color, main_depth);
+        set_target(dst.color, dst.depth ? dst.depth : main_depth);
         if (lit) {
             if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
             if (use_ao) bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
@@ -1116,7 +1123,7 @@ struct GpuTier::Impl {
         }
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
-        fglSetProjection(gl, to_fgl(s.camera.proj));
+        fglSetProjection(gl, to_fgl(cur_proj));
         fglSetView(gl, to_fgl(s.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         bool failed = false;
@@ -1218,6 +1225,70 @@ struct GpuTier::Impl {
         }
         fs_draw(sh);
         return end_pass(t0, &stats.composite_ms);
+    }
+
+    // The projection with a sub-pixel jitter (pixels of the internal image): ndc moves by 2 j / size.
+    static Mat4 jittered(const Mat4& p, float jx, float jy, int w, int h) {
+        Mat4 r = p;
+        float dx = 2.0f * jx / (float)w, dy = 2.0f * jy / (float)h;
+        bool ortho = p.m[15] == 1.0f && p.m[11] == 0.0f;
+        if (ortho) { r.m[12] += dx; r.m[13] += dy; }
+        else { r.m[8] -= dx; r.m[9] -= dy; }
+        return r;
+    }
+
+    // TAA: depth at the jittered camera, then the resolve into the other history target (output size). Returns
+    // the resolved image in *out.
+    bool taa_pass(const RenderScene& s, const PassHost& host, const Target& scene_t, float jx, float jy, const Target** out) {
+        int ow = gl->desc.width, oh = gl->desc.height;
+        double t0 = now_ms();
+        bool fresh = false;
+        if (!ensure(taa_hist[0], ow, oh, false, &fresh) || !ensure(taa_hist[1], ow, oh, false, &fresh)) return false;
+        if (!ensure(tdepth, iw, ih, true)) return false;
+        if (fresh) taa_valid = false;
+        if (!make(&depth_p, shaders::hq_depth_vertex, shaders::hq_depth_fragment, "depth")) return false;
+        if (!make(&taa_p, shaders::pp_vertex, shaders::pp_taa_fragment, "taa")) return false;
+        Cam c = read_camera(s.camera);
+        float far_m = fminf_(c.f, 1000.0f);
+        bool failed = false;
+        set_target(tdepth.color, tdepth.depth);
+        fglClearColor(gl, 1, 1, 1);
+        fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+        fglSetProjection(gl, to_fgl(cur_proj));
+        fglSetView(gl, to_fgl(s.camera.view));
+        fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(depth_p, "u_pp", 1.0f / far_m, 0, 0, 0);
+        fglUseShader(gl, depth_p);
+        for (int i = 0; i < s.item_count && !failed; i++) host.draw_mesh(host.user, s.items[i], false, &failed);
+        if (failed) return false;
+        // reprojection: previous view-projection * inverse(current), both unjittered
+        Mat4 vp = s.camera.proj * s.camera.view, inv, rep = Mat4::identity();
+        bool ok = mat4_inverse(vp, &inv);
+        if (ok) rep = taa_prev_vp * inv;
+        int dst = 1 - taa_cur;
+        set_target(taa_hist[dst].color, 0);
+        fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+        u4(taa_p, "u_p", 1.0f / (float)ow, 1.0f / (float)oh, 1.0f / (float)iw, 1.0f / (float)ih);
+        u4(taa_p, "u_j", jx / (float)iw, -jy / (float)ih, far_m, 0.1f);
+        const Mat4& pj = s.camera.proj;
+        u4(taa_p, "u_zp", -pj.m[10], pj.m[14], c.ortho ? 1.0f : 0.0f, (taa_valid && ok) ? 1.0f : 0.0f);
+        u4(taa_p, "u_zq", pj.m[10], pj.m[14], 0, 0);
+        u4(taa_p, "u_r0", rep.m[0], rep.m[1], rep.m[2], rep.m[3]);
+        u4(taa_p, "u_r1", rep.m[4], rep.m[5], rep.m[6], rep.m[7]);
+        u4(taa_p, "u_r2", rep.m[8], rep.m[9], rep.m[10], rep.m[11]);
+        u4(taa_p, "u_r3", rep.m[12], rep.m[13], rep.m[14], rep.m[15]);
+        u4(taa_p, "u_z", 0, 0, 0, 0);
+        bind_tex(taa_p, "u_curl", scene_t, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_curn", scene_t, FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_depth", tdepth, FGL_TEXTURE_CLAMP);
+        bind_tex(taa_p, "u_hist", taa_hist[taa_cur], FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        fs_draw(taa_p);
+        if (!end_pass(t0, &stats.taa_ms)) return false;
+        taa_cur = dst;
+        taa_valid = true;
+        taa_prev_vp = vp;
+        *out = &taa_hist[taa_cur];
+        return true;
     }
 
     // SMAA 1x style (shaders_hq.cpp): edges, then blend weights from the area texture over the edge pixels only,
@@ -1324,6 +1395,8 @@ struct GpuTier::Impl {
         main_color = gl->color;
         main_depth = gl->depth;
         int w = gl->desc.width, h = gl->desc.height;
+        iw = host.iw > 0 ? host.iw : w;
+        ih = host.ih > 0 ? host.ih : h;
         bool ok = run(s, ls, gs, plan, host, w, h);
         // leave the context on its own surfaces whatever happened
         restore_main();
@@ -1378,10 +1451,20 @@ struct GpuTier::Impl {
 
         // the scene
         bool bloom = plan.bloom, aa = plan.aa, ssr = plan.ssr;
-        const bool hdr = bloom || ssr;               // the lit pass writes HDR encoded values, the composite pass finishes
+        const bool taa = aa && plan.aa_mode == AAMode::TAA;
+        const bool fx = aa && !taa;                  // FXAA or SMAA after the composite
+        const bool hdr = bloom || ssr || taa;        // the lit pass writes HDR encoded values, the composite pass finishes
+        cur_proj = s.camera.proj;
+        if (!taa) taa_valid = false;                 // the history is only good for consecutive TAA frames
+        float jx = 0, jy = 0;
+        if (taa) {
+            taa_jitter((uint32_t)frame, &jx, &jy);
+            cur_proj = jittered(s.camera.proj, jx, jy, iw, ih);
+        }
         if (hdr || aa) {
-            if (!ensure(scene, w, h, false)) return false;
-            if (hdr && aa && !ensure(ldr, w, h, false)) return false;
+            // the scene is drawn at the internal size (with its own depth when that is not the context's)
+            if (!ensure(scene, iw, ih, iw != w || ih != h)) return false;
+            if (hdr && fx && !ensure(ldr, w, h, false)) return false;
         }
         Target main_t;
         main_t.color = main_color;
@@ -1390,11 +1473,13 @@ struct GpuTier::Impl {
         if (!lit_pass(s, ls, plan, host, gs, cs, shadow_light, (hdr || aa) ? scene : main_t, hdr)) return false;
 
         if (ssr && !ssr_pass(s, scene, gs)) return false;
+        const Target* resolved = &scene;
+        if (taa && !taa_pass(s, host, scene, jx, jy, &resolved)) return false;
         if (hdr) {
-            if (bloom && !bloom_passes(s, s.post, scene, gs.bloom_mode == BloomMode::Chain)) return false;
-            if (!composite(s, scene, bloom, ssr, aa ? ldr.color : main_color)) return false;
+            if (bloom && !bloom_passes(s, s.post, *resolved, gs.bloom_mode == BloomMode::Chain)) return false;
+            if (!composite(s, *resolved, bloom, ssr, fx ? ldr.color : main_color)) return false;
         }
-        if (aa) {
+        if (fx) {
             const Target& src = hdr ? ldr : scene;
             if (plan.aa_mode == AAMode::SMAA ? !smaa(src) : !fxaa(src)) return false;
         }
@@ -1405,6 +1490,9 @@ struct GpuTier::Impl {
         if (!gl) return;
         drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); for (FGLShader*& b : bright_p) drop(&b); for (FGLShader*& d : down_p) drop(&d);
         drop(&up_p); for (FGLShader*& c : comp_p) drop(&c); drop(&fxaa_p);
+        drop(&taa_p);
+        free_target(taa_hist[0]); free_target(taa_hist[1]); free_target(tdepth);
+        taa_valid = false;
         drop(&sm_edge_p); drop(&sm_mask_p); drop(&sm_w_p[0]); drop(&sm_w_p[1]); drop(&sm_blend_p);
         if (sm_area) fglDestroyTexture(gl, sm_area);
         sm_area = 0;

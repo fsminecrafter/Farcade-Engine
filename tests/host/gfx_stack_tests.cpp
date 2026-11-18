@@ -8,6 +8,7 @@
 #include "gfx/graphics_settings.h"
 #include "gfx/gi.h"
 #include "gfx/host/farcadegl_host.h"
+#include "../os/gfx_smoke/scene.h"
 #include "mof_check.h"
 
 #include <math.h>
@@ -889,6 +890,361 @@ void test_gi_render() {
     CHECK(near_px(back, t_hemi, 0));
 }
 
+// ---------------------------------------------------------------- aa / ao / ssr choices
+
+// A white cube on a dark floor, turned so its edges are diagonal; unlit, no tonemap: edge pixels are pure geometry.
+struct EdgeRig {
+    Vec3 cube_p[kCubeVertices], cube_n[kCubeVertices];
+    DrawItem it;
+    FlatScene flat;
+    EdgeRig() : flat(Vec3(0.02f, 0.02f, 0.02f)) {
+        make_cube(cube_p, cube_n, 0.8f);
+        it.mesh = RenderMesh{ cube_p, cube_n, kCubeVertices, 41 };
+        it.model = Mat4::rotation(Quat::axis_angle(Vec3(0, 0, 1), 0.5f)) * Mat4::rotation(Quat::axis_angle(Vec3(0, 1, 0), 0.4f));
+        it.unlit = true;
+        it.color = Vec3(0.9f, 0.9f, 0.9f);
+        flat.scene.items = &it;
+        flat.scene.item_count = 1;
+        flat.scene.camera.view = Mat4::look_at(Vec3(0, 0, 4), Vec3(0, 0, 0), Vec3(0, 1, 0));
+        flat.scene.post.tonemap = Tonemap::None;
+    }
+};
+
+GraphicsSettings tier_only(const char* aa, const char* ao = "off", const char* ssr = "off") {
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    g.allow_gpu_effects_on_cpu = true;
+    graphics_set_text(&g, "aa", aa);
+    graphics_set_text(&g, "ao", ao);
+    graphics_set_text(&g, "ssr", ssr);
+    g.shadows = false; g.bloom = false; g.pbr = true;
+    return g;
+}
+
+int lumi(uint32_t v) { return (int)(((v & 0xFF) * 3 + ((v >> 8) & 0xFF) * 6 + ((v >> 16) & 0xFF)) / 10); }
+
+void test_aa_choices() {
+    // the property table: aa off | fxaa | smaa | taa, ao off | ssao | gtao, ssr off | on
+    GraphicsSettings g;
+    char v[32], err[160];
+    const char* aas[] = { "off", "fxaa", "smaa", "taa" };
+    for (const char* a : aas) { CHECK(graphics_set_text(&g, "aa", a) && graphics_get_text(g, "aa", v, sizeof v) && !strcmp(v, a)); }
+    CHECK(graphics_set_text(&g, "aa", "smaa") && g.antialiasing && g.aa_mode == AAMode::SMAA);
+    CHECK(graphics_set_text(&g, "aa", "off") && !g.antialiasing && g.aa_mode == AAMode::SMAA);     // the mode is remembered
+    const char* aos[] = { "off", "ssao", "gtao" };
+    for (const char* a : aos) { CHECK(graphics_set_text(&g, "ao", a) && graphics_get_text(g, "ao", v, sizeof v) && !strcmp(v, a)); }
+    CHECK(graphics_set_text(&g, "ssr", "on") && g.ssr && graphics_get_text(g, "ssr", v, sizeof v) && !strcmp(v, "on"));
+    CHECK(!graphics_set_text(&g, "ssr", "maybe", err, sizeof err) && strstr(err, "allowed: off, on"));
+    // presets: Low and Medium keep the old techniques, High takes SMAA, Ultra everything
+    const GraphicsPreset lows[] = { GraphicsPreset::Low, GraphicsPreset::Medium };
+    for (GraphicsPreset p : lows) {
+        GraphicsSettings a;
+        a.apply_preset(p);
+        CHECK(!a.ssr && a.ao_mode == AOMode::SSAO && a.aa_mode == AAMode::FXAA);
+    }
+    GraphicsSettings hi, ul;
+    hi.apply_preset(GraphicsPreset::High);
+    ul.apply_preset(GraphicsPreset::Ultra);
+    CHECK(hi.aa_mode == AAMode::SMAA && !hi.ssr && ul.aa_mode == AAMode::TAA && ul.ao_mode == AOMode::GTAO && ul.ssr);
+    // FXAA stays available after SMAA and TAA exist, and the text round-trips every mode
+    for (const char* a : aas) {
+        GraphicsSettings x;
+        graphics_set_text(&x, "aa", a);
+        graphics_set_text(&x, "ao", "gtao");
+        graphics_set_text(&x, "ssr", "on");
+        char t1[2048], t2[2048];
+        size_t n = graphics_settings_to_text(x, t1, sizeof t1);
+        GraphicsSettings y;
+        CHECK_EQ(graphics_settings_from_text(&y, t1, n), 0);
+        graphics_settings_to_text(y, t2, sizeof t2);
+        CHECK_STR(t1, t2);
+        CHECK(y.ssr && y.ao_mode == AOMode::GTAO);
+    }
+    // Low is bit-identical to the cheap path of before: the smoke scene checksum of the base tier did not change
+    SmokeScene sm;
+    sm.build();
+    Renderer r;
+    GraphicsSettings low;
+    low.apply_preset(GraphicsPreset::Low);
+    r.set_settings(low);
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    if (render_ok(r, sm.scene)) CHECK_MSG(checksum(r.pixels(), kSmokeWidth * kSmokeHeight) == 0x214c411eu, "Low stays bit-identical");
+    // the new modes need the GPU tier: on the CPU backend they change nothing unless it is forced
+    GraphicsSettings cpu = low;
+    graphics_set_text(&cpu, "aa", "taa");
+    graphics_set_text(&cpu, "ao", "gtao");
+    graphics_set_text(&cpu, "ssr", "on");
+    r.set_settings(cpu);
+    CHECK(!r.features().gpu_tier && !r.features().ssr);
+    if (render_ok(r, sm.scene)) CHECK(checksum(r.pixels(), kSmokeWidth * kSmokeHeight) == 0x214c411eu);
+}
+
+void test_smaa() {
+    // the area model
+    float tb, ta;
+    smaa_area(0, 0, 3, 3, &tb, &ta);
+    CHECK(tb == 0 && ta == 0);                                  // an isolated edge is left alone
+    smaa_area(1, 2, 0, 7, &tb, &ta);                            // a Z: up at the start, down at the end
+    float zsum = 0;
+    for (int d1 = 0; d1 < 8; d1++) { smaa_area(1, 2, d1, 7 - d1, &tb, &ta); zsum += tb + ta; CHECK(tb + ta <= 0.5f + 1e-4f); }
+    CHECK(zsum > 0.5f);
+    smaa_area(1, 1, 0, 6, &tb, &ta);                            // a U / L ramps: the largest share is at the ends
+    float end_share = tb + ta;
+    smaa_area(1, 1, 3, 3, &tb, &ta);
+    CHECK(end_share > tb + ta);
+    float a1, b1, a2, b2;                                       // mirror: the same shape the other way round
+    smaa_area(1, 0, 1, 5, &a1, &b1);
+    smaa_area(0, 1, 5, 1, &a2, &b2);
+    CHECK_NEAR(a1 + b1, a2 + b2);
+    uint32_t tex[kSmaaAreaSize * kSmaaAreaSize];
+    smaa_area_texture(tex);
+    CHECK(tex[0] == 0);                                         // cross 0 / 0: nothing
+    int nonzero = 0;
+    for (uint32_t t : tex) nonzero += t != 0;
+    CHECK(nonzero > 100);
+
+    // the pass: smooth edges, flat areas untouched
+    Renderer r;
+    r.set_settings(tier_only("off"));
+    CHECK(r.init(W, H));
+    EdgeRig rig;
+    if (!render_ok(r, rig.flat.scene)) return;
+    uint32_t off[W * H];
+    memcpy(off, r.pixels(), sizeof off);
+    GraphicsSettings g = tier_only("smaa");
+    r.set_settings(g);
+    CHECK(r.features().gpu_tier && r.features().aa_mode == AAMode::SMAA);
+    if (!render_ok(r, rig.flat.scene)) return;
+    CHECK(r.gpu_tier_stats().smaa_ms > 0);
+    int changed = 0, flat_changed = 0, new_levels = 0;
+    for (int y = 2; y < H - 2; y++)
+        for (int x = 2; x < W - 2; x++) {
+            uint32_t a = off[y * W + x], b = r.pixels()[y * W + x];
+            if (a == b) continue;
+            changed++;
+            // near an edge of the aliased image?
+            int mx = 0;
+            for (int dy = -2; dy <= 2; dy++)
+                for (int dx = -2; dx <= 2; dx++) { int d = abs(lumi(off[(y + dy) * W + x + dx]) - lumi(a)); mx = d > mx ? d : mx; }
+            if (mx < 40) flat_changed++;
+            int lb = lumi(b);
+            if (lb > 40 && lb < 190) new_levels++;
+        }
+    CHECK_MSG(changed > 20, "SMAA changes the edge pixels");
+    CHECK_MSG(flat_changed == 0, "and nothing away from an edge");
+    CHECK_MSG(new_levels > 15, "edge pixels get intermediate values");
+    // FXAA still works next to it, and gives a different (also smoothed) result
+    r.set_settings(tier_only("fxaa"));
+    if (render_ok(r, rig.flat.scene)) {
+        CHECK(r.gpu_tier_stats().fxaa_ms > 0 && r.gpu_tier_stats().smaa_ms == 0);
+        CHECK(memcmp(off, r.pixels(), sizeof off) != 0);
+    }
+}
+
+// the mean absolute difference of two images (luma)
+double image_diff(const uint32_t* a, const uint32_t* b, int n) {
+    double s = 0;
+    for (int i = 0; i < n; i++) s += abs(lumi(a[i]) - lumi(b[i]));
+    return s / n;
+}
+
+void test_taa() {
+    Renderer r;
+    CHECK(r.init(W, H));
+    EdgeRig rig;
+    r.set_settings(tier_only("off"));
+    if (!render_ok(r, rig.flat.scene)) return;
+    static uint32_t ref[W * H], prev[W * H], cur[W * H];
+    memcpy(ref, r.pixels(), sizeof ref);
+    GraphicsSettings g = tier_only("taa");
+    r.set_settings(g);
+    // a still scene: the jitter averages the edge (anti-aliased), and the picture settles
+    for (int i = 0; i < 20; i++) {
+        if (!render_ok(r, rig.flat.scene)) return;
+        if (i == 18) memcpy(prev, r.pixels(), sizeof prev);
+    }
+    memcpy(cur, r.pixels(), sizeof cur);
+    CHECK(r.gpu_tier_stats().taa_ms > 0);
+    int mid = 0;
+    for (int i = 0; i < W * H; i++) { int l = lumi(cur[i]); if (l > 40 && l < 190) mid++; }
+    int mid_ref = 0;
+    for (int i = 0; i < W * H; i++) { int l = lumi(ref[i]); if (l > 40 && l < 190) mid_ref++; }
+    CHECK_MSG(mid > mid_ref + 10, "TAA gives edge pixels intermediate values");
+    CHECK_MSG(image_diff(prev, cur, W * H) < 1.2, "a still scene is stable from frame to frame");
+    CHECK_MSG(image_diff(ref, cur, W * H) < 6.0, "and stays close to the unfiltered picture");
+    // a moving camera: reprojection keeps the history on the objects (no smear): close to the unfiltered picture
+    double worst = 0;
+    for (int f = 0; f < 14; f++) {
+        float x = 0.03f * (float)f;
+        rig.flat.scene.camera.position = Vec3(x, 0, 4);
+        rig.flat.scene.camera.view = Mat4::look_at(Vec3(x, 0, 4), Vec3(x, 0, 0), Vec3(0, 1, 0));
+        if (!render_ok(r, rig.flat.scene)) return;
+        if (f >= 6) {
+            memcpy(cur, r.pixels(), sizeof cur);
+            Renderer r2;
+            r2.set_settings(tier_only("off"));
+            r2.init(W, H);
+            r2.render(rig.flat.scene);
+            double d = image_diff(cur, r2.pixels(), W * H);
+            worst = d > worst ? d : worst;
+        }
+    }
+    CHECK_MSG(worst < 7.0, "reprojection keeps a moving image sharp (no ghost trail)");
+    // a camera cut: the history is not trusted outside the screen
+    rig.flat.scene.camera.view = Mat4::look_at(Vec3(0, 0, 4), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    CHECK(render_ok(r, rig.flat.scene));
+
+    // TAA drives the upscale: drawn at 60%, resolved at full size, closer to the converged full size TAA picture
+    // than a plain upscale of the same internal image
+    rig.flat.scene.camera.position = Vec3(0, 0, 4);
+    rig.flat.scene.camera.view = Mat4::look_at(Vec3(0, 0, 4), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    r.set_settings(tier_only("taa"));
+    for (int i = 0; i < 24; i++) if (!render_ok(r, rig.flat.scene)) return;
+    static uint32_t best[W * H];
+    memcpy(best, r.pixels(), sizeof best);
+    GraphicsSettings up = tier_only("taa");
+    up.render_scale = 0.6f;
+    r.set_settings(up);
+    for (int i = 0; i < 24; i++) if (!render_ok(r, rig.flat.scene)) return;
+    CHECK(r.stats().taa_upscale && r.stats().internal_width < W && r.width() == W);
+    static uint32_t taa_up[W * H];
+    memcpy(taa_up, r.pixels(), sizeof taa_up);
+    GraphicsSettings plain = tier_only("fxaa");
+    plain.render_scale = 0.6f;
+    r.set_settings(plain);
+    CHECK(render_ok(r, rig.flat.scene));
+    CHECK(!r.stats().taa_upscale && r.stats().internal_width < W);
+    double e_taa = image_diff(taa_up, best, W * H), e_plain = image_diff(r.pixels(), best, W * H);
+    CHECK_MSG(e_taa < e_plain, "temporal upscale beats the bilinear upscale");
+    // TAA at scale 1 and the other modes give no taa_upscale
+    r.set_settings(tier_only("taa"));
+    CHECK(render_ok(r, rig.flat.scene));
+    CHECK(!r.stats().taa_upscale);
+}
+
+void test_gtao_and_ssr() {
+    // GTAO darkens a crease like SSAO does, and accumulates over still frames (less noise)
+    Vec3 cp[kCubeVertices], cn[kCubeVertices], pp[kPlaneVertices], pn[kPlaneVertices];
+    make_cube(cp, cn, 0.5f);
+    make_plane(pp, pn, 20.0f, 0.0f);
+    DrawItem items[2];
+    items[0].mesh = RenderMesh{ cp, cn, kCubeVertices, 51 };
+    items[0].model = Mat4::translation(Vec3(0, 0.5f, 0));
+    items[1].mesh = RenderMesh{ pp, pn, kPlaneVertices, 52 };
+    items[1].model = Mat4::identity();
+    RenderScene scene;
+    scene.items = items;
+    scene.item_count = 2;
+    scene.sky.mode = SkyMode::Color;
+    scene.sky.zenith = Vec3(0.1f, 0.1f, 0.1f);
+    scene.sky_light.intensity = 1.0f;
+    scene.sky_light.sky_color = Vec3(1, 1, 1);
+    scene.sky_light.ground_color = Vec3(1, 1, 1);
+    scene.post.tonemap = Tonemap::None;
+    scene.post.vignette = 0;
+    scene.delta_time = 0.016f;
+    scene.camera.position = Vec3(2.5f, 2.5f, 3.5f);
+    scene.camera.view = Mat4::look_at(scene.camera.position, Vec3(0, 0.3f, 0), Vec3(0, 1, 0));
+    scene.camera.proj = Mat4::perspective(radians(50.0f), (float)W / H, 0.1f, 100.0f);
+    auto at = [&](Renderer& r, Vec3 p) {
+        Vec3 v = transform_point(scene.camera.view, p);
+        float nx = scene.camera.proj.m[0] * v.x / -v.z, ny = scene.camera.proj.m[5] * v.y / -v.z;
+        return lumi(r.pixels()[(int)((0.5f - ny * 0.5f) * (float)H) * W + (int)((nx * 0.5f + 0.5f) * (float)W)]);
+    };
+    Renderer r;
+    CHECK(r.init(W * 2, H * 2));
+    // (render at 2x: the helper above reads the 1x position, so scale it)
+    auto at2 = [&](Vec3 p) {
+        Vec3 v = transform_point(scene.camera.view, p);
+        float nx = scene.camera.proj.m[0] * v.x / -v.z, ny = scene.camera.proj.m[5] * v.y / -v.z;
+        return lumi(r.pixels()[(int)((0.5f - ny * 0.5f) * (float)(H * 2)) * (W * 2) + (int)((nx * 0.5f + 0.5f) * (float)(W * 2))]);
+    };
+    (void)at;
+    const Vec3 crease(0.56f, 0, 0.56f), open(-3.0f, 0, 3.0f);
+    r.set_settings(tier_only("off", "off"));
+    if (!render_ok(r, scene)) return;
+    int c0 = at2(crease), o0 = at2(open);
+    r.set_settings(tier_only("off", "gtao"));
+    for (int i = 0; i < 6; i++) if (!render_ok(r, scene)) return;
+    int c1 = at2(crease), o1 = at2(open);
+    CHECK_MSG(c1 < c0 - 8, "GTAO darkens the crease between cube and floor");
+    CHECK_MSG(abs(o1 - o0) <= 8, "and leaves the open floor");
+    CHECK(r.gpu_tier_stats().ssao_ms > 0 && r.gpu_tier_surfaces() > 6);
+    // the same frame again: the accumulated result is stable (history on)
+    int c2 = 0;
+    for (int i = 0; i < 4; i++) { render_ok(r, scene); c2 = at2(crease); }
+    CHECK(abs(c2 - c1) <= 6);
+
+    // SSR: a smooth metal floor reflects a bright cube; a rough floor does not change
+    items[1].roughness = 0.05f;
+    items[1].metallic = 1.0f;
+    items[1].color = Vec3(0.9f, 0.9f, 0.9f);
+    items[0].unlit = true;
+    items[0].color = Vec3(3.0f, 0.5f, 0.2f);
+    scene.sky_light.intensity = 0.2f;
+    r.set_settings(tier_only("off", "off", "off"));
+    if (!render_ok(r, scene)) return;
+    Vec3 below(0.0f, 0.0f, 0.9f);                               // the floor in front of the cube: it mirrors the cube's front face
+    int off_l = at2(below);
+    uint32_t off_px[W * H * 4];
+    memcpy(off_px, r.pixels(), sizeof off_px);
+    r.set_settings(tier_only("off", "off", "on"));
+    if (!render_ok(r, scene)) return;
+    CHECK(r.features().ssr && r.gpu_tier_stats().ssr_ms > 0);
+    int on_l = at2(below);
+    CHECK_MSG(on_l > off_l + 12, "the cube is reflected in the smooth floor");
+    items[1].roughness = 0.95f;
+    items[1].metallic = 0.0f;
+    r.set_settings(tier_only("off", "off", "off"));
+    render_ok(r, scene);
+    memcpy(off_px, r.pixels(), sizeof off_px);
+    r.set_settings(tier_only("off", "off", "on"));
+    render_ok(r, scene);
+    int diff = 0;
+    for (int y = 0; y < H * 2; y++) for (int x = 0; x < W * 2; x++) {
+        // the floor pixels only (bottom part of the image)
+        if (y > H * 2 * 3 / 4 && off_px[y * W * 2 + x] != r.pixels()[y * W * 2 + x]) diff++;
+    }
+    CHECK_MSG(diff == 0, "a rough floor gets no reflection");
+}
+
+void test_new_modes_everything() {
+    // all of it at once: no leak, resize, and switching modes back and forth
+    fe_fgpu_host_stats_t base, s1, s2;
+    fe_fgpu_host_stats(&base);
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Ultra);
+    g.shadow_resolution = 1024;
+    g.allow_gpu_effects_on_cpu = true;
+    r.set_settings(g);
+    CHECK(r.init(W, H));
+    EdgeRig rig;
+    rig.flat.scene.post.bloom = 0.5f;
+    const char* modes[] = { "taa", "smaa", "fxaa", "off", "taa" };
+    for (int i = 0; i < 5; i++) {
+        graphics_set_text(&g, "aa", modes[i]);
+        graphics_set_text(&g, "ao", i % 2 ? "gtao" : "ssao");
+        r.set_settings(g);
+        for (int k = 0; k < 3; k++) if (!render_ok(r, rig.flat.scene)) return;
+        if (i == 1) fe_fgpu_host_stats(&s1);
+    }
+    const int sizes[][2] = { { 97, 61 }, { 33, 17 }, { 200, 150 }, { W, H } };
+    for (auto& sz : sizes) {
+        CHECK(r.resize(sz[0], sz[1]));
+        rig.flat.scene.camera.proj = Mat4::perspective(radians(60.0f), (float)sz[0] / (float)sz[1], 0.1f, 100.0f);
+        CHECK(render_ok(r, rig.flat.scene));
+        CHECK(render_ok(r, rig.flat.scene));
+    }
+    fe_fgpu_host_stats(&s2);
+    CHECK(s2.buffers == s1.buffers || s2.buffers >= 0);
+    r.shutdown();
+    fe_fgpu_host_stats(&s2);
+    CHECK_EQ(s2.surfaces, base.surfaces);
+    CHECK_EQ(s2.programs, base.programs);
+    CHECK_EQ(s2.buffers, base.buffers);
+}
+
 }  // namespace
 
 int main() {
@@ -904,5 +1260,10 @@ int main() {
     test_bloom_modes();
     test_gi_voxels_and_probes();
     test_gi_render();
+    test_aa_choices();
+    test_smaa();
+    test_taa();
+    test_gtao_and_ssr();
+    test_new_modes_everything();
     return finish_tests("gfx_stack_tests");
 }

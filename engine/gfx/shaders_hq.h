@@ -98,6 +98,7 @@ void pp_down_fragment(char* out, size_t cap, bool wide);       // wide: 13 taps,
 void pp_up_fragment(char* out, size_t cap);                    // sampler u_fine, u_coarse
 void pp_composite_fragment(char* out, size_t cap, bool bloom, const PostKey& post, bool chromatic, bool ssr);
                                                                // sampler u_scene, u_bloom; u_q.x strength; u_ca.x fringe (chromatic)
+void pp_taa_fragment(char* out, size_t cap);                    // samplers u_curl, u_curn, u_depth, u_hist (see the .cpp)
 void pp_smaa_edge_fragment(char* out, size_t cap);             // sampler u_src: r / g = edge left / top (discards the rest)
 void pp_smaa_mask_fragment(char* out, size_t cap);             // sampler u_edges: discards the edge pixels
 void pp_smaa_weights_fragment(char* out, size_t cap, bool vertical);   // samplers u_edges, u_area

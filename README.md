@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/farcade-banner-dark.png">
+    <img src="docs/logo/farcade-banner-light.png" alt="Farcade Engine" width="560">
+  </picture>
+</p>
+
 # Farcade Engine
 
 A game engine for [Minimal-OS](https://github.com/fsminecrafter/Minimal-OS):

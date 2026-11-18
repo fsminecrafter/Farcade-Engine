@@ -19,12 +19,6 @@ struct LoaderMode { Mode mode; };
 LoaderMode g_inline = { Mode::Inline }, g_box = { Mode::Box };
 ImFont* g_box_font = nullptr;
 
-const IconPackEntry* entry_for_codepoint(unsigned cp) {
-    for (unsigned i = 0; i < kIconPackCount; i++)
-        if (kIconPack[i].codepoint == cp) return &kIconPack[i];
-    return nullptr;
-}
-
 Mode mode_of(const ImFontConfig* src) {
     return src->FontData == &g_box ? Mode::Box : Mode::Inline;
 }
@@ -148,9 +142,16 @@ const IconPackEntry* icon_find(const char* name) {
 }
 
 bool icon_rasterize(const IconPackEntry& e, int px, uint32_t current, uint32_t* argb) {
-    // Filled in against the SDK's vector .img renderer.
-    (void)e; (void)px; (void)current; (void)argb;
-    return false;
+    if (!e.data || px < 1 || px > 4096) return false;
+    mimg_info_t info;
+    if (!mimg_info(e.data, e.size, &info) || !info.vector) return false;
+    mimg_render_opts_t o;
+    mimg_render_opts_init(&o);
+    o.current_color = current;          // the "currentColor" paint (white: coverage for tinting)
+    o.clear = true;
+    o.alloc = malloc;                   // scratch for the rasterizer
+    o.free = free;
+    return mimg_render_ex(e.data, e.size, argb, (uint32_t)px, (uint32_t)px, (uint32_t)px, &o);
 }
 
 }  // namespace fe

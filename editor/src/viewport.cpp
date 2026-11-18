@@ -427,6 +427,7 @@ void Editor::panel_viewport() {
                 rgba = fgl.pixels();
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
+                if (const char* w = fgl.take_warning()) log(LogLevel::Warning, "FarcadeGL: %s", w);
             } else {
                 log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
                 fgl_failed = true;

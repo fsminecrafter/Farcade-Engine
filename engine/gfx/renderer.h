@@ -168,6 +168,9 @@ public:
     double init_ms() const;
     double init_shader_ms() const;
     const char* error() const;
+    // A problem that did not stop the frame (a texture that is missing or not
+    // an image draws plain white); returns it once, then null.
+    const char* take_warning();
     // Drops cached GPU meshes (for example when a model file changed).
     void forget_meshes();
 

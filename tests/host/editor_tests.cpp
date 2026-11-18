@@ -246,7 +246,7 @@ int main() {
     CHECK(ed.tool == Tool::Scale, "R selects the scale tool");
 
     // ---- hierarchy: click and shift-click rows
-    ImGuiWindow* hw = ImGui::FindWindowByName("Hierarchy");
+    ImGuiWindow* hw = ImGui::FindWindowByName("###Hierarchy");
     CHECK(hw != nullptr, "hierarchy window exists");
     {
         ed.scene.clear_selection();
@@ -554,7 +554,7 @@ int main() {
 
     // ---- console chips filter by level
     {
-        ImGuiWindow* cw = ImGui::FindWindowByName("Console");
+        ImGuiWindow* cw = ImGui::FindWindowByName("###Console");
         if (cw && cw->DockNode && cw->DockNode->TabBar) {
             ImGuiTabItem* t = ImGui::TabBarFindTabByID(cw->DockNode->TabBar, cw->TabId);
             if (t) click(cw->DockNode->TabBar->BarRect.Min.x + t->Offset + t->Width * 0.5f, cw->DockNode->TabBar->BarRect.GetCenter().y);
@@ -692,7 +692,7 @@ int main() {
         ed.scene.select_only(lever);
         // Scroll the Inspector down so the scripts are in view.
         frames(2);
-        ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
         if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
         frames(2);
         if (iw) { ImGui::SetScrollY(iw, iw->ScrollMax.y); }
@@ -810,7 +810,7 @@ int main() {
         frames(2);
         CHECK(click_ui("addmodule:light") && ed.scene.get(c3)->modules.has(ModuleKind::Light), "Add module > Light adds a light");
         frames(3);
-        ImGuiWindow* iw2 = ImGui::FindWindowByName("Inspector");
+        ImGuiWindow* iw2 = ImGui::FindWindowByName("###Inspector");
         if (iw2) { ImGui::SetScrollY(iw2, iw2->ScrollMax.y); frames(2); }
         CHECK(ui("module:light:intensity") && !ui("module:light:spot_angle"), "a point light shows intensity, not the spot angle");
         CHECK(click_ui("module:light:remove") && !ed.scene.get(c3)->modules.has(ModuleKind::Light), "the trash button removes the module");
@@ -1655,7 +1655,7 @@ int main() {
     }
 
     // ---- panels can be dragged out of the dock
-    ImGuiWindow* iw = ImGui::FindWindowByName("Inspector");
+    ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
     CHECK(iw && iw->DockIsActive, "Inspector starts docked");
     if (iw && iw->DockNode && iw->DockNode->TabBar) {
         ImGuiTabItem* t = ImGui::TabBarFindTabByID(iw->DockNode->TabBar, iw->TabId);

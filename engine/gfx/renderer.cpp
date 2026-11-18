@@ -91,6 +91,7 @@ struct TextureEntry {
     char path[256] = {};
     FGLTexture texture = 0;
     uint64_t last_use = 0;
+    bool missing = false;           // could not be read or decoded: `texture` is the shared white one
 };
 
 struct CustomShaderEntry {
@@ -167,6 +168,7 @@ struct Renderer::Impl {
     FGLBuffer sky_buffer = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
+    char warning[256] = "";             // take_warning()
     RendererStats stats;
     double init_ms = 0, init_shader_ms = 0; // init(): all, and the shader compiles in it
     bool in_render = false;
@@ -320,6 +322,25 @@ struct Renderer::Impl {
         return true;
     }
 
+    // A texture that cannot be read or decoded is not fatal: it is drawn
+    // plain white (the object's color still shows), remembered so it is not
+    // retried every frame, and reported once through take_warning().
+    FGLTexture missing_texture(const char* path, const char* why) {
+        snprintf(warning, sizeof warning, "texture %s: %s (drawn without it)", path, why);
+        TextureEntry* slot = nullptr;
+        for (TextureEntry& e : textures) if (!e.texture) { slot = &e; break; }
+        if (!slot) {
+            slot = &textures[0];
+            for (TextureEntry& e : textures) if (e.last_use < slot->last_use) slot = &e;
+            if (!slot->missing) fglDestroyTexture(gl, slot->texture);
+        }
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->texture = white_texture;
+        slot->missing = true;
+        slot->last_use = frame;
+        return white_texture;
+    }
+
     FGLTexture texture_for(const char* path, const RenderScene& scene) {
         for (TextureEntry& e : textures) {
             if (e.texture && strcmp(e.path, path) == 0) { e.last_use = frame; return e.texture; }
@@ -327,24 +348,19 @@ struct Renderer::Impl {
         if (!scene.read_asset) { set_error("FarcadeGL: no asset reader for texture"); return 0; }
         size_t size = 0;
         uint8_t* bytes = (uint8_t*)scene.read_asset(path, &size, scene.asset_user);
-        if (!bytes) { snprintf(error, sizeof error, "FarcadeGL: cannot read texture %s", path); return 0; }
+        if (!bytes) return missing_texture(path, "cannot be read");
         if (size == 0 || size > 128u * 1024u * 1024u || size > 0x7FFFFFFFu) {
             free(bytes);
-            snprintf(error, sizeof error, "FarcadeGL: invalid texture size for %s", path);
-            return 0;
+            return missing_texture(path, "has an invalid size");
         }
         int w = 0, h = 0, comp = 0;
         if (!stbi_info_from_memory(bytes, (int)size, &w, &h, &comp) || w < 1 || h < 1 || w > 4096 || h > 4096) {
             free(bytes);
-            snprintf(error, sizeof error, "FarcadeGL: invalid image dimensions for %s", path);
-            return 0;
+            return missing_texture(path, "is not an image this renderer reads (or larger than 4096)");
         }
         stbi_uc* rgba = stbi_load_from_memory(bytes, (int)size, &w, &h, &comp, 4);
         free(bytes);
-        if (!rgba) {
-            snprintf(error, sizeof error, "FarcadeGL: cannot decode texture %s", path);
-            return 0;
-        }
+        if (!rgba) return missing_texture(path, "cannot be decoded");
         uint32_t* pixels = (uint32_t*)malloc((size_t)w * (size_t)h * sizeof(uint32_t));
         if (!pixels) { stbi_image_free(rgba); set_error("out of memory decoding texture"); return 0; }
         for (size_t i = 0, n = (size_t)w * h; i < n; i++)
@@ -358,10 +374,11 @@ struct Renderer::Impl {
         if (!slot) {
             slot = &textures[0];
             for (TextureEntry& e : textures) if (e.last_use < slot->last_use) slot = &e;
-            fglDestroyTexture(gl, slot->texture);
+            if (!slot->missing) fglDestroyTexture(gl, slot->texture);
         }
         snprintf(slot->path, sizeof slot->path, "%s", path);
         slot->texture = texture;
+        slot->missing = false;
         slot->last_use = frame;
         return texture;
     }
@@ -1122,7 +1139,7 @@ struct Renderer::Impl {
             for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             for (CustomShaderEntry& e : custom_shaders) { drop(&e.shader); e.path[0] = 0; }
             for (TextureEntry& e : textures) {
-                if (e.texture) fglDestroyTexture(gl, e.texture);
+                if (e.texture && !e.missing) fglDestroyTexture(gl, e.texture);     // missing ones share white_texture
                 e = TextureEntry();
             }
             if (white_texture) fglDestroyTexture(gl, white_texture);
@@ -1239,6 +1256,14 @@ const uint32_t* Renderer::pixels() const { return impl_ ? impl_->pixels : nullpt
 int Renderer::width() const { return impl_ ? impl_->width : 0; }
 int Renderer::height() const { return impl_ ? impl_->height : 0; }
 const char* Renderer::error() const { return impl_ ? impl_->error : "the renderer is not initialised"; }
+
+const char* Renderer::take_warning() {
+    static char out[256];
+    if (!impl_ || !impl_->warning[0]) return nullptr;
+    snprintf(out, sizeof out, "%s", impl_->warning);
+    impl_->warning[0] = 0;
+    return out;
+}
 
 const RendererStats& Renderer::stats() const {
     static const RendererStats none;

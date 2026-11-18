@@ -165,6 +165,17 @@ void test_asset_materials() {
     t.items[0].shader_path = "blue.fshader";
     CHECK(render_ok(r, t.scene));
     CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 0, 0, 255, 4));
+    // A texture that cannot be read does not stop the frame: the object is
+    // drawn without it (white, so its color shows) and the renderer warns once.
+    t.items[0].shader_path = nullptr;
+    t.items[0].texture_path = "missing.png";
+    CHECK(render_ok(r, t.scene));
+    CHECK(near_px(t.at(r, Vec3(0, 0, 0.49f)), 255, 255, 255, 4));
+    const char* w = r.take_warning();
+    CHECK(w && strstr(w, "missing.png"));
+    CHECK(r.take_warning() == nullptr);
+    CHECK(render_ok(r, t.scene));                  // remembered: no second warning
+    CHECK(r.take_warning() == nullptr);
 }
 
 // ---------------------------------------------------------------- the device

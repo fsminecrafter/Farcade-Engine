@@ -24,6 +24,61 @@
 #include "fgpu_abi.h"
 #include "fgpu_host.h"
 
+// The shader cache's file access (fglcache.h), with POSIX calls. The host
+// build has no default directory: the cache is off until a program (or a
+// test) calls fglShaderCacheSetDir().
+#include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#define FGLC_FS_PROVIDED 1
+static long fglc__fs_read(const char* path, void* buf, uint32_t cap) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    long n = (long)fread(buf, 1, cap, f);
+    fclose(f);
+    return n;
+}
+static long fglc__fs_size(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+    return (long)st.st_size;
+}
+static int fglc__fs_delete(const char* path) { return remove(path) == 0; }
+static void fglc__fs_mkdirs(const char* path) {
+    char p[256];
+    size_t n = strlen(path);
+    if (n >= sizeof(p)) return;
+    memcpy(p, path, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (p[i] != '/' && p[i] != 0) continue;
+        char keep = p[i];
+        p[i] = 0;
+        mkdir(p, 0755);
+        p[i] = keep;
+    }
+}
+static int fglc__fs_write(const char* path, const void* a, uint32_t an, const void* b, uint32_t bn, const void* c,
+                          uint32_t cn) {
+    char tmp[300];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = fopen(tmp, "wb");
+    if (!f) return 0;
+    int ok = fwrite(a, 1, an, f) == an && (!bn || fwrite(b, 1, bn, f) == bn) && (!cn || fwrite(c, 1, cn, f) == cn);
+    ok = fclose(f) == 0 && ok;
+    if (ok) ok = rename(tmp, path) == 0;
+    if (!ok) remove(tmp);
+    return ok;
+}
+static void fglc__fs_list(const char* dir, void (*fn)(void* ctx, const char* name), void* ctx) {
+    DIR* d = opendir(dir);
+    if (!d) return;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL)
+        if (e->d_name[0] != '.') fn(ctx, e->d_name);
+    closedir(d);
+}
+static uint64_t fglc__fs_volume_bytes(void) { return 0; }
+
 // The only system call FarcadeGL makes: SYS_GPU.
 static inline uint64_t mos_syscall1(uint64_t number, uint64_t arg1) {
     if (number == SYS_GPU) return fe_fgpu_host_syscall((syscall_gpu_request_t*)(uintptr_t)arg1);

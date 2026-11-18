@@ -363,6 +363,159 @@ void test_device() {
 
 // ----------------------------------------------------------- the renderer
 
+// The FarcadeGL shader cache (fglcache.h): a program compiled once comes
+// from the cache the next time (also after a "restart"), damaged files and
+// a lost index are handled, and the limit evicts the least recently used.
+static uint32_t cache_draw(FGLContext* gl, FGLBuffer vb, FGLShader* sh, float g) {
+    uint32_t px[32 * 24];
+    fglUniform4f(sh, fglUniformLocation(sh, "u_c"), 0.0f, g, 0.0f, 1.0f);
+    fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+    fglUseShader(gl, sh);
+    fglDraw(gl, vb, 0, 3);
+    fglSubmit(gl);
+    fglReadPixels(gl, px, 32 * 4);
+    return px[12 * 32 + 16] & 0xFFFFFF;
+}
+
+static int cache_files(const char* dir) {
+    int n = 0;
+    DIR* d = opendir(dir);
+    if (!d) return 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        size_t l = strlen(e->d_name);
+        if (l > 4 && !strcmp(e->d_name + l - 4, ".fgc")) n++;
+    }
+    closedir(d);
+    return n;
+}
+
+void test_shader_cache() {
+    // The limits from the volume size.
+    const uint64_t MB = 1024ull * 1024ull, GB = 1024ull * MB;
+    CHECK(fglc__limit_for(0) == 20 * MB);                   // unknown (RAM disk)
+    CHECK(fglc__limit_for(100 * MB) == 20 * MB);
+    CHECK(fglc__limit_for(60 * GB) == 5 * GB);
+    CHECK(fglc__limit_for(2 * GB) == 1 * GB);               // never more than half the disk
+    CHECK(fglc__limit_for(100 * GB) == 30 * GB);
+    CHECK(fglc__limit_for(299 * GB) == 30 * GB);
+    CHECK(fglc__limit_for(300 * GB) == 50 * GB);
+    CHECK(fglc__limit_for(2000 * GB) == 50 * GB);
+
+    char dir[] = "/tmp/fe_shader_cache_XXXXXX";
+    CHECK(mkdtemp(dir) != nullptr);
+    char sub[64];
+    snprintf(sub, sizeof sub, "%s/cache/shaders", dir);
+    fglShaderCacheSetDir(sub);
+
+    FGLContextDesc d;
+    memset(&d, 0, sizeof d);
+    d.width = 32; d.height = 24; d.depth = 1;
+    FGLContext* gl = fglCreateContext(&d);
+    CHECK(gl != nullptr);
+    if (!gl) return;
+    FGLVertex tri[3] = {
+        { -0.8f, -0.8f, 0, 0, 0, 1, 1, 0, 0, 1 },
+        { 0.8f, -0.8f, 0, 0, 0, 1, 1, 0, 0, 1 },
+        { 0.0f, 0.8f, 0, 0, 0, 1, 1, 0, 0, 1 },
+    };
+    FGLBuffer vb = fglCreateBuffer(gl, sizeof tri);
+    fglBufferData(gl, vb, 0, tri, sizeof tri);
+    const char* vs = "attribute vec3 position;\nvoid main() { gl_Position = vec4(position, 1.0); }\n";
+    const char* fs = "uniform vec4 u_c;\nvoid main() { gl_FragColor = u_c; }\n";
+
+    // First time: compiled and stored.
+    FGLShader* sh = fglCreateShader(gl, vs, fs);
+    CHECK(sh != nullptr);
+    fgl_shader_cache_stats_t st;
+    fglShaderCacheStats(&st);
+    CHECK(st.enabled && st.misses == 1 && st.hits == 0 && st.stores == 1 && st.entries == 1);
+    CHECK(st.limit == 20 * MB);
+    CHECK(cache_files(sub) == 1);
+    if (sh) { CHECK_EQ(cache_draw(gl, vb, sh, 1.0f), 0x00FF00); fglDestroyShader(gl, sh); }
+
+    // A "new program": the state starts over, the index is read back, and
+    // the program comes from the cache and draws the same.
+    fglShaderCacheSetDir(sub);
+    sh = fglCreateShader(gl, vs, fs);
+    CHECK(sh != nullptr);
+    fglShaderCacheStats(&st);
+    CHECK(st.hits == 1 && st.misses == 0 && st.entries == 1);
+    if (sh) { CHECK_EQ(cache_draw(gl, vb, sh, 1.0f), 0x00FF00); fglDestroyShader(gl, sh); }
+
+    // A damaged file is thrown away and the program compiled again.
+    {
+        DIR* dd = opendir(sub);
+        struct dirent* e;
+        char path[256] = "";
+        while (dd && (e = readdir(dd)) != NULL)
+            if (strstr(e->d_name, ".fgc")) snprintf(path, sizeof path, "%s/%s", sub, e->d_name);
+        if (dd) closedir(dd);
+        FILE* f = fopen(path, "r+b");
+        CHECK(f != nullptr);
+        if (f) { fseek(f, 20, SEEK_SET); fputc(0x5A, f); fputc(0xA5, f); fclose(f); }
+    }
+    fglShaderCacheSetDir(sub);
+    sh = fglCreateShader(gl, vs, fs);
+    CHECK(sh != nullptr);
+    fglShaderCacheStats(&st);
+    CHECK(st.hits == 0 && st.misses == 1 && st.stores == 1 && st.entries == 1);
+    if (sh) { CHECK_EQ(cache_draw(gl, vb, sh, 0.5f) & 0x00FF00, 0x008000 & 0x00FF00); fglDestroyShader(gl, sh); }
+
+    // A small limit (room for about five programs) keeps the most recently used.
+    fglShaderCacheStats(&st);
+    uint64_t per = st.entries ? st.bytes / st.entries : 1000;
+    uint64_t small = per * 5 + per / 2;
+    fglShaderCacheSetLimit(small);
+    char src[8][160];
+    for (int i = 0; i < 8; i++) {
+        snprintf(src[i], sizeof src[i], "uniform vec4 u_c;\nvoid main() { gl_FragColor = u_c * %d.0; }\n", i + 2);
+        FGLShader* s = fglCreateShader(gl, vs, src[i]);
+        CHECK(s != nullptr);
+        if (s) fglDestroyShader(gl, s);
+    }
+    fglShaderCacheStats(&st);
+    CHECK(st.evictions > 0);
+    CHECK(st.bytes <= small);
+    CHECK(st.entries >= 1 && (int)st.entries == cache_files(sub));
+    fglShaderCacheSetLimit(0);
+    uint32_t hits = st.hits;
+    FGLShader* last = fglCreateShader(gl, vs, src[7]);     // the newest one is still there
+    fglShaderCacheStats(&st);
+    CHECK(st.hits == hits + 1);
+    if (last) fglDestroyShader(gl, last);
+
+    // A lost index: the files are taken back in.
+    int files = cache_files(sub);
+    char ip[256];
+    snprintf(ip, sizeof ip, "%s/index.fgi", sub);
+    remove(ip);
+    fglShaderCacheSetDir(sub);
+    fglShaderCacheStats(&st);
+    CHECK((int)st.entries == files && files > 0);
+
+    // Off: neither looked up nor stored.
+    fglShaderCacheEnable(0);
+    sh = fglCreateShader(gl, vs, "uniform vec4 u_c;\nvoid main() { gl_FragColor = u_c * 0.25; }\n");
+    CHECK(sh != nullptr);
+    if (sh) fglDestroyShader(gl, sh);
+    CHECK(cache_files(sub) == files);
+    fglShaderCacheEnable(1);
+
+    // Clear empties it.
+    fglShaderCacheClear();
+    fglShaderCacheStats(&st);
+    CHECK(st.entries == 0 && st.bytes == 0);
+    CHECK(cache_files(sub) == 0);
+
+    fglDestroyBuffer(gl, vb);
+    fglDestroyContext(gl);
+    fglShaderCacheSetDir("");                               // off again for the other tests
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+    CHECK(system(cmd) == 0);
+}
+
 void test_projection() {
     // A small unlit cube at a known point: its pixels must be centered where the
     // engine's own matrices put the point (x right, y up, camera down -z).
@@ -1555,6 +1708,7 @@ int main() {
     test_shader_file();
     test_asset_materials();
     test_device();
+    test_shader_cache();
     test_projection();
     test_lighting();
     test_light_types();

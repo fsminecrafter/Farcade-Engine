@@ -104,6 +104,8 @@ public:
 
     // Frees every GL object (targets, shaders); call before the context goes.
     void release(FGLContext* gl);
+    // Only the targets of the image's size (a resize): programs and buffers stay.
+    void release_targets();
     // The renderer's compile gate (may be null: no budget).
     void set_gate(CompileGate* gate);
 

@@ -1382,6 +1382,36 @@ void test_screen_shaders() {
     r.shutdown();
 }
 
+// The editor on Minimal-OS: draft frames while the camera moves, full ones when it stops, now and then another
+// size (adaptive resolution). After the first round nothing may compile again.
+void test_no_recompile() {
+    Renderer r;
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    GraphicsSettings s;
+    s.apply_preset(GraphicsPreset::High);
+    s.allow_gpu_effects_on_cpu = true;
+    r.set_settings(s);
+    static SmokeScene smoke;
+    smoke.build();
+    RenderScene sc = smoke.scene;
+    int sizes[3][2] = { { kSmokeWidth, kSmokeHeight }, { kSmokeWidth / 2, kSmokeHeight / 2 }, { kSmokeWidth / 4, kSmokeHeight / 4 } };
+    int after_warmup = -1;
+    for (int f = 0; f < 24; f++) {
+        bool draft = (f % 3) != 2;
+        int si = draft ? 1 + (f % 2) : 0;
+        if (r.width() != sizes[si][0]) CHECK(r.resize(sizes[si][0], sizes[si][1]));
+        sc.draft = draft;
+        sc.camera.view = Mat4::look_at(Vec3(3.0f + 0.1f * f, 2.0f, 4.0f), Vec3(0, 0, 0), Vec3(0, 1, 0));
+        r.set_compile_budget(0);
+        CHECK(render_ok(r, sc));
+        if (f == 11) after_warmup = 0;
+        if (after_warmup >= 0 && f > 11) after_warmup += r.shaders_compiled();
+        if (getenv("FE_DEBUG_RECOMPILE")) printf("frame %d draft %d %dx%d: %d compiled\n", f, draft, r.width(), r.height(), r.shaders_compiled());
+    }
+    CHECK(after_warmup == 0);
+    r.shutdown();
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1402,5 +1432,6 @@ int main() {
     test_new_modes_everything();
     test_ssaa_and_vsync();
     test_screen_shaders();
+    test_no_recompile();
     return finish_tests("gfx_stack_tests");
 }

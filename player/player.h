@@ -16,6 +16,7 @@ struct Options {
     const char* png_path = nullptr;     // host build: write the last frame here
     int render_div = 1;                 // render at 1/render_div of the screen size and scale up
     bool audio = true;
+    const char* vsync = nullptr;        // "off" | "double" | "triple" | "adaptive": overrides graphics.cfg (also with --frames)
     bool quiet = false;                 // no "FE PLAYER" progress lines
 };
 

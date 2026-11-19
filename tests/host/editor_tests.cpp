@@ -9,6 +9,7 @@
 #include "fx_bridge.h"
 #include "fx/fx.h"
 #include "platform/headless.h"
+#include "platform/frame_pacer.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -131,7 +132,36 @@ static const Editor::TileRect* tile(const char* name) {
     return nullptr;
 }
 
+static void test_frame_pacer() {
+    using platform::FramePacer;
+    using platform::Vsync;
+    const double p = 1.0 / 60.0;
+    auto near = [](double a, double b) { return a - b < 1e-6 && b - a < 1e-6; };
+    FramePacer f;
+    f.set(Vsync::Off, 60);
+    CHECK(near(f.present_time(1.234), 1.234), "frame pacer");
+    // Double: frames on refreshes; a late one (25 ms) waits for the refresh after
+    f.set(Vsync::Double, 60);
+    double t0 = 10.0;
+    CHECK(near(f.present_time(t0), t0), "frame pacer");
+    CHECK(near(f.present_time(t0 + 0.005), t0 + p), "frame pacer");
+    CHECK(near(f.present_time(t0 + p + 0.025), t0 + 3 * p), "frame pacer");
+    CHECK(near(f.present_time(t0 + 3 * p + 0.001), t0 + 4 * p), "frame pacer");     // never twice on one refresh
+    // Adaptive: on time like Double; a late frame at once
+    f.set(Vsync::Adaptive, 60);
+    CHECK(near(f.present_time(20.0), 20.0), "frame pacer");
+    CHECK(near(f.present_time(20.004), 20.0 + p), "frame pacer");
+    CHECK(near(f.present_time(20.0 + p + 0.030), 20.0 + p + 0.030), "frame pacer");
+    CHECK(near(f.present_time(20.0 + p + 0.032), 20.0 + 2 * p + 0.030), "frame pacer");
+    // Triple: the next refresh at or after a time
+    f.set(Vsync::Triple, 120);
+    CHECK(near(f.next_refresh(5.0), 5.0), "frame pacer");
+    CHECK(near(f.next_refresh(5.001), 5.0 + 1.0 / 120.0), "frame pacer");
+    CHECK(near(f.next_refresh(5.0 + 2.0 / 120.0), 5.0 + 2.0 / 120.0), "frame pacer");
+}
+
 int main() {
+    test_frame_pacer();
     const char* dir = "build/host/test-project";
     mkdir("build/host", 0755);
     mkdir(dir, 0755);

@@ -419,22 +419,44 @@ uint32_t* SwUpscaler::buffer(int dw, int dh) {
 const uint32_t* SwUpscaler::run(const uint32_t* src, int sw, int sh, int dw, int dh) {
     if (!src || sw < 1 || sh < 1 || dw < 1 || dh < 1) return nullptr;
     buffer(dw, dh);
+    // Per column: the left source pixel (low 24 bits) and the weight of the right one (high 8 bits).
     if (map_cap_ < dw) {
         free(map_);
         map_ = (int*)malloc((size_t)dw * sizeof(int));
         map_cap_ = map_ ? dw : 0;
     }
     if (!buf_ || !map_) return nullptr;
-    for (int x = 0; x < dw; x++) map_[x] = (int)((int64_t)x * sw / dw);
-    int last_sy = -1;
+    // Bilinear (a stretched small image looks soft instead of blocky), 8 bit weights,
+    // two channels at a time; RGBA (R low) in, XRGB out.
+    for (int x = 0; x < dw; x++) {
+        int fx = (int)(((int64_t)(2 * x + 1) * sw * 128) / dw) - 128;     // source x in 1/256 pixels
+        if (fx < 0) fx = 0;
+        int x0 = fx >> 8;
+        int w = fx & 255;
+        if (x0 >= sw - 1) { x0 = sw - 1; w = 0; }
+        map_[x] = x0 | w << 24;
+    }
+    auto lerp = [](uint32_t a, uint32_t b, uint32_t w) {
+        uint32_t rb = ((a & 0x00FF00FFu) * (256 - w) + (b & 0x00FF00FFu) * w) >> 8 & 0x00FF00FFu;
+        uint32_t g = (((a >> 8) & 0x00FF00FFu) * (256 - w) + ((b >> 8) & 0x00FF00FFu) * w) & 0xFF00FF00u;
+        return rb | g;
+    };
     for (int y = 0; y < dh; y++) {
-        int sy = (int)((int64_t)y * sh / dh);
+        int fy = (int)(((int64_t)(2 * y + 1) * sh * 128) / dh) - 128;
+        if (fy < 0) fy = 0;
+        int y0 = fy >> 8;
+        uint32_t wy = (uint32_t)(fy & 255);
+        if (y0 >= sh - 1) { y0 = sh - 1; wy = 0; }
+        const uint32_t* r0 = src + (size_t)y0 * sw;
+        const uint32_t* r1 = wy ? r0 + sw : r0;
         uint32_t* out = buf_ + (size_t)y * dw;
-        if (sy == last_sy) { memcpy(out, out - dw, (size_t)dw * 4); continue; }
-        last_sy = sy;
-        const uint32_t* row = src + (size_t)sy * sw;
         for (int x = 0; x < dw; x++) {
-            uint32_t p = row[map_[x]];
+            int m = map_[x];
+            int x0 = m & 0xFFFFFF;
+            uint32_t wx = (uint32_t)m >> 24;
+            int x1 = wx ? x0 + 1 : x0;
+            uint32_t top = lerp(r0[x0], r0[x1], wx), bot = lerp(r1[x0], r1[x1], wx);
+            uint32_t p = lerp(top, bot, wy);
             out[x] = (p & 0xFF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
         }
     }

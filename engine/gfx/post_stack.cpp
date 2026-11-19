@@ -210,11 +210,77 @@ bool mat4_inverse(const Mat4& mm, Mat4* out) {
 
 // ------------------------------------------------------------------ upscale
 
+namespace {
+// The source pixels under destination pixel i (the span [i * n / d, (i + 1) * n / d)) and how much of each
+// lies in it, as weights summing to 256. At most 4 taps (ratios up to 3).
+struct AreaTaps { int first; int count; uint32_t w[4]; };
+void area_taps(int n, int d, AreaTaps* out) {
+    double r = (double)n / (double)d;
+    for (int i = 0; i < d; i++) {
+        double a = i * r, b = (i + 1) * r;
+        if (r < 1.0) {                       // this axis is not reduced: the nearest pixel
+            int k = (int)((i + 0.5) * r);
+            if (k > n - 1) k = n - 1;
+            out[i].first = k; out[i].count = 1; out[i].w[0] = 256;
+            continue;
+        }
+        int f = (int)a;
+        int c = 0;
+        uint32_t sum = 0;
+        for (int k = f; k < n && k < b && c < 4; k++) {
+            double lo = a > k ? a : (double)k, hi = b < k + 1 ? b : (double)(k + 1);
+            uint32_t w = (uint32_t)((hi - lo) / r * 256.0 + 0.5);
+            out[i].w[c++] = w;
+            sum += w;
+        }
+        if (c == 0) { out[i].w[0] = 256; c = 1; sum = 256; f = n - 1; }
+        out[i].w[0] += 256 - sum;            // rounding: the weights sum to 256 exactly
+        out[i].first = f;
+        out[i].count = c;
+    }
+}
+}  // namespace
+
+void downsample_xrgb_to_rgba(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh) {
+    AreaTaps* tx = (AreaTaps*)malloc(sizeof(AreaTaps) * (size_t)dw);
+    AreaTaps* ty = (AreaTaps*)malloc(sizeof(AreaTaps) * (size_t)dh);
+    uint32_t* acc = (uint32_t*)malloc(sizeof(uint32_t) * 3 * (size_t)dw);
+    if (!tx || !ty || !acc) { free(tx); free(ty); free(acc); return; }
+    area_taps(sw, dw, tx);
+    area_taps(sh, dh, ty);
+    for (int y = 0; y < dh; y++) {
+        memset(acc, 0, sizeof(uint32_t) * 3 * (size_t)dw);
+        for (int j = 0; j < ty[y].count; j++) {
+            const uint32_t* row = src + (size_t)(ty[y].first + j) * (size_t)sw;
+            uint32_t wy = ty[y].w[j];
+            for (int x = 0; x < dw; x++) {
+                const AreaTaps& t = tx[x];
+                uint32_t r = 0, g = 0, b = 0;
+                for (int k = 0; k < t.count; k++) {
+                    uint32_t p = row[t.first + k], w = t.w[k];
+                    r += ((p >> 16) & 0xFFu) * w; g += ((p >> 8) & 0xFFu) * w; b += (p & 0xFFu) * w;
+                }
+                acc[x * 3] += r * wy; acc[x * 3 + 1] += g * wy; acc[x * 3 + 2] += b * wy;
+            }
+        }
+        uint32_t* o = dst + (size_t)y * (size_t)dw;
+        for (int x = 0; x < dw; x++) {
+            uint32_t r = (acc[x * 3] + 32768u) >> 16, g = (acc[x * 3 + 1] + 32768u) >> 16, b = (acc[x * 3 + 2] + 32768u) >> 16;
+            o[x] = 0xFF000000u | (b << 16) | (g << 8) | r;      // RGBA: R in the low byte
+        }
+    }
+    free(tx); free(ty); free(acc);
+}
+
 void upscale_xrgb_to_rgba(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh) {
     auto swz = [](uint32_t p) { return 0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu); };
     if (sw == dw && sh == dh) {
         uint32_t n = (uint32_t)dw * (uint32_t)dh;
         for (uint32_t i = 0; i < n; i++) dst[i] = swz(src[i]);
+        return;
+    }
+    if (sw > dw || sh > dh) {               // supersampled: an area filter (box over the footprint)
+        downsample_xrgb_to_rgba(src, sw, sh, dst, dw, dh);
         return;
     }
     // Bilinear, 8 bit weights; the horizontal taps are the same on every row.

@@ -1193,6 +1193,28 @@ void Editor::settings_graphics() {
         track("gfx:pbr");
         if (changed) g.preset = gfx::GraphicsPreset::Custom;
         ImGui::EndDisabled();
+        // Supersampling works on every tier (the frame is drawn bigger and averaged down).
+        static const char* ssaa_modes[] = { "Off", "2x", "4x" };
+        choice("Supersampling", "##ssaa_fgl", "ssaa", ssaa_modes);
+        if (g.ssaa != gfx::SSAAMode::Off)
+            faint(g.ssaa == gfx::SSAAMode::X4 ? "4x: drawn at 2 x 2 the pixels and averaged down. The smoothest edges, four times the work."
+                                              : "2x: drawn at twice the pixels (1.41 per side) and averaged down. Stacks with the anti-aliasing above.");
+        else if (g.antialiasing && g.aa_mode == gfx::AAMode::TAA)
+            faint("The viewport draws a still view once, so TAA has no history to smooth with there: use Supersampling for sharp, smooth stills.");
+        // Vsync (the player: games and exports; the viewport only draws when something changed).
+        static const char* vsync_modes[] = { "Off", "Double buffered", "Triple buffered", "Adaptive" };
+        choice("Vsync", "##vsync", "vsync", vsync_modes);
+        if (g.vsync != gfx::VsyncMode::Off) {
+            prop_label("  Refresh rate");
+            if (ImGui::SliderInt("##hz", &g.refresh_hz, 30, 240, "%d Hz")) g.preset = gfx::GraphicsPreset::Custom;
+            track("gfx:refresh_hz");
+        }
+        switch (g.vsync) {
+            case gfx::VsyncMode::Off: faint("Frames are shown as soon as they are done: no frame cap, may tear."); break;
+            case gfx::VsyncMode::Double: faint("A frame waits for the next refresh. A late frame waits for the one after (60, 30, 20 fps)."); break;
+            case gfx::VsyncMode::Triple: faint("The game draws the next frame while the finished one waits for the refresh; the newest is shown. No drop to half rate, one frame more latency."); break;
+            case gfx::VsyncMode::Adaptive: faint("Like double buffered, but a late frame is shown at once instead of waiting a whole refresh."); break;
+        }
         if (fgl_backend[0]) {
             char on[128];
             snprintf(on, sizeof(on), "Running now: %s%s%s%s%s%s", fgl_features.shadows ? "shadows  " : "",

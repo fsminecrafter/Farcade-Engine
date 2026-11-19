@@ -1266,6 +1266,58 @@ void test_new_modes_everything() {
 
 }  // namespace
 
+void test_ssaa_and_vsync() {
+    // settings: ssaa off | 2x | 4x, vsync off | double | triple | adaptive, refresh_hz 30..240
+    GraphicsSettings g;
+    char v[32];
+    CHECK(g.ssaa == SSAAMode::Off && g.vsync == VsyncMode::Double && g.refresh_hz == 60);
+    const char* ss[] = { "off", "2x", "4x" };
+    for (const char* a : ss) { CHECK(graphics_set_text(&g, "ssaa", a) && graphics_get_text(g, "ssaa", v, sizeof v) && !strcmp(v, a)); }
+    const char* vs[] = { "off", "double", "triple", "adaptive" };
+    for (const char* a : vs) { CHECK(graphics_set_text(&g, "vsync", a) && graphics_get_text(g, "vsync", v, sizeof v) && !strcmp(v, a)); }
+    CHECK(graphics_set_text(&g, "refresh_hz", "144") && g.refresh_hz == 144);
+    CHECK(!graphics_set_text(&g, "refresh_hz", "500"));
+    // the area filter: a 2x image becomes the exact 2 x 2 average; a 1.5x one keeps the overall mean
+    uint32_t src[16], dst[4];
+    for (int i = 0; i < 16; i++) src[i] = (i % 4 < 2) == (i / 4 < 2) ? 0x00FFFFFFu : 0x00000000u;
+    src[0] = 0x00FF0000u;                               // XRGB red in one sample of the first block
+    downsample_xrgb_to_rgba(src, 4, 4, dst, 2, 2);
+    CHECK((dst[0] & 0xFFu) == 255 && ((dst[0] >> 8) & 0xFFu) == 191 && ((dst[0] >> 16) & 0xFFu) == 191);
+    CHECK((dst[1] & 0xFFFFFFu) == 0 && (dst[2] & 0xFFFFFFu) == 0 && (dst[3] & 0xFFFFFFu) == 0xFFFFFFu);
+    uint32_t big[9 * 9], small[6 * 6];
+    for (int i = 0; i < 81; i++) big[i] = (i & 1) ? 0x00FFFFFFu : 0;
+    downsample_xrgb_to_rgba(big, 9, 9, small, 6, 6);
+    long sum = 0;
+    for (int i = 0; i < 36; i++) sum += small[i] & 0xFF;
+    CHECK(sum / 36 > 115 && sum / 36 < 140);             // 40 of 81 white: about 126
+    // a supersampled render is the size asked for and smoother: fewer hard steps along edges
+    Renderer r;
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    GraphicsSettings s;
+    s.apply_preset(GraphicsPreset::Low);
+    static SmokeScene smoke;
+    smoke.build();
+    const RenderScene& sc = smoke.scene;
+    r.set_settings(s);
+    CHECK(render_ok(r, sc));
+    auto steps = [&](const uint32_t* px) {
+        long n = 0;
+        for (int y = 0; y < kSmokeHeight; y++)
+            for (int x = 1; x < kSmokeWidth; x++) {
+                int a = px[y * kSmokeWidth + x] & 0xFF, b = px[y * kSmokeWidth + x - 1] & 0xFF;
+                if ((a > b ? a - b : b - a) > 60) n++;
+            }
+        return n;
+    };
+    long hard_off = steps(r.pixels());
+    s.ssaa = SSAAMode::X4;
+    r.set_settings(s);
+    CHECK(render_ok(r, sc) && r.width() == kSmokeWidth && r.height() == kSmokeHeight);
+    long hard_4x = steps(r.pixels());
+    CHECK(hard_4x < hard_off);
+    r.shutdown();
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1284,5 +1336,6 @@ int main() {
     test_taa();
     test_gtao_and_ssr();
     test_new_modes_everything();
+    test_ssaa_and_vsync();
     return finish_tests("gfx_stack_tests");
 }

@@ -7,12 +7,14 @@
 //     create / present, and the window's events (mouse in window
 //     coordinates, keys while focused, resize, close).
 #include "platform/platform.h"
+#include "platform/frame_pacer.h"
 #include "swraster.h"
 
 #include "minimalos.h"
 #include "graphics.h"
 #include "process.h"
 #include "window.h"
+#include "thread.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +28,7 @@ uint32_t* g_pixels;
 bool g_have_screen;
 uint32_t g_window;                      // 0 = full screen
 bool g_fullscreen;
+void stop_present_thread();         // vsync, below
 float g_mouse_x, g_mouse_y;
 uint8_t g_buttons;
 uint8_t g_mods;
@@ -355,6 +358,7 @@ bool toggle_fullscreen() {
 }
 
 void shutdown() {
+    stop_present_thread();
     if (g_window) mos_window_close(g_window);
     g_window = 0;
     g_fullscreen = false;
@@ -368,15 +372,127 @@ int width() { return g_fb.width; }
 int height() { return g_fb.height; }
 Framebuffer& framebuffer() { return g_fb; }
 
-void present() {
+// ---- vsync (frame_pacer.h)
+
+namespace {
+
+FramePacer g_pacer;
+
+// Sleeps until `t` (time_seconds()); the last millisecond by yielding.
+void sleep_until(double t) {
+    for (;;) {
+        double left = t - time_seconds();
+        if (left <= 0) return;
+        if (left > 0.0015) mos_sleep((uint32_t)((left - 0.001) * 1000.0));
+        else mos_thread_yield();
+    }
+}
+
+void present_now(const uint32_t* px, int w, int h, int pitch) {
     if (g_window) {
-        make_opaque(0, 0, g_fb.width, g_fb.height);
-        mos_window_present(g_window, g_fb.pixels, (uint32_t)g_fb.pitch * 4, 0, 0, (uint32_t)g_fb.width, (uint32_t)g_fb.height);
+        mos_window_present(g_window, px, (uint32_t)pitch * 4, 0, 0, (uint32_t)w, (uint32_t)h);
         return;
     }
-    mos_graphics_blit_surface(g_fb.pixels, (uint32_t)g_fb.width, (uint32_t)g_fb.height, (uint32_t)g_fb.pitch * 4, 0, 0,
-                              g_fb.width, g_fb.height, 0, 0, SYS_GRAPHICS_BLIT_OPAQUE);
-    mos_graphics_present(0, 0, g_fb.width, g_fb.height);
+    mos_graphics_blit_surface(px, (uint32_t)w, (uint32_t)h, (uint32_t)pitch * 4, 0, 0, w, h, 0, 0, SYS_GRAPHICS_BLIT_OPAQUE);
+    mos_graphics_present(0, 0, w, h);
+}
+
+// Triple buffering: three copies of the frame. The game copies a finished
+// frame into a free one and marks it ready (the older ready one is free
+// again: the newest wins); the present thread shows the ready one at each
+// refresh. The game never waits for a refresh.
+struct TripleSlot { uint32_t* px = nullptr; size_t cap = 0; int w = 0, h = 0; };
+TripleSlot g_slots[3];
+int g_ready = -1, g_showing = -1;
+mos_mutex_t g_slot_lock;
+mos_thread_t g_present_thread;
+volatile bool g_present_run = false;
+
+void present_thread(void*) {
+    while (g_present_run) {
+        sleep_until(g_pacer.next_refresh(time_seconds() + 0.0005));
+        if (!g_present_run || g_pacer.mode() != Vsync::Triple) break;
+        mos_mutex_lock(&g_slot_lock);
+        int i = g_ready;
+        if (i >= 0) { g_showing = i; g_ready = -1; }
+        mos_mutex_unlock(&g_slot_lock);
+        if (i < 0) continue;                    // nothing new: the screen keeps the last frame
+        present_now(g_slots[i].px, g_slots[i].w, g_slots[i].h, g_slots[i].w);
+        mos_mutex_lock(&g_slot_lock);
+        g_showing = -1;
+        mos_mutex_unlock(&g_slot_lock);
+    }
+    g_present_run = false;
+}
+
+void stop_present_thread() {
+    if (!g_present_thread.id) return;
+    g_present_run = false;
+    mos_thread_join(&g_present_thread);
+    memset(&g_present_thread, 0, sizeof(g_present_thread));
+    g_ready = g_showing = -1;
+}
+
+bool present_triple() {
+    if (!g_present_thread.id || !g_present_run) {
+        g_present_run = true;
+        if (mos_thread_create(&g_present_thread, present_thread, nullptr, 0) != 0) {
+            g_present_run = false;
+            memset(&g_present_thread, 0, sizeof(g_present_thread));
+            return false;
+        }
+    }
+    mos_mutex_lock(&g_slot_lock);
+    int w = -1;
+    for (int i = 0; i < 3; i++) if (i != g_ready && i != g_showing) { w = i; break; }
+    mos_mutex_unlock(&g_slot_lock);
+    if (w < 0) return false;
+    TripleSlot& sl = g_slots[w];
+    size_t need = (size_t)g_fb.width * g_fb.height;
+    if (sl.cap < need) {
+        free(sl.px);
+        sl.px = (uint32_t*)malloc(need * 4);
+        sl.cap = sl.px ? need : 0;
+        if (!sl.px) return false;
+    }
+    for (int y = 0; y < g_fb.height; y++)
+        memcpy(sl.px + (size_t)y * g_fb.width, g_fb.pixels + (size_t)y * g_fb.pitch, (size_t)g_fb.width * 4);
+    sl.w = g_fb.width;
+    sl.h = g_fb.height;
+    mos_mutex_lock(&g_slot_lock);
+    g_ready = w;
+    mos_mutex_unlock(&g_slot_lock);
+    return true;
+}
+
+}  // namespace
+
+void set_vsync(int mode, int hz) {
+    if (mode < 0 || mode > 3) mode = 0;
+    if ((Vsync)mode != Vsync::Triple) stop_present_thread();
+    g_pacer.set((Vsync)mode, hz);
+}
+
+bool is_fullscreen() {
+    if (!g_window) return true;
+    syscall_window_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (mos_window_get_info(g_window, &info) != SYS_SUCCESS) return g_fullscreen;
+    return (info.flags & SYSCALL_WINDOW_FULLSCREEN) != 0;
+}
+
+void present() {
+    if (g_window) make_opaque(0, 0, g_fb.width, g_fb.height);
+    switch (g_pacer.mode()) {
+        case Vsync::Off: break;
+        case Vsync::Triple:
+            if (present_triple()) return;
+            break;                              // no thread or memory: shown at once
+        default:
+            sleep_until(g_pacer.present_time(time_seconds()));
+            break;
+    }
+    present_now(g_fb.pixels, g_fb.width, g_fb.height, g_fb.pitch);
 }
 
 void present_region(int x, int y, int w, int h) {

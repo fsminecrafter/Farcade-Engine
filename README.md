@@ -34,6 +34,10 @@ repository.
 | **Collider shapes**: Edit shape, then drag the dots (height, radius, box size) | The editor viewport with the GPU tier forced on (Settings > Graphics) |
 | ![Material settings in the Inspector](docs/screenshots/editor-material.png) | ![The unsaved-changes prompt](docs/screenshots/editor-unsaved.png) |
 | **Materials**: roughness, metal, unlit and shadows per object (Look); the scene saved as `scenes/main.fscene` | **Unsaved changes**: New scene, Open and Quit ask first; Ctrl+Z / Ctrl+Y undo and redo every edit |
+| ![A CRT screen shader on the current camera](docs/screenshots/editor-screen-shader.png) | ![The viewport in fullscreen](docs/screenshots/editor-viewport-fullscreen.png) |
+| **Camera shaders**: up to three screen shaders on a Camera (Shader 1-3, Shader params), run in order over what it sees; here the CRT sample (`assets/samples/screen`) | **Fullscreen viewport**: the button under the orientation gizmo (Esc leaves); Play / Stop stay at hand |
+| ![AA off next to SMAA with 4x supersampling](docs/screenshots/gfx-ssaa.png) | |
+| **Supersampling**: Off, 2x or 4x on top of FXAA / SMAA / TAA (Settings > Graphics), any tier; zoomed 2x | |
 
 ![The editor running on Minimal-OS in QEMU](docs/screenshots/editor-minimal-os.png)
 

@@ -13,6 +13,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 
 using namespace fe;
 using namespace fe::gfx;
@@ -1318,6 +1319,69 @@ void test_ssaa_and_vsync() {
     r.shutdown();
 }
 
+// Screen shaders read from memory (RenderScene::read_asset).
+const char* g_screen_src[2] = {
+    "uniform sampler2D u_screen;\nvarying vec2 uv;\nvoid main() { gl_FragColor = vec4(texture2D(u_screen, uv).rgb, 1.0); }\n",
+    "uniform sampler2D u_screen;\nuniform vec4 u_params;\nvarying vec2 uv;\n"
+    "void main() { vec3 c = texture2D(u_screen, uv).rgb; gl_FragColor = vec4(mix(c, vec3(1.0, 1.0, 1.0) - c, u_params.x), 1.0); }\n",
+};
+void* read_screen_src(const char* path, size_t* size, void*) {
+    const char* src = !strcmp(path, "copy.fshader") ? g_screen_src[0] : (!strcmp(path, "invert.fshader") ? g_screen_src[1] : nullptr);
+    if (!src) return nullptr;
+    *size = strlen(src);
+    char* m = (char*)malloc(*size + 1);
+    memcpy(m, src, *size + 1);
+    return m;
+}
+
+void test_screen_shaders() {
+    Renderer r;
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    GraphicsSettings s;
+    s.apply_preset(GraphicsPreset::Low);
+    r.set_settings(s);
+    static SmokeScene smoke;
+    smoke.build();
+    RenderScene sc = smoke.scene;
+    sc.read_asset = read_screen_src;
+    CHECK(render_ok(r, sc));
+    const int n = kSmokeWidth * kSmokeHeight;
+    uint32_t* base = (uint32_t*)malloc((size_t)n * 4);
+    memcpy(base, r.pixels(), (size_t)n * 4);
+    // a copy pass gives the same picture, the right way up
+    sc.screen_shaders[0] = "copy.fshader";
+    sc.screen_shader_count = 1;
+    CHECK(render_ok(r, sc));
+    CHECK(r.stats().screen_passes == 1);
+    long diff = 0;
+    for (int i = 0; i < n; i++)
+        for (int c = 0; c < 24; c += 8) {
+            int a = (base[i] >> c) & 0xFF, b = (r.pixels()[i] >> c) & 0xFF;
+            diff += a > b ? a - b : b - a;
+        }
+    CHECK(diff / (n * 3) <= 1);
+    // invert at amount 1, after the copy (passes run in order)
+    sc.screen_shaders[1] = "invert.fshader";
+    sc.screen_shader_count = 2;
+    sc.screen_params[0] = 1.0f;
+    CHECK(render_ok(r, sc));
+    CHECK(r.stats().screen_passes == 2);
+    int bad = 0;
+    for (int i = 0; i < n; i += 37) {
+        int a = base[i] & 0xFF, b = r.pixels()[i] & 0xFF;
+        if (a + b < 253 || a + b > 257) bad++;
+    }
+    CHECK(bad == 0);
+    // a missing file is skipped with a warning, the frame still draws
+    sc.screen_shaders[0] = "missing.fshader";
+    sc.screen_shader_count = 1;
+    CHECK(render_ok(r, sc));
+    const char* w = r.take_warning();
+    CHECK(w && strstr(w, "missing.fshader"));
+    free(base);
+    r.shutdown();
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1337,5 +1401,6 @@ int main() {
     test_gtao_and_ssr();
     test_new_modes_everything();
     test_ssaa_and_vsync();
+    test_screen_shaders();
     return finish_tests("gfx_stack_tests");
 }

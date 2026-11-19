@@ -95,7 +95,7 @@ drawn as lines.
 
 | Object | Lua name | What it is for |
 | --- | --- | --- |
-| Camera | `camera` | Perspective or orthographic view along the object's −Z axis. Has **Current** |
+| Camera | `camera` | Perspective or orthographic view along the object's −Z axis. Has **Current**, and up to three screen shaders (Shader 1-3, Shader params; `docs/graphics.md`) |
 | Sky | `sky` | The background: a zenith/horizon/ground gradient with a sun disc, or one flat color. Has **Current** |
 | Sky Light | `skylight` | Ambient light from the sky and the ground. Has **Current** |
 | Post Processing | `post_process` | Exposure, tonemapping, contrast, saturation, tint, vignette, bloom. Has **Current** |

@@ -625,7 +625,10 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
                 vec3_field(f.label, (Vec3*)fp, 0.05f, "%.2f");
                 break;
             case FieldType::Path:
-                slot_field(f.label, (char*)fp, kPathMax, this, path_any, Icon::Wave);
+                // The kind of file from the field's name: shaders and images get their own filter and icon.
+                if (!strncmp(f.name, "shader", 6)) slot_field(f.label, (char*)fp, kPathMax, this, path_is_shader, Icon::Wand);
+                else if (!strcmp(f.name, "texture")) slot_field(f.label, (char*)fp, kPathMax, this, path_is_image, Icon::Image);
+                else slot_field(f.label, (char*)fp, kPathMax, this, path_any, Icon::Wave);
                 break;
             case FieldType::Bits: {
                 prop_label(f.label);

@@ -347,6 +347,31 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
         ed.stop();
+        // A screen shader on the current camera (the CRT sample), seen in Play with the camera in the Inspector.
+        {
+            char shader_path[600];
+            snprintf(shader_path, sizeof(shader_path), "%s/assets/crt.fshader", ed.project_dir);
+            size_t sn = 0;
+            void* src = platform::read_file("assets/samples/screen/crt.fshader", &sn);
+            if (src) { platform::write_file(shader_path, src, sn); free(src); }
+            for (int i = 0; i < ed.scene.count(); i++) {
+                Object& o = ed.scene.at(i);
+                if (!strcmp(o.name, "Main Camera") && o.modules.has(ModuleKind::Camera)) {
+                    snprintf(o.modules.camera.shader1, kPathMax, "assets/crt.fshader");
+                    o.modules.camera.shader_params = Vec3(1.0f, 0.0f, 0.0f);
+                    ed.scene.select_only(o.id);
+                }
+            }
+            ed.play();
+            for (int i = 0; i < 4; i++) ed.frame();
+            snprintf(path, sizeof(path), "%s/editor-screen-shader.png", out);
+            if (!platform::headless_save_png(path)) return 1;
+            printf("wrote %s\n", path);
+            ed.stop();
+            for (int i = 0; i < ed.scene.count(); i++)
+                if (ed.scene.at(i).modules.has(ModuleKind::Camera)) ed.scene.at(i).modules.camera.shader1[0] = 0;
+            ed.scene.select_only(kNoObject);
+        }
         ed.settings.graphics.allow_gpu_effects_on_cpu = false;
         ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
         ed.view_renderer = Editor::ViewRenderer::CpuPreview;

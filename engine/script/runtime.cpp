@@ -84,6 +84,7 @@ struct ScriptRuntime::Impl {
     int npending = 0, cap_pending = 0;
 
     ScriptGraphics graphics;            // fe.graphics (lua_graphics.h)
+    GameStatus status;                  // fe.status
 
     int depth = 0;                      // running callbacks / entry points
     ScriptStats stats;
@@ -966,6 +967,26 @@ int f_mouse_pressed(lua_State* L) {
     return 1;
 }
 
+// fe.status("Loading level 2", 0.4) shows a line (and a bar when the second
+// argument is a number, 0..1) over the game; fe.status() hides it.
+int f_status(lua_State* L) {
+    Impl* I = impl_of(L);
+    if (lua_isnoneornil(L, 1)) { I->status = GameStatus(); return 0; }
+    const char* text = luaL_checkstring(L, 1);
+    size_t n = strlen(text);
+    if (n >= sizeof(I->status.text)) n = sizeof(I->status.text) - 1;
+    memcpy(I->status.text, text, n);
+    I->status.text[n] = 0;
+    I->status.shown = true;
+    if (lua_isnumber(L, 2)) {
+        double p = lua_tonumber(L, 2);
+        I->status.progress = (float)(p < 0 ? 0 : p > 1 ? 1 : p);
+    } else {
+        I->status.progress = -1.0f;
+    }
+    return 0;
+}
+
 int f_time(lua_State* L) {
     Impl* I = impl_of(L);
     lua_pushnumber(L, now_seconds() - I->t0);
@@ -1114,7 +1135,7 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     lua_newtable(L);                                    // fe
     static const luaL_Reg fe_funcs[] = {
         { "vec3", f_vec3 }, { "dot", f_dot }, { "cross", f_cross }, { "find", f_find }, { "current", f_current },
-        { "broadcast", f_broadcast }, { "time", f_time },
+        { "broadcast", f_broadcast }, { "time", f_time }, { "status", f_status },
         { "key_down", f_key_down }, { "key_pressed", f_key_pressed }, { "key_released", f_key_released },
         { "mouse_x", f_mouse_x }, { "mouse_y", f_mouse_y }, { "mouse_wheel", f_mouse_wheel },
         { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { nullptr, nullptr } };
@@ -1471,6 +1492,11 @@ const ScriptStats& ScriptRuntime::stats() const {
     if (!impl_) return none;
     impl_->stats.instances = impl_->live;
     return impl_->stats;
+}
+
+const GameStatus& ScriptRuntime::status() const {
+    static const GameStatus none;
+    return impl_ ? impl_->status : none;
 }
 
 double ScriptRuntime::time() const { return impl_ ? now_seconds() - impl_->t0 : 0; }

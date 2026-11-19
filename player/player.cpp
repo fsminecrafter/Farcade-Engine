@@ -2,6 +2,8 @@
 
 #include "audio/audio.h"
 #include "gfx/renderer.h"
+#include "gfx/particles.h"
+#include "script/runtime.h"
 #include "core/vfs.h"
 #include "platform/platform.h"
 #include "graphics_text.h"
@@ -192,6 +194,9 @@ int run(const Options& opt, Result* result) {
     double last = platform::time_seconds();
     bool quit = false;
     bool render_ok = true;
+    bool compiling = false;                 // FarcadeGL is compiling its shaders a few per frame
+    bool have_image = false;                // a frame was drawn (else the loading screen is on black)
+    double start = platform::time_seconds();
 
     while (!quit) {
         platform::Event e;
@@ -214,7 +219,12 @@ int run(const Options& opt, Result* result) {
         if (rw < 16) rw = 16;
         if (rh < 16) rh = 16;
         if (render_ok) {
+            bool first = !fgl.ready();
             bool ok = fgl.ready() ? ((fgl.width() == rw && fgl.height() == rh) || fgl.resize(rw, rh)) : fgl.init(rw, rh);
+            // Shaders are compiled for ~30 ms a frame, with a loading screen,
+            // instead of one long stop before the first picture. A fixed-step
+            // run (tests, --frames) compiles at once, so frame N is frame N.
+            if (first && ok && !fixed) fgl.set_compile_budget(30.0);
             if (ok) {
                 fgl.set_settings(graphics);
                 Mat4 view, proj;
@@ -245,9 +255,37 @@ int run(const Options& opt, Result* result) {
             }
             if (ok) {
                 blit(fgl.pixels(), rw, rh, f);
+                have_image = true;
+                if (compiling && !opt.quiet) printf("FE PLAYER shaders ready (%d compiled)\n", fgl.shaders_compiled());
+                compiling = false;
+            } else if (fgl.compiling()) {
+                compiling = true;               // not an error: the next frame goes on
             } else {
                 printf("error: FarcadeGL: %s\n", fgl.error());
                 render_ok = false;
+            }
+        }
+        // The loading screen: FarcadeGL's shaders, and what the game says
+        // about itself (fe.status).
+        {
+            const GameStatus* gs = session.scripts() ? &session.scripts()->status() : nullptr;
+            bool game = gs && gs->shown;
+            if (compiling || game) {
+                if (!have_image)
+                    for (int y = 0; y < f.height; y++) memset(f.pixels + (size_t)y * f.pitch, 0, (size_t)f.width * 4);
+                char line[160], sub[96];
+                float progress = -1.0f;
+                if (game) {
+                    snprintf(line, sizeof line, "%s", gs->text);
+                    progress = gs->progress;
+                    if (compiling) snprintf(sub, sizeof sub, "Compiling shaders (%d)", fgl.shaders_compiled());
+                    else sub[0] = 0;
+                } else {
+                    snprintf(line, sizeof line, "Compiling shaders (%d)", fgl.shaders_compiled());
+                    snprintf(sub, sizeof sub, "%s", "Only the first time: they are kept in the shader cache");
+                }
+                gfx::draw_status_box(f.pixels, f.width, f.height, f.pitch, line, sub, progress,
+                                     platform::time_seconds() - start);
             }
         }
         platform::present();

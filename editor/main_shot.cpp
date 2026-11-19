@@ -410,6 +410,19 @@ int main(int argc, char** argv) {
     snprintf(path, sizeof(path), "%s/editor-settings.png", out);
     if (!platform::headless_save_png(path)) return 1;
     printf("wrote %s\n", path);
+    // FarcadeGL compiling its shaders (the bar over the viewport), when asked for.
+    if (getenv("FE_SHOT_COMPILE")) {
+        ed.show_settings = false;
+        ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        ed.fgl_compile_budget = 1e-6;
+        ed.fgl_restart = true;                              // a fresh renderer: every shader again
+        ed.frame();                                         // compiles one shader and stops: the bar shows
+        snprintf(path, sizeof(path), "%s/editor-compiling.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s (%d shaders so far)\n", path, ed.fgl_compiled);
+        ed.fgl_compile_budget = 25.0;
+    }
     // The file picker (Create > Import model...), when asked for.
     if (getenv("FE_SHOT_PICKER")) {
         ed.show_settings = false;

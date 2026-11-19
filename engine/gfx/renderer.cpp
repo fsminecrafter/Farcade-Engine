@@ -307,9 +307,13 @@ struct Renderer::Impl {
         l->gi1 = fglUniformLocation(sh, "u_gi1");
     }
 
+    CompileGate gate;
+
     bool compile(Shader* out, const char* vs, const char* fs, const char* what) {
         double t0 = now_ms();
+        if (!gate.may_compile(t0)) { set_error("compiling shaders"); return false; }
         FGLShader* sh = fglCreateShader(gl, vs, fs);
+        if (sh) gate.compiled();
         stats.shader_ms += now_ms() - t0;
         stats.shaders_compiled++;
         if (!in_render) init_shader_ms += now_ms() - t0;
@@ -1241,6 +1245,11 @@ bool Renderer::render_rows(const RenderScene& scene, int y0, int rows, uint32_t*
         impl_->set_error("render_rows: rows outside the image");
         return false;
     }
+    CompileGate& g = impl_->gate;
+    g.deferred = false;
+    g.frame_compiles = 0;
+    g.deadline = now_ms() + g.budget_ms;
+    impl_->tier.set_gate(&g);
     return impl_->render(scene, y0, rows, dst);
 }
 
@@ -1249,8 +1258,37 @@ bool Renderer::render(const RenderScene& scene) {
         if (impl_ && !impl_->error[0]) impl_->set_error("the renderer is not initialised");
         return false;
     }
+    CompileGate& g = impl_->gate;
+    g.deferred = false;
+    g.frame_compiles = 0;
+    g.deadline = now_ms() + g.budget_ms;
+    impl_->tier.set_gate(&g);
     return impl_->render(scene);
 }
+
+ShaderCacheInfo shader_cache_info() {
+    fgl_shader_cache_stats_t s;
+    fglShaderCacheStats(&s);
+    ShaderCacheInfo i;
+    i.enabled = s.enabled != 0;
+    i.entries = s.entries;
+    i.hits = s.hits;
+    i.misses = s.misses;
+    i.bytes = s.bytes;
+    i.limit = s.limit;
+    return i;
+}
+void shader_cache_clear() { fglShaderCacheClear(); }
+
+void Renderer::set_compile_budget(double budget_ms) {
+    if (!impl_) return;
+    impl_->gate.budget_ms = budget_ms > 0 ? budget_ms : 0;
+    impl_->gate.total = 0;
+    impl_->gate.deferred = false;
+}
+bool Renderer::compiling() const { return impl_ && impl_->gate.deferred; }
+int Renderer::shaders_compiled() const { return impl_ ? impl_->gate.total : 0; }
+bool Renderer::uses_gpu_tier() const { return impl_ && impl_->tier_ran; }
 
 const uint32_t* Renderer::pixels() const { return impl_ ? impl_->pixels : nullptr; }
 int Renderer::width() const { return impl_ ? impl_->width : 0; }

@@ -7,6 +7,7 @@
 #include "editor.h"
 #include "render_bridge.h"
 #include "model_cache.h"
+#include "script/runtime.h"
 #include "icons.h"
 #include "swraster.h"
 #include "view3d.h"
@@ -297,6 +298,12 @@ void Editor::panel_viewport() {
     static SwUpscaler upscaler;
     static ViewQuality quality_fgl(true), quality_cpu(false);
     static bool fgl_failed = false;
+    if (fgl_restart) {                  // every shader again (Settings > Graphics)
+        fgl.shutdown();
+        fgl_restart = false;
+        fgl_failed = false;
+        last_hash = 0;
+    }
     bool use_fgl = view_renderer == ViewRenderer::FarcadeGL && !fgl_failed;
     ViewQuality& quality = use_fgl ? quality_fgl : quality_cpu;
     const int full_w = (int)v.size.x, full_h = (int)v.size.y;
@@ -411,6 +418,14 @@ void Editor::panel_viewport() {
             bool first = !fgl.ready();
             bool ok = fgl.ready() ? ((fgl.width() == rw && fgl.height() == rh) || fgl.resize(rw, rh)) : fgl.init(rw, rh);
             if (first) { fgl_init_ms = fgl.init_ms(); fgl_init_shader_ms = fgl.init_shader_ms(); }
+            // Shaders are compiled for at most ~25 ms a frame, so the editor
+            // stays responsive and shows a bar instead of freezing.
+            static double applied_budget = -1;
+            if (ok && (first || applied_budget != fgl_compile_budget)) {
+                fgl.set_compile_budget(fgl_compile_budget);
+                applied_budget = fgl_compile_budget;
+                if (!fgl_compiling) fgl_compiled = 0;
+            }
             if (ok) {
                 fgl.set_settings(settings.graphics);
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
@@ -423,11 +438,25 @@ void Editor::panel_viewport() {
                 snprintf(fgl_backend, sizeof(fgl_backend), "%s", fgl.backend());
                 fgl_features = fgl.features();
             }
+            bool tier = fgl.uses_gpu_tier();
             if (ok) {
                 rgba = fgl.pixels();
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
                 if (const char* w = fgl.take_warning()) log(LogLevel::Warning, "FarcadeGL: %s", w);
+                if (fgl_compiling) {                    // done: remember how many it took for the next bar
+                    int& e = fgl_shader_expect[tier ? 1 : 0];
+                    if (fgl.shaders_compiled() > 0) e = fgl.shaders_compiled();
+                    fgl_compiling = false;
+                }
+                fgl_compiled = 0;
+                fgl.set_compile_budget(fgl_compile_budget);           // counts from 0 for the next change
+            } else if (fgl.compiling()) {
+                // Not an error: it stopped to compile more. The last picture
+                // stays and the next frame goes on.
+                fgl_compiling = true;
+                fgl_compiled = fgl.shaders_compiled();
+                last_hash = 0;
             } else {
                 log(LogLevel::Error, "FarcadeGL: %s (back to the CPU preview)", fgl.error());
                 fgl_failed = true;
@@ -441,6 +470,7 @@ void Editor::panel_viewport() {
         } else {
             render_view(view3d, &v);
         }
+        if (use_fgl && fgl_compiling && !rgba) goto compiling;      // nothing new to show yet
         view_ms = (float)((clock() - t0) * 1000.0);
         view_renders++;
         view_div_shown = div;
@@ -470,6 +500,7 @@ void Editor::panel_viewport() {
         t.version++;
         fgl_tex.pixels = use_fgl ? (const uint8_t*)rgba : nullptr;     // "there is an image" marker
     }
+compiling:
     if (shown_tex.pixels) dl->AddImage((ImTextureID)SwRenderer::texture_id(&shown_tex), v.pos, ImVec2(v.pos.x + shown_tex.width, v.pos.y + shown_tex.height));
     // Particles, billboards, text and the gizmos of the effects modules.
     fx()->draw_overlay(*this, dl, v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y, eye);
@@ -637,6 +668,51 @@ void Editor::panel_viewport() {
     // Play mode: a frame around the view.
     if (playing()) {
         dl->AddRect(ImVec2(v.pos.x + 1, v.pos.y + 1), ImVec2(end.x - 1, end.y - 1), pal.play, 0, 0, 2.0f);
+    }
+    // FarcadeGL compiling its shaders, and in Play what the game says about
+    // itself (fe.status): a box with a bar over the view.
+    {
+        const fe::GameStatus* gs = playing() && session_.scripts() ? &session_.scripts()->status() : nullptr;
+        bool game = gs && gs->shown;
+        bool comp = use_fgl && fgl_compiling;
+        if (comp || game) {
+            char line[160], sub[96] = "";
+            float frac = -1.0f;
+            int expect = fgl_shader_expect[fgl.uses_gpu_tier() ? 1 : 0];
+            if (expect < fgl_compiled + 1) expect = fgl_compiled + 1;
+            if (game) {
+                snprintf(line, sizeof line, "%s", gs->text);
+                frac = gs->progress;
+                if (comp) snprintf(sub, sizeof sub, "Compiling shaders  %d / %d", fgl_compiled, expect);
+            } else {
+                snprintf(line, sizeof line, "Compiling shaders  %d / %d", fgl_compiled, expect);
+                snprintf(sub, sizeof sub, "%s", "Next time they come from the shader cache");
+                frac = (float)fgl_compiled / (float)expect;
+            }
+            float fs = ImGui::GetFontSize();
+            float bw = ImGui::CalcTextSize(line).x, sw = ImGui::CalcTextSize(sub).x;
+            if (sw > bw) bw = sw;
+            bw += 2.0f * fs;
+            if (bw < fs * 16.0f) bw = fs * 16.0f;
+            if (bw > v.size.x - 20) bw = v.size.x - 20;
+            float bh = sub[0] ? fs * 4.4f : fs * 3.2f;
+            float bx = v.pos.x + (v.size.x - bw) * 0.5f;
+            float by = game ? v.pos.y + v.size.y - bh - fs * 2.0f : v.pos.y + (v.size.y - bh) * 0.5f;
+            dl->AddRectFilled(ImVec2(bx + 1, by + 3), ImVec2(bx + bw + 1, by + bh + 3), pal.shadow, 8.0f);
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), pal.overlay, 8.0f);
+            dl->AddText(ImVec2(bx + fs, by + fs * 0.6f), pal.text, line);
+            float tx = bx + fs, ty = by + fs * 2.0f, tw = bw - 2 * fs, th = fs * 0.45f;
+            dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), pal.hover, th * 0.5f);
+            if (frac >= 0.0f) {
+                dl->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw * (frac < 0.03f ? 0.03f : frac > 1 ? 1 : frac), ty + th), pal.accent, th * 0.5f);
+            } else {                                            // no known end: a moving segment
+                double t = ImGui::GetTime() * 0.8;
+                float ph = (float)(t - (double)(long)t), seg = tw * 0.25f;
+                float sx = tx + (tw + seg) * ph - seg;
+                dl->AddRectFilled(ImVec2(sx < tx ? tx : sx, ty), ImVec2(sx + seg > tx + tw ? tx + tw : sx + seg, ty + th), pal.accent, th * 0.5f);
+            }
+            if (sub[0]) dl->AddText(ImVec2(bx + fs, ty + th + fs * 0.4f), pal.text_dim, sub);
+        }
     }
     if (scene.count() == 0) {
         const char* hint = "Create > Cube to add an object, or drop a .mof file here";

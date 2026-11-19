@@ -925,6 +925,28 @@ int main() {
         ed.settings.graphics.shadows = false;
         frames(2);
         CHECK(!ed.fgl_features.shadows, "a GPU effect's switch turns it off");
+        // New shaders are compiled over several frames with a bar: a tiny
+        // budget makes every frame compile one.
+        {
+            ed.fgl_compile_budget = 1e-6;
+            ed.settings.graphics.shadows = true;            // needs shaders again? not if kept: force new ones
+            ed.settings.graphics.ssr = true;
+            ed.settings.graphics.ao_mode = gfx::AOMode::GTAO;
+            frames(1);
+            bool started = ed.fgl_compiling;
+            int seen = 0, guard = 0;
+            while (ed.fgl_compiling && guard++ < 100) { seen = ed.fgl_compiled; frames(1); }
+            CHECK(started && seen >= 1 && !ed.fgl_compiling, "new shaders compile over frames (%d, %d)", started, seen);
+            int errs = 0;
+            for (int i = 0; i < ed.log_count; i++) errs += ed.log_lines[i].level == LogLevel::Error && strstr(ed.log_lines[i].text, "FarcadeGL");
+            CHECK(errs == 0 && ed.view_renderer == Editor::ViewRenderer::FarcadeGL, "compiling over frames is no error");
+            CHECK(ed.fgl_shader_expect[1] >= seen, "the bar remembers how many it took");
+            ed.fgl_compile_budget = 25.0;
+            ed.settings.graphics.ssr = false;
+            ed.settings.graphics.ao_mode = gfx::AOMode::SSAO;
+            ed.settings.graphics.shadows = false;
+            frames(2);
+        }
         // Materials: with PBR on, making every mesh metal changes the picture.
         {
             auto px = [&](float fx, float fy) {

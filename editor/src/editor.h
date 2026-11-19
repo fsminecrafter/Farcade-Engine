@@ -285,6 +285,13 @@ public:
     SwStats raster_stats;               // the last UI rasterization
     gfx::RendererStats fgl_stats;       // the last FarcadeGL render
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
+    // FarcadeGL compiles its shaders a few per frame (Renderer::set_compile_budget):
+    // while it does, the viewport keeps its last picture and shows a bar.
+    bool fgl_compiling = false;
+    int fgl_compiled = 0;               // shaders compiled since the renderer switched or the settings changed
+    int fgl_shader_expect[2] = { 2, 14 };   // how many the base / GPU tier needed last time (the bar's 100 %)
+    double fgl_compile_budget = 25.0;   // ms of compiling per frame (tests make it tiny)
+    bool fgl_restart = false;           // Settings > Graphics > Recompile shaders: a fresh renderer next frame
     bool adaptive_view = false;         // render the viewport smaller while it changes (Minimal-OS: slow CPU/GPU emulation)
     int view_div_shown = 1;             // the shown viewport image was rendered at 1/this size
     bool view_final = true;             // the shown viewport image is at its final quality

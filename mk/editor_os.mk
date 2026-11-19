@@ -21,3 +21,6 @@ $(BUILD)/os/gen/icon_pack.o: $(ICONS_CPP)
 	$(OS_CXX) $(LANG_CXX) $(OS_FLAGS) $(EDITOR_INC) -O0 -c $< -o $@
 
 OS_PROGRAMS += $(BUILD)/os/bin/farcade-editor.run
+# The Farcade logo as its launcher icon (32 x 32 BMP from docs/logo).
+RUN_ICON_farcade-editor = editor/os/launcher-icon.bmp
+$(BUILD)/os/bin/farcade-editor.run: editor/os/launcher-icon.bmp

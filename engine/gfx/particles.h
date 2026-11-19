@@ -103,4 +103,10 @@ private:
     long last_pixels_ = 0;
 };
 
+// A status box over an XRGB image (the player's loading screen): `line`,
+// an optional second line `sub`, and a bar at `progress` (0..1; below 0 a
+// segment that moves with `t`, seconds). Bottom centre, sized to the image.
+void draw_status_box(uint32_t* xrgb, int width, int height, int pitch, const char* line, const char* sub, float progress,
+                     double t);
+
 }  // namespace fe::gfx

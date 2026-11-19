@@ -40,6 +40,15 @@ struct ScriptHost {
     void* user = nullptr;
 };
 
+// What a game shows about itself while it loads or works (fe.status): the
+// player and the editor's Play mode draw it as a bar with a line of text,
+// together with their own "compiling shaders" progress.
+struct GameStatus {
+    bool shown = false;
+    char text[128] = {};
+    float progress = -1.0f;             // 0..1, or < 0 for a bar that only moves
+};
+
 struct ScriptStats {
     int instances = 0;
     int failed = 0;                     // instances stopped by an error
@@ -127,6 +136,8 @@ public:
     bool run(const char* code);
 
     const ScriptStats& stats() const;
+    // fe.status(text, progress): what the game wants shown (shown = false after fe.status()).
+    const GameStatus& status() const;
     double time() const;                // seconds since init (fe.time())
 
     struct Impl;

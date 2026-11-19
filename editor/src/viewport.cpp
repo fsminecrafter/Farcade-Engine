@@ -342,7 +342,10 @@ void Editor::panel_viewport() {
     }
     int div = 1;
     bool moving = false;
-    if (adaptive_view) {
+    // The smaller picture while the view changes is part of Dynamic resolution
+    // (Settings > Graphics): with it off the viewport always renders at its size.
+    const bool adaptive = adaptive_view && settings.graphics.dynamic_resolution;
+    if (adaptive) {
         moving = view_interacting() || base != last_base;
         div = moving ? quality.interactive_div(full_w, full_h) : quality.settled_div(full_w, full_h);
         view_div_target = quality.settled_div(full_w, full_h);
@@ -364,7 +367,7 @@ void Editor::panel_viewport() {
     const Camera* cur_cam = (const Camera*)scene.current_data(ModuleKind::Camera);
     const bool screen_fx = cur_cam && (cur_cam->shader1[0] || cur_cam->shader2[0] || cur_cam->shader3[0]);
     const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f) || settings.graphics.ssaa != gfx::SSAAMode::Off || screen_fx;
-    const bool progressive = adaptive_view && use_fgl && !whole_only;
+    const bool progressive = adaptive && use_fgl && !whole_only;
     bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
     if (progressive) {
         need = (moving && hash != last_hash) || !fgl_tex.pixels;
@@ -448,7 +451,7 @@ void Editor::panel_viewport() {
                 static ModelAssetReader assets{ read_render_asset, this };
                 bridge.scene.read_asset = model_asset_reader;
                 bridge.scene.asset_user = &assets;
-                bridge.scene.draft = adaptive_view && moving;       // cheaper shading for a picture that is replaced at once
+                bridge.scene.draft = adaptive && moving;       // cheaper shading for a picture that is replaced at once
                 ok = fgl.render(bridge.scene);
                 // What runs, for Settings > Graphics.
                 snprintf(fgl_backend, sizeof(fgl_backend), "%s", fgl.backend());
@@ -491,7 +494,7 @@ void Editor::panel_viewport() {
         view_renders++;
         view_div_shown = div;
         banding = false;
-        if (use_fgl && rgba) quality.report((long)rw * rh, view_ms, adaptive_view && moving);
+        if (use_fgl && rgba) quality.report((long)rw * rh, view_ms, adaptive && moving);
         else if (!use_fgl) quality_cpu.report((long)view3d.width() * view3d.height(), view_ms, false);
         // What the window shows: the image itself, or the small one stretched.
         SwTexture& t = shown_tex;

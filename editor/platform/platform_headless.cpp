@@ -70,6 +70,8 @@ void wait_event(int) {}
 
 bool windowed() { return false; }
 bool toggle_fullscreen() { return true; }
+bool is_fullscreen() { return true; }
+void set_vsync(int, int) {}
 
 double time_seconds() {
     if (g_fake_time >= 0) return g_fake_time;

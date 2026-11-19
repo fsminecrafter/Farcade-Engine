@@ -85,5 +85,8 @@ bool mat4_inverse(const Mat4& m, Mat4* out);
 // Writes the XRGB image `src` (sw x sh) as an RGBA image `dst` (dw x dh,
 // R in the low byte, opaque), bilinearly when the sizes differ.
 void upscale_xrgb_to_rgba(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh);
+// The same for a larger `src` (supersampling): each destination pixel is the area-weighted average of the
+// source pixels under it (exactly a 2 x 2 box at twice the size). Called by upscale_xrgb_to_rgba as needed.
+void downsample_xrgb_to_rgba(const uint32_t* src, int sw, int sh, uint32_t* dst, int dw, int dh);
 
 }  // namespace fe::gfx

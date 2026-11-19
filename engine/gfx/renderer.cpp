@@ -972,10 +972,21 @@ struct Renderer::Impl {
         }
         int iw = DynamicResolution::internal_size(width, scale);
         int ih = DynamicResolution::internal_size(height, scale);
+        // Supersampling: more pixels than the image, averaged down when read back (never in bands, never
+        // above 4096 a side).
+        if (!banding && settings.ssaa != SSAAMode::Off && !scene.draft) {
+            float ss = (settings.ssaa == SSAAMode::X4 ? 2.0f : 1.41421356f) * scale;
+            float lim = 4096.0f / (float)(width > height ? width : height);
+            if (ss > lim) ss = lim;
+            if (ss > 1.01f) {
+                iw = (int)((float)width * ss + 0.5f);
+                ih = (int)((float)height * ss + 0.5f);
+            }
+        }
         // TAA drives the upscale: the passes before its resolve draw at the internal size and the resolve writes the
         // full size image (so there is no CPU upscale). Only when the GPU tier will really run.
         bool taa_up = false;
-        if (!banding && (iw != width || ih != height) && settings.antialiasing && settings.aa_mode == AAMode::TAA && !scene.draft) {
+        if (!banding && (iw < width || ih < height) && settings.antialiasing && settings.aa_mode == AAMode::TAA && !scene.draft) {
             GpuPlan tp = GpuTier::plan(scene, feature_set());
             bool assets = false;
             for (int i = 0; i < scene.item_count; i++)

@@ -261,7 +261,19 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
 
 void Editor::panel_viewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (view_fullscreen) {
+        // A window of its own over the whole screen (the docked one is not drawn meanwhile).
+        const ImGuiViewport* mv = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(mv->Pos);
+        ImGui::SetNextWindowSize(mv->Size);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::Begin("##ViewportFullscreen", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar(2);
+    } else {
+        ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    }
     ImGui::PopStyleVar();
 
     View v;
@@ -347,7 +359,8 @@ void Editor::panel_viewport() {
     // whole images): with those on, settled views are rendered whole.
     fgl.set_settings(settings.graphics);
     const Sky* cur_sky = (const Sky*)scene.current_data(ModuleKind::Sky);
-    const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f);
+    // Supersampling needs the whole image too (bands are drawn at the image size).
+    const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f) || settings.graphics.ssaa != gfx::SSAAMode::Off;
     const bool progressive = adaptive_view && use_fgl && !whole_only;
     bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
     if (progressive) {
@@ -864,7 +877,30 @@ void Editor::viewport_overlays(float x, float y, float w, float h) {
 
     // Orientation gizmo in the top-right corner.
     float gsz = 84 * settings.ui_scale;
-    if (w > gsz * 3 && h > gsz * 2) orientation_gizmo(x + w - gsz - margin * 0.5f, y + margin * 0.5f, gsz);
+    bool gizmo = w > gsz * 3 && h > gsz * 2;
+    if (gizmo) orientation_gizmo(x + w - gsz - margin * 0.5f, y + margin * 0.5f, gsz);
+
+    // Fullscreen: under the orientation gizmo (or in its corner when that is hidden).
+    {
+        float fw = bs + pad * 2;
+        float ow = view_fullscreen ? fw + bs + 2 : fw;     // + Play / Stop (the menu bar is hidden)
+        float fy = gizmo ? y + margin * 0.5f + gsz + 4 : y + margin;
+        if (begin_overlay("##fullscreen", x + w - ow - margin, fy, ow, fw)) {
+            if (view_fullscreen) {
+                if (icon_button(playing() ? Icon::Stop : Icon::Play, playing() ? "Stop (F5)" : "Play (F5)", false, bs,
+                                playing() ? IM_COL32(240, 96, 96, 255) : IM_COL32(80, 208, 112, 255))) {
+                    if (playing()) stop(); else play();
+                }
+                track("view:play");
+                ImGui::SameLine(0, 2);
+            }
+            if (icon_button(view_fullscreen ? Icon::FullscreenExit : Icon::Fullscreen,
+                            view_fullscreen ? "Leave fullscreen (Esc)" : "Fullscreen viewport", view_fullscreen, bs))
+                set_view_fullscreen(!view_fullscreen);
+            track("view:fullscreen");
+            ImGui::EndChild();
+        }
+    }
 }
 
 void Editor::orientation_gizmo(float x, float y, float size) {

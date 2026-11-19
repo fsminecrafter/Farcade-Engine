@@ -77,6 +77,13 @@ bool windowed();
 // Toggles a desktop window between its normal bounds and borderless fullscreen.
 // Returns false if the window manager rejected the request.
 bool toggle_fullscreen();
+// True while the window is fullscreen (or the program has the whole screen).
+bool is_fullscreen();
+
+// Vsync for present() (frame_pacer.h): 0 off, 1 double buffered, 2 triple
+// buffered, 3 adaptive; `hz` is the refresh rate it follows. present_region()
+// is never paced (the editor draws only what changed).
+void set_vsync(int mode, int hz);
 
 // ---- files
 

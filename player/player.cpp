@@ -172,6 +172,7 @@ int run(const Options& opt, Result* result) {
             free(g);
         }
     }
+    if (opt.vsync && !graphics_set_text(&graphics, "vsync", opt.vsync)) printf("warning: --vsync %s: unknown mode\n", opt.vsync);
     PlayHost host;
     host.user = &st;
     host.log = log_line;
@@ -288,14 +289,17 @@ int run(const Options& opt, Result* result) {
                                      platform::time_seconds() - start);
             }
         }
+        // Vsync (graphics settings: games and fe.graphics may change it); fixed-step runs never wait.
+        if (fixed && !opt.vsync) platform::set_vsync(0, 60);
+        else platform::set_vsync((int)graphics.vsync, graphics.refresh_hz);
         platform::present();
         res->frames++;
         if (res->frames == 1 && !opt.quiet) printf("FE PLAYER READY %s (%dx%d, %d objects, %d scripts)\n", res->project.name, f.width, f.height, res->objects, res->scripts);
         if (opt.frames > 0 && res->frames >= opt.frames) break;
         if (!fixed) {
-            // ~60 frames a second; the wait also lets the input arrive.
-            double spent = platform::time_seconds() - now;
-            if (spent < 0.016) platform::wait_event((int)((0.016 - spent) * 1000.0));
+            // Vsync paces the frames in present(); with it off the loop is uncapped and only
+            // collects the input that arrived.
+            platform::wait_event(0);
         }
     }
 
@@ -309,7 +313,7 @@ int run(const Options& opt, Result* result) {
     if (device) { device->shutdown(); delete device; }
     platform::shutdown();
     vfs::unmount_all();
-    if (!opt.quiet) printf("FE PLAYER DONE frames=%ld checksum=%08x objects=%d scripts=%d models=%d\n", res->frames, (unsigned)res->checksum, res->objects, res->scripts, res->models);
+    if (!opt.quiet) printf("FE PLAYER DONE frames=%ld checksum=%08x objects=%d scripts=%d models=%d seconds=%.2f vsync=%d\n", res->frames, (unsigned)res->checksum, res->objects, res->scripts, res->models, platform::time_seconds() - start, (int)graphics.vsync);
     return 0;
 }
 

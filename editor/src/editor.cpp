@@ -1120,7 +1120,29 @@ bool Editor::frame() {
 
 // ---------------------------------------------------------------- layout
 
+void Editor::set_view_fullscreen(bool on) {
+    if (on == view_fullscreen) return;
+    view_fullscreen = on;
+    if (on) {
+        // The window too, unless it already is (F11 or the window manager).
+        view_fullscreen_window = platform::windowed() && !platform::is_fullscreen() && platform::toggle_fullscreen();
+    } else if (view_fullscreen_window) {
+        if (platform::is_fullscreen()) platform::toggle_fullscreen();
+        view_fullscreen_window = false;
+    }
+}
+
 void Editor::build_ui() {
+    if (view_fullscreen) {
+        // Only the viewport (and the dialogs it may open).
+        save_as_popup();
+        unsaved_popup();
+        file_dialog_popup(PickRoot);
+        panel_viewport();
+        if (show_settings) window_settings();
+        shortcuts();
+        return;
+    }
     main_menu();
     save_as_popup();
     unsaved_popup();
@@ -1424,6 +1446,8 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && !platform::toggle_fullscreen())
         log(LogLevel::Warning, "Could not toggle fullscreen");
     if (io.WantTextInput) return;
+    if (view_fullscreen && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
+        set_view_fullscreen(false);
     if (ImGui::IsKeyPressed(ImGuiKey_Q, false)) tool = Tool::Select;
     if (ImGui::IsKeyPressed(ImGuiKey_W, false)) tool = Tool::Move;
     if (ImGui::IsKeyPressed(ImGuiKey_E, false)) tool = Tool::Rotate;

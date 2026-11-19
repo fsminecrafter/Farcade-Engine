@@ -18,19 +18,19 @@ static const char* const kIconFile[] = {
     "layers", "camera", "bulb", "cloud", "speaker", "wave",
     "body", "collider", "ear", "wand", "empty", "star",
     "sparks", "joint", "clip", "wind", "spawn", "reverb",
-    "sprite", "text_t",
+    "sprite", "text_t", "fullscreen", "fullscreen_exit",
 };
-static_assert(sizeof(kIconFile) / sizeof(kIconFile[0]) == (size_t)Icon::TextT + 1, "one file per Icon");
+static_assert(sizeof(kIconFile) / sizeof(kIconFile[0]) == (size_t)Icon::Count_, "one file per Icon");
 
 // The icon's character in the vector icon font; 0 = none (draw the lines below).
 static unsigned icon_glyph(Icon icon) {
-    static unsigned cps[(size_t)Icon::TextT + 1];
+    static unsigned cps[(size_t)Icon::Count_];
     static bool done = false;
     if (!done) {
-        for (size_t i = 0; i <= (size_t)Icon::TextT; i++) cps[i] = icon_codepoint(kIconFile[i]);
+        for (size_t i = 0; i < (size_t)Icon::Count_; i++) cps[i] = icon_codepoint(kIconFile[i]);
         done = true;
     }
-    return (size_t)icon <= (size_t)Icon::TextT ? cps[(size_t)icon] : 0;
+    return (size_t)icon < (size_t)Icon::Count_ ? cps[(size_t)icon] : 0;
 }
 
 static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 c);
@@ -346,6 +346,20 @@ static void draw_icon_lines(ImDrawList* dl, Icon icon, ImVec2 p, float s, ImU32 
             dl->AddLine(P(3, 3.5f), P(13, 3.5f), c, t);
             dl->AddLine(P(8, 3.5f), P(8, 13.5f), c, t);
             break;
+        case Icon::Count_: break;
+        case Icon::Fullscreen:
+        case Icon::FullscreenExit: {
+            // Four corners: brackets at the edges (fullscreen) or pointing in (exit).
+            bool out = icon == Icon::Fullscreen;
+            for (int i = 0; i < 4; i++) {
+                float sx = (i & 1) ? -1.0f : 1.0f, sy = (i & 2) ? -1.0f : 1.0f;
+                float cx = (i & 1) ? 13.5f : 2.5f, cy = (i & 2) ? 13.5f : 2.5f;
+                ImVec2 k = out ? P(cx, cy) : P(cx + sx * 3.5f, cy + sy * 3.5f);
+                dl->AddLine(k, P(cx + sx * 3.5f, cy), c, t);
+                dl->AddLine(k, P(cx, cy + sy * 3.5f), c, t);
+            }
+            break;
+        }
         case Icon::Star: {
             ImVec2 st[10];
             for (int i = 0; i < 10; i++) {

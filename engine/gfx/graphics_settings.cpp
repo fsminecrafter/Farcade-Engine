@@ -15,6 +15,8 @@ const char* const kShadowModes[] = { "off", "single", "cascades", nullptr };
 const char* const kRes[] = { "512", "1024", "2048", "4096", nullptr };
 const char* const kAo[] = { "off", "ssao", "gtao", nullptr };
 const char* const kAa[] = { "off", "fxaa", "smaa", "taa", nullptr };
+const char* const kSsaa[] = { "off", "2x", "4x", nullptr };
+const char* const kVsync[] = { "off", "double", "triple", "adaptive", nullptr };
 const char* const kOnOff[] = { "off", "on", nullptr };
 const char* const kBloom[] = { "off", "simple", "chain", nullptr };
 const char* const kGi[] = { "hemisphere", "probes", nullptr };
@@ -78,6 +80,12 @@ const Prop kProps[] = {
     IP("aa", GraphicsPropKind::Choice, 0, 0, kAa, "Anti-aliasing: off, FXAA (cheapest), SMAA or TAA (also upscales when render_scale < 1)",
        [](const GS& s) { return !s.antialiasing ? 0 : 1 + (int)s.aa_mode; },
        [](GS& s, int v) { s.antialiasing = v != 0; if (v >= 1) s.aa_mode = (AAMode)(v - 1); }),
+    IP("ssaa", GraphicsPropKind::Choice, 0, 0, kSsaa, "Supersampling on top of the AA: off, 2x or 4x the pixels, averaged down (smoothest, costs the pixels)",
+       [](const GS& s) { return (int)s.ssaa; }, [](GS& s, int v) { s.ssaa = (SSAAMode)v; }),
+    IP("vsync", GraphicsPropKind::Choice, 0, 0, kVsync, "Vsync: off (uncapped), double buffered, triple buffered (no drop to half rate) or adaptive (late frames shown at once)",
+       [](const GS& s) { return (int)s.vsync; }, [](GS& s, int v) { s.vsync = (VsyncMode)v; }),
+    IP("refresh_hz", GraphicsPropKind::Integer, 30, 240, nullptr, "The display's refresh rate that vsync follows",
+       [](const GS& s) { return s.refresh_hz; }, [](GS& s, int v) { s.refresh_hz = v; }),
     IP("bloom", GraphicsPropKind::Choice, 0, 0, kBloom, "Bloom: off, the simple 4 level glow, or the 5 level chain",
        [](const GS& s) { return !s.bloom ? 0 : (s.bloom_mode == BloomMode::Simple ? 1 : 2); },
        [](GS& s, int v) { s.bloom = v != 0; if (v == 1) s.bloom_mode = BloomMode::Simple; else if (v == 2) s.bloom_mode = BloomMode::Chain; }),

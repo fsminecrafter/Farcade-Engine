@@ -245,6 +245,11 @@ public:
     ImFont* font_medium = nullptr;      // headings, tabs, section titles
     ImFont* font_mono = nullptr;
     bool show_settings = false;
+    // The viewport fills the whole screen (its fullscreen button, Esc leaves): no menus, panels or status bar,
+    // and the editor's window goes fullscreen too (back as it was on leaving).
+    bool view_fullscreen = false;
+    bool view_fullscreen_window = false;    // we made the window fullscreen for it
+    void set_view_fullscreen(bool on);
     int settings_page = 0;              // the Settings window's page (General, Appearance, ...)
     bool show_demo = false;
     bool want_reset_layout = true;

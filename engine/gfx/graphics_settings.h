@@ -26,6 +26,16 @@ enum class BloomMode : uint8_t { Simple, Chain };
 // blend weights from an area texture, neighbourhood blending) or TAA (jittered camera, a history buffer,
 // reprojection and a neighbourhood clamp; with render_scale < 1 it also upscales). All GPU tier.
 enum class AAMode : uint8_t { FXAA, SMAA, TAA };
+// Supersampling, on top of the AA mode (and with AA off): the frame is drawn at more pixels and averaged down
+// (an area filter) when read back. 2x = twice the pixels (1.41 per side), 4x = four times (2 per side). It
+// smooths every edge, texture and shader detail; the cost grows with the pixels. Works on every tier.
+enum class SSAAMode : uint8_t { Off, X2, X4 };
+// Vsync: when a frame is shown. Off: as soon as it is done (fastest, may tear and is uncapped). Double:
+// at the next refresh, the game waits for it (a late frame waits for the one after: 60, 30, 20 fps).
+// Triple: the game draws the next frame at once while a finished one waits for the refresh; the newest
+// finished frame is shown (no drop to half rate, a little more latency). Adaptive: like Double, but a late
+// frame is shown at once instead of waiting a whole refresh.
+enum class VsyncMode : uint8_t { Off, Double, Triple, Adaptive };
 // Ambient occlusion (with `ambient_occlusion` on): SSAO (the original, 12 taps) or GTAO (half resolution,
 // 2 slices of 6 steps, horizon based, with a temporal and spatial denoise).
 enum class AOMode : uint8_t { SSAO, GTAO };
@@ -51,6 +61,10 @@ struct GraphicsSettings {
     bool dynamic_resolution = false;
     float target_frame_ms = 33.3f;
     float min_render_scale = 0.5f;
+    SSAAMode ssaa = SSAAMode::Off;          // supersampling (any tier), see SSAAMode
+    // ---- presenting (the player; the editor viewport draws only when something changed)
+    VsyncMode vsync = VsyncMode::Double;
+    int refresh_hz = 60;                    // the display's refresh rate for vsync (30..240)
 
     // ---- GPU tier (ignored on the CPU backend unless forced)
     bool shadows = true;                    // directional sun shadows from a shadow map

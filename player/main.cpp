@@ -2,6 +2,7 @@
 //
 //   feplayer [game.fepak | project-folder] [--scene path] [--frames N]
 //            [--png out.png] [--scale N] [--no-audio]
+//            [--vsync off|double|triple|adaptive]
 //
 // With no package argument it looks next to itself for <program name>.fepak
 // (Demo.run -> Demo.fepak), then game.fepak, then 0:/games/<program name>/.
@@ -73,6 +74,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--png") && i + 1 < argc) opt.png_path = argv[++i];
         else if (!strcmp(a, "--scene") && i + 1 < argc) opt.scene = argv[++i];
         else if (!strcmp(a, "--scale") && i + 1 < argc) opt.render_div = atoi(argv[++i]);
+        else if (!strcmp(a, "--vsync") && i + 1 < argc) opt.vsync = argv[++i];
         else if (!strcmp(a, "--no-audio")) opt.audio = false;
         else if (!strcmp(a, "--quiet")) opt.quiet = true;
         else if (a[0] == '-') { printf("feplayer: unknown option %s\n", a); return 2; }

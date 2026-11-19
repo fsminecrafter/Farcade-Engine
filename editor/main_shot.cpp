@@ -218,6 +218,15 @@ int main(int argc, char** argv) {
     if (!platform::headless_save_png(path)) { fprintf(stderr, "cannot write %s\n", path); return 1; }
     printf("wrote %s\n", path);
 
+    // The viewport fullscreen (its button under the orientation gizmo).
+    ed.set_view_fullscreen(true);
+    for (int i = 0; i < 3; i++) { platform::headless_set_time((11 + i) / 60.0); ed.frame(); }
+    snprintf(path, sizeof(path), "%s/editor-viewport-fullscreen.png", out);
+    if (!platform::headless_save_png(path)) return 1;
+    printf("wrote %s\n", path);
+    ed.set_view_fullscreen(false);
+    for (int i = 0; i < 2; i++) { platform::headless_set_time((12 + i) / 60.0); ed.frame(); }
+
     ed.settings.dark_theme = false;
     ed.apply_theme();
     for (int i = 14; i < 17; i++) { platform::headless_set_time(i / 60.0); ed.frame(); }

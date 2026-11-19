@@ -1378,7 +1378,8 @@ bool Renderer::resize(int width, int height) {
     if (!px) { m.set_error("out of memory"); return false; }
     // Buffers and shaders belong to the device, not to the context: only the
     // surfaces are recreated.
-    if (m.gl) { m.tier.release(m.gl); fglDestroyContext(m.gl); }
+    // The GPU tier keeps its programs: the editor resizes whenever the camera starts or stops moving.
+    if (m.gl) { m.tier.release_targets(); fglDestroyContext(m.gl); }
     m.gl = nullptr;
     free(m.pixels);
     m.pixels = px;

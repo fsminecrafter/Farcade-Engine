@@ -1514,6 +1514,21 @@ struct GpuTier::Impl {
         return true;
     }
 
+    // The image size changes (Renderer::resize; the editor's adaptive resolution does it all the time): only
+    // the targets of the image's size go. Programs, buffers and the shadow maps stay, so nothing compiles again.
+    void release_targets() {
+        if (!gl) return;
+        free_target(taa_hist[0]); free_target(taa_hist[1]); free_target(tdepth);
+        taa_valid = false;
+        free_target(sm_edges); free_target(sm_wh); free_target(sm_wv);
+        free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
+        free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t); free_target(ssr_b);
+        free_target(scene); free_target(ldr);
+        for (Target& t : bl_down) free_target(t);
+        for (Target& t : bl_up) free_target(t);
+        ao_scene_hash = 0;
+    }
+
     void release_all() {
         if (!gl) return;
         drop(&shadow_p); drop(&white_p); drop(&local_p); drop(&depth_p); drop(&normal_p); drop(&skymask_p); drop(&fxaa_mask_p); drop(&ssao_p); drop(&blur_p); for (FGLShader*& b : bright_p) drop(&b); for (FGLShader*& d : down_p) drop(&d);
@@ -1580,6 +1595,7 @@ bool GpuTier::render(FGLContext* gl, const RenderScene& scene, const PackedLight
 }
 
 void GpuTier::release(FGLContext*) { impl_->release_all(); }
+void GpuTier::release_targets() { impl_->release_targets(); }
 void GpuTier::set_gate(CompileGate* gate) { impl_->gate = gate; }
 
 const GpuTierStats& GpuTier::stats() const { return impl_->stats; }

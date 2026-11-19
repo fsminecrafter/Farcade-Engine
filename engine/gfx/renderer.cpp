@@ -166,6 +166,14 @@ struct Renderer::Impl {
     Shader unlit[2], sky[2];                // [draft]
     Variant variants[kMaxVariants];
     FGLBuffer sky_buffer = 0;
+    // Screen shaders (RenderScene::screen_shaders): their programs, the image as a texture, the readback.
+    struct ScreenShader { char path[256] = {}; Shader shader; bool failed = false; uint64_t last_use = 0; };
+    ScreenShader screen_progs[4];
+    FGLTexture screen_tex = 0;
+    int screen_tex_w = 0, screen_tex_h = 0;
+    uint32_t* screen_buf = nullptr;         // XRGB: the image uploaded, then the pass read back
+    size_t screen_cap = 0;
+    double screen_time = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
     char warning[256] = "";             // take_warning()
@@ -430,6 +438,126 @@ struct Renderer::Impl {
         slot->shader = shader;
         slot->last_use = frame;
         return &slot->shader;
+    }
+
+    // ---- screen shaders
+
+    Shader* screen_shader(const char* path, const RenderScene& scene) {
+        for (ScreenShader& e : screen_progs)
+            if (e.path[0] && strcmp(e.path, path) == 0) { e.last_use = frame; return e.failed ? nullptr : &e.shader; }
+        ScreenShader* slot = &screen_progs[0];
+        for (ScreenShader& e : screen_progs) {
+            if (!e.path[0]) { slot = &e; break; }
+            if (e.last_use < slot->last_use) slot = &e;
+        }
+        if (slot->path[0]) { drop(&slot->shader); *slot = ScreenShader(); }
+        if (!gate.may_compile(now_ms())) return nullptr;            // next frame (compile budget)
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->last_use = frame;
+        slot->failed = true;                                        // until it compiled
+        if (!scene.read_asset) return nullptr;
+        size_t size = 0;
+        char* source = (char*)scene.read_asset(path, &size, scene.asset_user);
+        if (!source) { snprintf(warning, sizeof warning, "screen shader %s: cannot read it", path); return nullptr; }
+        // The fragment part alone gets the standard vertex part: a full screen triangle with `uv`.
+        static const char kVertex[] =
+            "// @vertex\n"
+            "attribute vec3 position;\n"
+            "varying vec2 uv;\n"
+            "void main() {\n"
+            "    uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);\n"
+            "    gl_Position = vec4(position.xy, 0.0, 1.0);\n"
+            "}\n";
+        bool has_vertex = strstr(source, "@vertex") != nullptr;
+        bool has_fragment = strstr(source, "@fragment") != nullptr;
+        size_t cap = size + sizeof kVertex + 32;
+        char* full = (char*)malloc(cap);
+        char* vs = (char*)malloc(shaders::kSourceBytes);
+        char* fs = (char*)malloc(shaders::kSourceBytes);
+        bool ok = full && vs && fs && size < shaders::kSourceBytes;
+        if (ok) {
+            size_t n = 0;
+            if (!has_vertex) { memcpy(full, kVertex, sizeof kVertex - 1); n = sizeof kVertex - 1; }
+            if (!has_vertex && !has_fragment) { memcpy(full + n, "// @fragment\n", 13); n += 13; }
+            memcpy(full + n, source, size);
+            n += size;
+            char perr[96];
+            ok = parse_shader_file(full, n, vs, shaders::kSourceBytes, fs, shaders::kSourceBytes, perr, sizeof perr);
+            if (!ok) snprintf(warning, sizeof warning, "screen shader %s: %s", path, perr);
+        } else {
+            snprintf(warning, sizeof warning, "screen shader %s: too large", path);
+        }
+        free(source);
+        free(full);
+        if (ok) {
+            char keep[sizeof error];
+            snprintf(keep, sizeof keep, "%s", error);
+            ok = compile(&slot->shader, vs, fs, path);
+            if (!ok) {
+                snprintf(warning, sizeof warning, "screen shader %s", error);
+                snprintf(error, sizeof error, "%s", keep);
+            }
+        }
+        free(vs);
+        free(fs);
+        slot->failed = !ok;
+        return ok ? &slot->shader : nullptr;
+    }
+
+    // Runs the screen shaders over `pixels` (the finished RGBA image): each pass draws a full screen
+    // triangle into the context's surface (rw x rh) reading the image as a texture, and is read back.
+    // A shader that cannot be read or compiled is skipped (take_warning tells once).
+    void apply_screen_shaders(const RenderScene& scene, float dt) {
+        screen_time += dt;
+        size_t img = (size_t)width * (size_t)height, rb = (size_t)rw * (size_t)rh;
+        size_t need = img > rb ? img : rb;
+        if (screen_cap < need) {
+            free(screen_buf);
+            screen_buf = (uint32_t*)malloc(need * 4);
+            screen_cap = screen_buf ? need : 0;
+            if (!screen_buf) return;
+        }
+        for (int i = 0; i < scene.screen_shader_count && i < 4; i++) {
+            const char* path = scene.screen_shaders[i];
+            if (!path || !path[0]) continue;
+            Shader* sh = screen_shader(path, scene);
+            if (!sh || !sh->sh) continue;
+            // The image so far, as XRGB, into the texture.
+            for (size_t k = 0; k < img; k++) {
+                uint32_t p = pixels[k];
+                screen_buf[k] = ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu);
+            }
+            if (!screen_tex || screen_tex_w != width || screen_tex_h != height) {
+                if (screen_tex) fglDestroyTexture(gl, screen_tex);
+                screen_tex = fglCreateTexture(gl, (uint32_t)width, (uint32_t)height, screen_buf);
+                screen_tex_w = width;
+                screen_tex_h = height;
+                if (!screen_tex) { screen_tex_w = screen_tex_h = 0; set_warning_once("screen shaders: cannot create the image texture"); return; }
+            } else if (fglTextureData(gl, screen_tex, screen_buf, (uint32_t)width * 4) != 0) {
+                set_warning_once("screen shaders: cannot upload the image");
+                return;
+            }
+            FGLShader* p = sh->sh;
+            fglClearColor(gl, 0, 0, 0);
+            fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
+            fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+            fglUseShader(gl, p);
+            fglUniform4f(p, fglUniformLocation(p, "u_res"), (float)width, (float)height, 1.0f / (float)width, 1.0f / (float)height);
+            fglUniform4f(p, fglUniformLocation(p, "u_time"), (float)screen_time, dt, (float)frame, 0.0f);
+            fglUniform4f(p, fglUniformLocation(p, "u_params"), scene.screen_params[0], scene.screen_params[1], scene.screen_params[2], scene.screen_params[3]);
+            fglUniformTexture(gl, p, fglUniformLocation(p, "u_screen"), screen_tex, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+            fglSetModel(gl, to_fgl(Mat4::identity()));
+            fglDraw(gl, sky_buffer, 0, 3);
+            if (submit() != 0 || fglReadPixels(gl, screen_buf, (uint32_t)rw * 4) != 0) {
+                set_warning_once("screen shaders: the pass failed");
+                return;
+            }
+            upscale_xrgb_to_rgba(screen_buf, rw, rh, pixels, width, height);
+            stats.screen_passes++;
+        }
+    }
+    void set_warning_once(const char* w) {
+        if (!warning[0]) snprintf(warning, sizeof warning, "%s", w);
     }
 
     void drop(Shader* s) {
@@ -1140,6 +1268,11 @@ struct Renderer::Impl {
         upscale_xrgb_to_rgba(target, rw, rh, pixels, width, height);
         stats.swizzle_ms = now_ms() - ts;
         draw_particles(scene, pixels, 0, height, true);         // particles hook
+        if (scene.screen_shader_count > 0) {
+            double tss = now_ms();
+            apply_screen_shaders(scene, dt);
+            stats.screen_ms = now_ms() - tss;
+        }
         stats.ms = now_ms() - t0;
         last_render_end_ms = now_ms();
         if (settings.dynamic_resolution) dyn.update((float)stats.ms, settings.target_frame_ms, settings.min_render_scale, settings.render_scale);
@@ -1153,6 +1286,10 @@ struct Renderer::Impl {
             for (Variant& v : variants) { if (v.used) drop(&v.shader); v.used = false; }
             for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             for (CustomShaderEntry& e : custom_shaders) { drop(&e.shader); e.path[0] = 0; }
+            for (ScreenShader& e : screen_progs) { drop(&e.shader); e = ScreenShader(); }
+            if (screen_tex) fglDestroyTexture(gl, screen_tex);
+            screen_tex = 0;
+            screen_tex_w = screen_tex_h = 0;
             for (TextureEntry& e : textures) {
                 if (e.texture && !e.missing) fglDestroyTexture(gl, e.texture);     // missing ones share white_texture
                 e = TextureEntry();
@@ -1174,6 +1311,9 @@ struct Renderer::Impl {
         free(ipixels);
         ipixels = nullptr;
         ipixels_cap = 0;
+        free(screen_buf);
+        screen_buf = nullptr;
+        screen_cap = 0;
     }
 };
 

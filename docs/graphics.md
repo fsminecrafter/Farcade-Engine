@@ -38,6 +38,52 @@ shading. When a visible mesh has a texture or custom shader, the renderer uses
 its base FarcadeGL path for that frame, so advanced GPU-tier effects (such as
 shadows, SSAO and fog) are not applied.
 
+## Camera screen shaders
+
+A Camera module has three screen shader slots (**Shader 1-3**) and **Shader
+params**. While the camera is current, each set shader runs in order as a full
+screen pass over the finished image (after post processing and particles), on
+every tier. In Lua they are `obj.camera.shader1` .. `shader3` and
+`obj.camera.shader_params`.
+
+A screen shader file is the fragment part only (a `.fshader` without markers;
+a file with `// @vertex` and `// @fragment` sections is used as it is):
+
+```glsl
+uniform sampler2D u_screen;     // the image so far
+uniform vec4 u_res;             // width, height, 1 / width, 1 / height
+uniform vec4 u_time;            // seconds, delta, frame, 0
+uniform vec4 u_params;          // the camera's Shader params (x, y, z)
+varying vec2 uv;                // 0..1, (0, 0) top left
+void main() {
+    vec3 c = texture2D(u_screen, uv).rgb;
+    float g = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    gl_FragColor = vec4(mix(c, vec3(g, g, g), u_params.x), 1.0);
+}
+```
+
+Samples: `assets/samples/screen/` (grayscale, invert, pixelate, crt). Each pass
+uploads the image, draws one triangle and reads it back, so it costs about a
+readback per shader. A file that cannot be read or compiled is skipped and
+reported once in the Console; the frame still draws. The editor's CPU preview
+does not run them (switch the viewport to FarcadeGL).
+
+## Supersampling and vsync
+
+`ssaa` (Settings > Graphics > Supersampling): `off`, `2x` (1.41 x the pixels per
+side) or `4x` (2 x 2). The frame is drawn bigger and averaged down with an area
+filter when read back; it stacks with FXAA / SMAA / TAA and works on every tier
+(at most 4096 pixels a side). In the editor viewport TAA has no history to work
+with (a still view is drawn once), so supersampling is the way to smooth stills.
+
+`vsync` (games: the player; `feplayer --vsync` overrides): `off` (uncapped),
+`double` (a frame waits for the next refresh, a late one for the one after),
+`triple` (a present thread shows the newest finished frame at each refresh; the
+game never waits) and `adaptive` (like double, a late frame is shown at once).
+`refresh_hz` (30-240) is the rate it follows: Minimal-OS gives programs no
+vertical blank signal, so refreshes are paced by the clock
+(`editor/platform/frame_pacer.h`).
+
 `fe::gfx::Renderer` (engine/gfx) has two tiers, set by `GraphicsSettings`
 (engine/gfx/graphics_settings.h).
 

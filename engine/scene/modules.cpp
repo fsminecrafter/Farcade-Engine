@@ -237,6 +237,10 @@ const FieldInfo kCamera[] = {
     FE_F(Camera, ortho_size, "Ortho size", Float, 0.01f, 1000, nullptr),
     FE_F(Camera, near_plane, "Near", Float, 0.001f, 100, nullptr),
     FE_F(Camera, far_plane, "Far", Float, 1, 100000, nullptr),
+    FE_F(Camera, shader1, "Shader 1", Path, 0, 0, nullptr),
+    FE_F(Camera, shader2, "Shader 2", Path, 0, 0, nullptr),
+    FE_F(Camera, shader3, "Shader 3", Path, 0, 0, nullptr),
+    FE_F(Camera, shader_params, "Shader params", Vec3, 0, 0, nullptr),
 };
 
 const FieldInfo kSkyLight[] = {

@@ -86,6 +86,13 @@ struct RenderScene {
     bool draft = false;
     // Particles and sprites drawn over the finished image (particles.h). The
     // items are only read during render().
+    // Screen shaders (the current Camera's Shader 1..3): full screen passes over the finished image, in
+    // order. A file is the fragment part only (or a full .fshader with // @vertex and // @fragment). They
+    // get u_screen (the image so far; sample it at `uv`), u_res (w, h, 1/w, 1/h), u_time (seconds, delta,
+    // frame, 0) and u_params (the camera's Shader params). Read through read_asset; not drawn in bands.
+    const char* screen_shaders[4] = {};
+    int screen_shader_count = 0;
+    float screen_params[4] = {};
     const ParticleBatch* particles = nullptr;
     int particle_batch_count = 0;
     const TextLabel* labels = nullptr;      // Text 3D labels (particles.h)
@@ -114,6 +121,8 @@ struct RendererStats {
     int internal_width = 0, internal_height = 0;
     float exposure_ev = 0, meter_log2 = 0;
     double gi_ms = 0;                       // the probe GI's CPU update (gi.h)
+    double screen_ms = 0;                   // the camera's screen shaders (upload, passes, readback)
+    int screen_passes = 0;
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

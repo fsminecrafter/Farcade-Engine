@@ -360,7 +360,10 @@ void Editor::panel_viewport() {
     fgl.set_settings(settings.graphics);
     const Sky* cur_sky = (const Sky*)scene.current_data(ModuleKind::Sky);
     // Supersampling needs the whole image too (bands are drawn at the image size).
-    const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f) || settings.graphics.ssaa != gfx::SSAAMode::Off;
+    // So do the camera's screen shaders (they work on the finished image).
+    const Camera* cur_cam = (const Camera*)scene.current_data(ModuleKind::Camera);
+    const bool screen_fx = cur_cam && (cur_cam->shader1[0] || cur_cam->shader2[0] || cur_cam->shader3[0]);
+    const bool whole_only = fgl.features().gpu_tier || (cur_sky && cur_sky->fog > 0.0f) || settings.graphics.ssaa != gfx::SSAAMode::Off || screen_fx;
     const bool progressive = adaptive_view && use_fgl && !whole_only;
     bool need = hash != last_hash || (!use_fgl && !view3d.width()) || (use_fgl && !fgl_tex.pixels);
     if (progressive) {

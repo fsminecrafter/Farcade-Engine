@@ -93,6 +93,15 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
     if (const Sky* s = (const Sky*)sc.current_data(ModuleKind::Sky)) scene.sky = *s;
     if (const SkyLight* s = (const SkyLight*)sc.current_data(ModuleKind::SkyLight)) scene.sky_light = *s;
     if (const PostProcess* p = (const PostProcess*)sc.current_data(ModuleKind::PostProcess)) scene.post = *p;
+    // The current camera's screen shaders.
+    if (const Camera* c = (const Camera*)sc.current_data(ModuleKind::Camera)) {
+        const char* paths[3] = { c->shader1, c->shader2, c->shader3 };
+        for (const char* pth : paths)
+            if (pth[0]) scene.screen_shaders[scene.screen_shader_count++] = pth;
+        scene.screen_params[0] = c->shader_params.x;
+        scene.screen_params[1] = c->shader_params.y;
+        scene.screen_params[2] = c->shader_params.z;
+    }
 }
 
 bool RenderBridge::camera_view(Scene& sc, ObjectId cam, float aspect, Mat4* view, Mat4* proj, Vec3* eye, float* near_plane, float* far_plane) {

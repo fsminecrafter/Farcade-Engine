@@ -334,6 +334,12 @@ struct Camera {
     float near_plane = 0.1f;
     float far_plane = 500.0f;
     bool current = false;
+    // Screen shaders: full screen passes over what the camera sees, in order (renderer.h
+    // RenderScene::screen_shaders; docs/graphics.md). A .fshader with the fragment part only.
+    char shader1[kPathMax] = {};
+    char shader2[kPathMax] = {};
+    char shader3[kPathMax] = {};
+    Vec3 shader_params = Vec3(1.0f, 0.0f, 0.0f);   // u_params.xyz of the screen shaders
 };
 
 // Ambient light from the sky and the ground (hemisphere lighting).

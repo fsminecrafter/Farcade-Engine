@@ -27,7 +27,7 @@ namespace {
 
 constexpr int kBloomLevels = 5;
 constexpr int kMaxCascades = shaders::kMaxCascades;
-constexpr int kMaxLitVariants = 8;
+constexpr int kMaxLitVariants = 16;       // draft and full shading of each light mix stay compiled
 constexpr int kBoundsCache = 128;
 constexpr uint32_t kFrameVec4Count = (uint32_t)shaders::kFrameHeader + 3u * shaders::kMaxLights + kMaxLocalShadows;
 
@@ -148,12 +148,14 @@ struct GpuTier::Impl {
     FGLShader* bright_p[2] = {};            // [karis]
     FGLShader* down_p[2] = {};              // [wide]
     FGLShader* up_p = nullptr;
-    FGLShader* comp_p[8] = {};              // [ssr * 4 + chromatic * 2 + bloom]
-    shaders::PostKey comp_key[8], unlit_key[4], sky_key[2];
+    // Draft and full shading (PostKey::draft) have slots of their own: the editor switches between them
+    // whenever the camera starts or stops moving, which must not recompile anything.
+    FGLShader* comp_p[16] = {};             // [draft * 8 + ssr * 4 + chromatic * 2 + bloom]
+    shaders::PostKey comp_key[16], unlit_key[8], sky_key[4];
     const PostFrame* pf = nullptr;          // this frame's post chain values
     FGLShader* fxaa_p = nullptr;
-    FGLShader* unlit_p[4] = {};             // [fog * 2 + hdr]
-    FGLShader* sky_p[2] = {};               // [hdr]
+    FGLShader* unlit_p[8] = {};             // [draft * 4 + fog * 2 + hdr]
+    FGLShader* sky_p[4] = {};               // [draft * 2 + hdr]
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
@@ -1107,15 +1109,17 @@ struct GpuTier::Impl {
             lit = lit_variant(key);
             if (!lit) return false;
         }
-        int ui = (plan.fog ? 2 : 0) + (hdr ? 1 : 0);
+        const int dr = pf->key.draft ? 1 : 0;
+        int ui = dr * 4 + (plan.fog ? 2 : 0) + (hdr ? 1 : 0);
+        int si = dr * 2 + (hdr ? 1 : 0);
         bool fog = plan.fog, h2 = hdr;
         shaders::PostKey pk = pf->key;
         if (!make_keyed(&unlit_p[ui], &unlit_key[ui], shaders::hq_unlit_vertex,
                         [fog, h2, pk](char* o, size_t c) { shaders::hq_unlit_fragment(o, c, fog, h2, pk); }, "unlit")) return false;
-        if (!make_keyed(&sky_p[hdr ? 1 : 0], &sky_key[hdr ? 1 : 0], shaders::sky_vertex,
+        if (!make_keyed(&sky_p[si], &sky_key[si], shaders::sky_vertex,
                         [h2, pk](char* o, size_t c) { shaders::hq_sky_fragment(o, c, h2, pk); }, "sky")) return false;
         FGLShader* unlit = unlit_p[ui];
-        FGLShader* sky = sky_p[hdr ? 1 : 0];
+        FGLShader* sky = sky_p[si];
 
         // uniforms of the frame
         set_post(unlit, s.post, w, h);
@@ -1228,7 +1232,7 @@ struct GpuTier::Impl {
         int w = gl->desc.width, h = gl->desc.height;
         double t0 = now_ms();
         bool ca = pf->chromatic > 0.001f;
-        int ci = (with_ssr ? 4 : 0) + (ca ? 2 : 0) + (with_bloom ? 1 : 0);
+        int ci = (pf->key.draft ? 8 : 0) + (with_ssr ? 4 : 0) + (ca ? 2 : 0) + (with_bloom ? 1 : 0);
         FGLShader** slot = &comp_p[ci];
         bool b = with_bloom;
         shaders::PostKey pk = pf->key;

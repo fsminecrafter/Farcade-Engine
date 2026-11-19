@@ -28,6 +28,18 @@ void check(const char* what, size_t cap) {
         if (g_failed++ < 40) printf("FAIL %s: source fills its %zu byte buffer (vertex %zu, fragment %zu)\n", what, cap, vl, fl);
         return;
     }
+    // FE_DUMP_DIR=<dir>: every program as <dir>/NNNN.vs and .fs (Minimal-OS's nv_sass_tests runs them
+    // through the NVIDIA shader compiler and its simulator: NV_SASS_SHADER_DIR=<dir>).
+    if (const char* dir = getenv("FE_DUMP_DIR")) {
+        char path[512];
+        const char* parts[2] = { g_vs, g_fs };
+        for (int k = 0; k < 2; k++) {
+            snprintf(path, sizeof path, "%s/%04d.%s", dir, g_programs, k ? "fs" : "vs");
+            if (FILE* f = fopen(path, "wb")) { fputs(parts[k], f); fclose(f); }
+        }
+        snprintf(path, sizeof path, "%s/%04d.name", dir, g_programs);
+        if (FILE* f = fopen(path, "wb")) { fputs(what, f); fclose(f); }
+    }
     if (fglsl_compile(g_prog, g_vs, g_fs) == 0) return;
     if (g_failed++ >= 40) return;
     printf("FAIL %s: %s\n", what, g_prog->error);

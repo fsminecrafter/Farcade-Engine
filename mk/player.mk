@@ -63,6 +63,8 @@ PLAYER_OS_SRC = $(PLAYER_SRC) $(CORE_SRC) $(ECS_SRC) $(FLECS_SRC) $(GFX_SRC) $(P
                 editor/platform/platform_minimalos.cpp player/main.cpp
 OS_OBJS_feplayer = $(call os_objs,$(PLAYER_OS_SRC))
 OS_PROGRAMS += $(BUILD)/os/bin/feplayer.run
+RUN_ICON_feplayer = editor/os/launcher-icon.bmp
+$(BUILD)/os/bin/feplayer.run: editor/os/launcher-icon.bmp
 
 # editor_tests exports a game and copies the player.
 $(BUILD)/host/bin/editor_tests: | $(BUILD)/host/bin/feplayer

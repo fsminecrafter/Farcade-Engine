@@ -87,8 +87,9 @@ $(BUILD)/os/bin/%.elf: $$(OS_OBJS_$$*) $(RT_LIB) $(RT_CRT0) $(RT_LINK_LD)
 	$(OS_LD) -pie --gc-sections --no-dynamic-linker --no-warn-rwx-segments -T $(RT_LINK_LD) -e _start \
 	    -o $@ $(RT_CRT0) $(OS_OBJS_$*) $(RT_LIB) $(RT_LIBGCC)
 
+# RUN_ICON_<name>: the launcher icon packed into <name>.run (mosWM shows it).
 $(BUILD)/os/bin/%.run: $(BUILD)/os/bin/%.elf $(SDK)/mkrun.sh
-	$(SDK)/mkrun.sh $< $@ >/dev/null
+	$(SDK)/mkrun.sh $< $@ $(RUN_ICON_$*) >/dev/null
 	@echo "built $@ ($$(stat -c %s $@) bytes)"
 
 .PRECIOUS: $(BUILD)/os/bin/%.elf

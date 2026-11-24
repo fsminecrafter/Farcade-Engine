@@ -88,6 +88,10 @@ struct GiSystem::Impl {
     int32_t origin[3] = {};                 // voxel cell of the grid's min corner
     bool have_grid = false;
     uint64_t scene_hash = 0;
+    // Settled: nothing the GI sees changed while every probe was updated many times over (the probes have
+    // converged): updates stop until something changes. quiet_updates counts probe updates since then.
+    uint64_t quiet_hash = 0;
+    int64_t quiet_updates = 0;
     double since_voxelize = 1e9;            // seconds
     int inject_cursor = 0;
 
@@ -416,6 +420,33 @@ void GiSystem::update(const GiInput& in, const GiParams& p, bool force_all) {
         m.stats.voxels = m.surface_count;
     }
 
+    // settled? (the scene, the lights, the sky, the windows and the parameters as they were)
+    {
+        uint64_t q = Impl::fnv(h, m.origin, sizeof m.origin);
+        q = Impl::fnv(q, m.win, sizeof m.win);
+        for (int i = 0; i < in.light_count; i++) {
+            const RenderLight& L = in.lights[i];
+            float f[13] = { L.position.x, L.position.y, L.position.z, L.direction.x, L.direction.y, L.direction.z,
+                            L.color.x, L.color.y, L.color.z, L.intensity, L.range, L.spot_angle, L.spot_blend };
+            q = Impl::fnv(q, f, sizeof f);
+            int ty = (int)L.type;
+            q = Impl::fnv(q, &ty, sizeof ty);
+        }
+        float g[11] = { in.sky_color.x, in.sky_color.y, in.sky_color.z, in.ground_color.x, in.ground_color.y,
+                        in.ground_color.z, p.hysteresis, p.bounce, p.intensity, (float)p.rays, m.spacing };
+        q = Impl::fnv(q, g, sizeof g);
+        int up = (int)p.update;
+        q = Impl::fnv(q, &up, sizeof up);
+        if (q != m.quiet_hash || force_all) { m.quiet_hash = q; m.quiet_updates = 0; }
+        // 0.93^48 ~ 3%: what is left of any older value after 48 updates of a probe.
+        if (!force_all && m.quiet_updates >= (int64_t)GiSystem::kProbeCount * 48) {
+            m.stats.voxels = m.surface_count;
+            m.stats.settled = true;
+            m.stats.ms = now_ms() - t0;
+            return;                 // version() unchanged: nothing is uploaded either
+        }
+    }
+
     // light: a quarter of the surface voxels a frame
     int count = m.surface_count;
     int slice = force_all ? count : (count / 4 > 256 ? count / 4 : (count < 256 ? count : 256));
@@ -464,6 +495,7 @@ void GiSystem::update(const GiInput& in, const GiParams& p, bool force_all) {
     }
     for (const Probe& pr : m.probes) if (pr.fallback) invalid++;
     m.stats.probes_updated = updated;
+    m.quiet_updates += updated;
     m.stats.probes_invalid = invalid;
     m.version++;
     m.stats.ms = now_ms() - t0;

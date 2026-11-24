@@ -526,6 +526,37 @@ void wait_event(int timeout_ms) {
 
 double time_seconds() { return (double)(mos_clock_monotonic_ns() - g_t0) * 1e-9; }
 
+// SYS_TASK_GPU (Minimal-OS ABI), defined here for SDKs from before it: the kernel refuses it then.
+namespace {
+struct TaskGpuStats {
+    uint32_t size, flags;
+    char name[64];
+    char renderer[32];
+    uint64_t vram_total, vram_used;
+    uint64_t now_ns;
+    uint64_t engine_busy_ns[4];
+    uint64_t engine_jobs[4];
+    uint64_t cpu_render_ns;
+};
+}
+
+bool gpu_stats(GpuStats* out) {
+    TaskGpuStats g;
+    memset(&g, 0, sizeof g);
+    g.size = sizeof g;
+    if (mos_syscall(SYS_TASK, 3 /* SYS_TASK_GPU */, (long)(uintptr_t)&g, 0) != SYS_SUCCESS) return false;
+    memset(out, 0, sizeof *out);
+    memcpy(out->name, g.name, sizeof out->name);
+    out->name[sizeof out->name - 1] = 0;
+    out->vram_total = g.vram_total;
+    out->vram_used = g.vram_used;
+    out->now_ns = g.now_ns;
+    for (int e = 0; e < 4; e++) { out->engine_busy_ns[e] = g.engine_busy_ns[e]; out->engine_jobs[e] = g.engine_jobs[e]; }
+    out->cpu_render_ns = g.cpu_render_ns;
+    out->engines = (g.flags & 1u) != 0;
+    return true;
+}
+
 // ---- files
 
 bool list_dir(const char* path, void (*fn)(const DirEntry& e, void* user), void* user) {

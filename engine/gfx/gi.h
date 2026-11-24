@@ -45,6 +45,7 @@ struct GiStats {
     int probes_updated = 0;                 // this frame
     int probes_invalid = 0;                 // inside geometry / seeing back faces, using the fallback
     bool revoxelized = false;
+    bool settled = false;                   // converged and nothing changed: this frame updated nothing
     double ms = 0;                          // the whole update
 };
 

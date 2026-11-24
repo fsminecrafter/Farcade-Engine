@@ -289,6 +289,7 @@ public:
     uint32_t view_renders = 0;          // how many times the viewport image was rendered
     SwStats raster_stats;               // the last UI rasterization
     gfx::RendererStats fgl_stats;       // the last FarcadeGL render
+    gfx::GpuTierStats fgl_tier;         // its GPU tier passes (Settings > Graphics > Frame timing)
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
     // FarcadeGL compiles its shaders a few per frame (Renderer::set_compile_budget):
     // while it does, the viewport keeps its last picture and shows a bar.

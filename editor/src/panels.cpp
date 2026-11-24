@@ -1059,6 +1059,48 @@ void Editor::settings_graphics() {
         }
         ImGui::Dummy(ImVec2(0, 4));
     }
+    // Where the last FarcadeGL frame's time went: the GPU tier's passes (each one waits for the card, so
+    // a pass's time is its recording plus the card's work) and the CPU stages around them.
+    if (fgl_backend[0] && section_header("Frame timing", Icon::Monitor)) {
+        const gfx::RendererStats& st = fgl_stats;
+        const gfx::GpuTierStats& t = fgl_tier;
+        auto row = [&](const char* name, double ms) {
+            if (ms <= 0.0) return;
+            prop_label(name);
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%.1f ms", ms);
+        };
+        prop_label("Last frame");
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%.1f ms  (%d x %d, %d draws, %d passes)", st.ms, st.internal_width, st.internal_height, st.draws,
+                    t.passes);
+        row("Sun shadows", t.shadow_ms);
+        row("Light shadows", t.local_shadow_ms);
+        row("Depth / normals", t.depth_ms);
+        row("Ambient occlusion", t.ssao_ms);
+        row("AO blur", t.blur_ms);
+        row("Lighting", t.lit_ms);
+        row("Reflections", t.ssr_ms);
+        row("TAA", t.taa_ms);
+        row("Bloom", t.bloom_ms);
+        row("Composite", t.composite_ms);
+        row("SMAA", t.smaa_ms);
+        row("FXAA", t.fxaa_ms);
+        row("GI probes (CPU)", st.gi_ms);
+        row("Shader compiles", st.shader_ms);
+        row("Mesh uploads", st.upload_ms);
+        row("Readback", st.read_ms);
+        row("Swizzle (CPU)", st.swizzle_ms);
+        row("Screen shaders", st.screen_ms);
+        if (t.cascades) {
+            char line[96];
+            snprintf(line, sizeof(line), "Sun cascades: %d drawn, %d reused; light shadows %s", t.cascades_drawn,
+                     t.cascades_reused, t.atlas_reused ? "reused" : "drawn");
+            faint(line);
+        }
+        faint("A pass's time includes waiting for the card. 'gpu perf' in the terminal shows the kernel's side.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
     if (section_header("Effects", Icon::Sparks)) {
         prop_label("Particles");
         toggle_switch("##fxp", &g.fx_particles);

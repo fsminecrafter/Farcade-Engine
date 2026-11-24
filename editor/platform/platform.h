@@ -71,6 +71,18 @@ bool poll(Event& e);
 void wait_event(int timeout_ms);
 
 double time_seconds();
+
+// The graphics card's use since boot (Minimal-OS SYS_TASK_GPU), for the Profiler. false: not known (the
+// host, or a kernel without it). Engines: 0 3D, 1 copy, 2 video decode, 3 video encode.
+struct GpuStats {
+    char name[64];
+    uint64_t vram_total, vram_used;
+    uint64_t now_ns;
+    uint64_t engine_busy_ns[4], engine_jobs[4];
+    uint64_t cpu_render_ns;             // FarcadeGL work the CPU drew
+    bool engines;                       // the busy times are measured
+};
+bool gpu_stats(GpuStats* out);
 // True when the editor is a window on a desktop (it draws no mouse cursor
 // of its own then); false when it has the whole screen.
 bool windowed();

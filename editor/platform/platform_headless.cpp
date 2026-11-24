@@ -73,6 +73,8 @@ bool toggle_fullscreen() { return true; }
 bool is_fullscreen() { return true; }
 void set_vsync(int, int) {}
 
+bool gpu_stats(GpuStats* out) { (void)out; return false; }
+
 double time_seconds() {
     if (g_fake_time >= 0) return g_fake_time;
     timespec ts;

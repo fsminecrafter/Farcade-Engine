@@ -299,9 +299,17 @@ int main(int argc, char** argv) {
         // The GPU tier (shadows, AO, bloom, AA, PBR), forced on the CPU backend.
         ed.settings.graphics.apply_preset(gfx::GraphicsPreset::Ultra);
         ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        ed.settings.graphics.feature_level = gfx::FeatureLevelMode::GpuTier;   // Auto keeps the CPU at FL0
         for (int i = 0; i < 3; i++) ed.frame();
         printf("FarcadeGL viewport, GPU tier: %.1f ms\n", ed.view_ms);
         snprintf(path, sizeof(path), "%s/editor-farcadegl-ultra.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        // The Profiler tab next to Console and Files: the frames and where the last one went.
+        for (int i = 0; i < 14; i++) ed.frame();        // the settle frames (TAA / AO) too, for the graph
+        ImGui::SetWindowFocus("###Profiler");
+        for (int i = 0; i < 2; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-profiler.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
         // The pillar's material in the Inspector (Look: roughness, metal),

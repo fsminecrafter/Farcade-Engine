@@ -84,6 +84,10 @@ struct RenderScene {
     // Cheaper shading for images that are replaced at once (a camera drag):
     // no highlights, sun disc, contrast, saturation or vignette (shaders.h).
     bool draft = false;
+    // For views drawn only when something changes (the editor): TAA forgets its history whenever the camera
+    // or an item moved, and averages the still frames that follow evenly (1/n) instead of keeping 90% of an
+    // older view, so the caller can draw a few more frames to let the picture settle (Renderer::settling()).
+    bool accumulate_still = false;
     // Particles and sprites drawn over the finished image (particles.h). The
     // items are only read during render().
     // Screen shaders (the current Camera's Shader 1..3): full screen passes over the finished image, in

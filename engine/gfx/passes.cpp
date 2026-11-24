@@ -176,6 +176,8 @@ struct GpuTier::Impl {
     FGLShader* sm_blend_p = nullptr;
     Target taa_hist[2], tdepth;             // TAA: the resolved image of the last two frames (output size), full size linear depth
     int taa_cur = 0;                        // which of taa_hist holds the latest resolve
+    int taa_count = 0;                      // frames in the history since it restarted
+    uint64_t taa_scene_hash = 0;            // camera and items the history is for (accumulate_still)
     bool taa_valid = false;                 // taa_hist[taa_cur] is a real previous frame
     Mat4 taa_prev_vp;                       // the unjittered view-projection that frame had
     FGLShader* taa_p = nullptr;
@@ -891,7 +893,7 @@ struct GpuTier::Impl {
             set_target(pass == 0 ? gdepth.color : (pass == 1 ? gnormal.color : gmat.color), gdepth.depth);
             fglClearColor(gl, 1, 1, 1);
             fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
-            fglSetProjection(gl, to_fgl(s.camera.proj));
+            fglSetProjection(gl, to_fgl(cur_proj));
             fglSetView(gl, to_fgl(s.camera.view));
             fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
             if (pass == 0) u4(sh, "u_pp", 1.0f / far_m, 0, 0, 0);
@@ -1145,7 +1147,14 @@ struct GpuTier::Impl {
         set_target(dst.color, dst.depth ? dst.depth : main_depth);
         if (lit) {
             if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
-            if (use_ao) bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+            if (use_ao) {
+                // Filtered in the shader (by depth), so the texels are read as they are.
+                bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_CLAMP);
+                Cam ac = read_camera(s.camera);
+                const Mat4& vw = s.camera.view;
+                u4(lit->sh, "u_aos", 1.0f / (float)ao_a.w, 1.0f / (float)ao_a.h, (float)ao_a.w, (float)ao_a.h);
+                u4(lit->sh, "u_aof", -vw.m[2], -vw.m[6], -vw.m[10], fminf_(ac.f, 1000.0f));
+            }
             if (ls.nps + ls.nss > 0) bind_tex(lit->sh, "u_atlas", atlas, FGL_TEXTURE_CLAMP);
             if (host.gi_on) fglUniformTexture(gl, lit->sh, fglUniformLocation(lit->sh, "u_gi"), host.gi_texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         }
@@ -1291,13 +1300,25 @@ struct GpuTier::Impl {
         if (failed) return false;
         // reprojection: previous view-projection * inverse(current), both unjittered
         Mat4 vp = s.camera.proj * s.camera.view, inv, rep = Mat4::identity();
+        // A view drawn only on change (accumulate_still): the history restarts when the camera or an item moved,
+        // and the still frames after that are averaged evenly.
+        if (s.accumulate_still) {
+            uint64_t h = 1469598103934665603ull;
+            h = fnv(h, vp.m, sizeof vp.m);
+            for (int i = 0; i < s.item_count; i++) h = fnv(h, s.items[i].model.m, sizeof s.items[i].model.m);
+            if (h != taa_scene_hash) { taa_valid = false; taa_count = 0; }
+            taa_scene_hash = h;
+        }
+        if (!taa_valid) taa_count = 0;
+        float alpha = 0.1f;
+        if (s.accumulate_still && taa_count < 9) alpha = 1.0f / (float)(taa_count + 1);
         bool ok = mat4_inverse(vp, &inv);
         if (ok) rep = taa_prev_vp * inv;
         int dst = 1 - taa_cur;
         set_target(taa_hist[dst].color, 0);
         fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         u4(taa_p, "u_p", 1.0f / (float)ow, 1.0f / (float)oh, 1.0f / (float)iw, 1.0f / (float)ih);
-        u4(taa_p, "u_j", jx / (float)iw, -jy / (float)ih, far_m, 0.1f);
+        u4(taa_p, "u_j", jx / (float)iw, -jy / (float)ih, far_m, alpha);
         const Mat4& pj = s.camera.proj;
         u4(taa_p, "u_zp", -pj.m[10], pj.m[14], c.ortho ? 1.0f : 0.0f, (taa_valid && ok) ? 1.0f : 0.0f);
         u4(taa_p, "u_zq", pj.m[10], pj.m[14], 0, 0);
@@ -1314,6 +1335,7 @@ struct GpuTier::Impl {
         if (!end_pass(t0, &stats.taa_ms)) return false;
         taa_cur = dst;
         taa_valid = true;
+        taa_count++;
         taa_prev_vp = vp;
         *out = &taa_hist[taa_cur];
         return true;
@@ -1475,9 +1497,8 @@ struct GpuTier::Impl {
         stats.atlas_reused = false;
         stats.local_shadow_ms = 0;
         if (ls.nps + ls.nss > 0 && !atlas_pass(s, ls, host, gs, plan.hw)) return false;
-        if ((plan.ao || plan.ssr) && !ao_passes(s, host, gs, plan.ao, plan.gtao, plan.ssr)) return false;
-
-        // the scene
+        // the scene's projection: jittered with TAA. The G-buffer (AO, SSR) uses the same one, so the AO a pixel
+        // looks up was computed for the same sub-pixel position (unjittered, edges were off by up to half a pixel).
         bool bloom = plan.bloom, aa = plan.aa, ssr = plan.ssr;
         const bool taa = aa && plan.aa_mode == AAMode::TAA;
         const bool fx = aa && !taa;                  // FXAA or SMAA after the composite
@@ -1489,6 +1510,8 @@ struct GpuTier::Impl {
             taa_jitter((uint32_t)frame, &jx, &jy);
             cur_proj = jittered(s.camera.proj, jx, jy, iw, ih);
         }
+        if ((plan.ao || plan.ssr) && !ao_passes(s, host, gs, plan.ao, plan.gtao, plan.ssr)) return false;
+
         if (hdr || aa) {
             // the scene is drawn at the internal size (with its own depth when that is not the context's)
             if (!ensure(scene, iw, ih, iw != w || ih != h)) return false;

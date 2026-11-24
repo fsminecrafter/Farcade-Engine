@@ -1059,48 +1059,7 @@ void Editor::settings_graphics() {
         }
         ImGui::Dummy(ImVec2(0, 4));
     }
-    // Where the last FarcadeGL frame's time went: the GPU tier's passes (each one waits for the card, so
-    // a pass's time is its recording plus the card's work) and the CPU stages around them.
-    if (fgl_backend[0] && section_header("Frame timing", Icon::Monitor)) {
-        const gfx::RendererStats& st = fgl_stats;
-        const gfx::GpuTierStats& t = fgl_tier;
-        auto row = [&](const char* name, double ms) {
-            if (ms <= 0.0) return;
-            prop_label(name);
-            ImGui::AlignTextToFramePadding();
-            ImGui::Text("%.1f ms", ms);
-        };
-        prop_label("Last frame");
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("%.1f ms  (%d x %d, %d draws, %d passes)", st.ms, st.internal_width, st.internal_height, st.draws,
-                    t.passes);
-        row("Sun shadows", t.shadow_ms);
-        row("Light shadows", t.local_shadow_ms);
-        row("Depth / normals", t.depth_ms);
-        row("Ambient occlusion", t.ssao_ms);
-        row("AO blur", t.blur_ms);
-        row("Lighting", t.lit_ms);
-        row("Reflections", t.ssr_ms);
-        row("TAA", t.taa_ms);
-        row("Bloom", t.bloom_ms);
-        row("Composite", t.composite_ms);
-        row("SMAA", t.smaa_ms);
-        row("FXAA", t.fxaa_ms);
-        row("GI probes (CPU)", st.gi_ms);
-        row("Shader compiles", st.shader_ms);
-        row("Mesh uploads", st.upload_ms);
-        row("Readback", st.read_ms);
-        row("Swizzle (CPU)", st.swizzle_ms);
-        row("Screen shaders", st.screen_ms);
-        if (t.cascades) {
-            char line[96];
-            snprintf(line, sizeof(line), "Sun cascades: %d drawn, %d reused; light shadows %s", t.cascades_drawn,
-                     t.cascades_reused, t.atlas_reused ? "reused" : "drawn");
-            faint(line);
-        }
-        faint("A pass's time includes waiting for the card. 'gpu perf' in the terminal shows the kernel's side.");
-        ImGui::Dummy(ImVec2(0, 4));
-    }
+    if (fgl_backend[0]) faint("Where each frame's time goes: the Profiler tab, next to Console and Files.");
     if (section_header("Effects", Icon::Sparks)) {
         prop_label("Particles");
         toggle_switch("##fxp", &g.fx_particles);
@@ -1775,10 +1734,141 @@ void Editor::panel_files() {
     ImGui::End();
 }
 
+// ---------------------------------------------------------------- Profiler
+// FarcadeGL's frames: their time over the last frames, where the last one went (each GPU tier pass waits for
+// the card, so a pass's time is recording plus the card's work), and on Minimal-OS how busy the graphics card
+// was and its memory. The kernel's side of a frame: 'gpu perf' in the terminal.
+
+void Editor::prof_push(double ms) {
+    prof_ms[prof_head] = (float)ms;
+    prof_head = (prof_head + 1) % kProfFrames;
+    if (prof_count < kProfFrames) prof_count++;
+}
+
+void Editor::panel_profiler() {
+    if (console_dock_id) ImGui::SetNextWindowDockID(console_dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin(FE_ICON_MONITOR "  Profiler###Profiler");
+    auto faint = [&](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    if (!fgl_backend[0]) {
+        faint("Switch the viewport to FarcadeGL: the profiler shows its frames.");
+        ImGui::End();
+        return;
+    }
+    const gfx::RendererStats& st = fgl_stats;
+    const gfx::GpuTierStats& t = fgl_tier;
+    // The frames so far.
+    float vals[kProfFrames];
+    float mx = 0, sum = 0;
+    for (int i = 0; i < prof_count; i++) {
+        float v = prof_ms[(prof_head - prof_count + i + kProfFrames) % kProfFrames];
+        vals[i] = v;
+        sum += v;
+        if (v > mx) mx = v;
+    }
+    float avg = prof_count ? sum / (float)prof_count : 0;
+    ImGui::Text("%s%s  |  last %.1f ms (%.0f fps)  |  average %.1f, worst %.1f over %d frames", fgl_backend,
+                fgl_features.gpu ? " (graphics card)" : " (CPU)", st.ms, st.ms > 0 ? 1000.0 / st.ms : 0.0, avg, mx,
+                prof_count);
+    ImGui::Text("%d x %d, %d draws, %d passes%s", st.internal_width, st.internal_height, st.draws, t.passes,
+                view_settling ? "  |  settling (TAA / AO converge over the next frames)" : "");
+    if (prof_count > 1) {
+        float top = mx > 33.4f ? mx * 1.1f : 33.4f;
+        char overlay[48];
+        snprintf(overlay, sizeof overlay, "frame ms (scale 0 - %.0f; 16.7 = 60 fps)", top);
+        ImGui::PlotLines("##frames", vals, prof_count, 0, overlay, 0.0f, top, ImVec2(ImGui::GetContentRegionAvail().x, 70));
+    }
+    // Where the last frame went, biggest first.
+    struct Row { const char* name; double ms; bool cpu; };
+    Row rows[] = {
+        { "Sun shadows", t.shadow_ms, false }, { "Light shadows", t.local_shadow_ms, false },
+        { "Depth / normals", t.depth_ms, false }, { "Ambient occlusion", t.ssao_ms, false },
+        { "AO blur", t.blur_ms, false }, { "Lighting", t.lit_ms, false }, { "Reflections", t.ssr_ms, false },
+        { "TAA", t.taa_ms, false }, { "Bloom", t.bloom_ms, false }, { "Composite", t.composite_ms, false },
+        { "SMAA", t.smaa_ms, false }, { "FXAA", t.fxaa_ms, false },
+        { "GI probes", st.gi_ms, true }, { "Shader compiles", st.shader_ms, true }, { "Mesh uploads", st.upload_ms, true },
+        { "Readback", st.read_ms, true }, { "Swizzle", st.swizzle_ms, true }, { "Screen shaders", st.screen_ms, true },
+    };
+    const int nrows = (int)(sizeof rows / sizeof rows[0]);
+    for (int i = 1; i < nrows; i++)
+        for (int j = i; j > 0 && rows[j].ms > rows[j - 1].ms; j--) { Row r = rows[j]; rows[j] = rows[j - 1]; rows[j - 1] = r; }
+    double known = 0;
+    for (const Row& r : rows) known += r.ms > 0 ? r.ms : 0;
+    double other = st.ms - known;
+    if (ImGui::BeginTable("##passes", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("stage", ImGuiTableColumnFlags_WidthFixed, 160);
+        ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("share");
+        auto row = [&](const char* name, double ms, bool cpu) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s%s", name, cpu ? "  (CPU)" : "");
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", ms);
+            ImGui::TableNextColumn();
+            ImGui::ProgressBar(st.ms > 0 ? (float)(ms / st.ms) : 0.0f, ImVec2(-1, 0), "");
+        };
+        for (const Row& r : rows) if (r.ms > 0.005) row(r.name, r.ms, r.cpu);
+        if (other > 0.05) row("Recording, the rest", other, true);
+        ImGui::EndTable();
+    }
+    if (t.cascades) {
+        char line[128];
+        snprintf(line, sizeof line, "Sun cascades: %d drawn, %d reused. Light shadows: %s.", t.cascades_drawn,
+                 t.cascades_reused, t.atlas_reused ? "reused" : (t.local_shadows ? "drawn" : "none"));
+        faint(line);
+    }
+    // The graphics card (Minimal-OS): busy share of each engine since the last sample.
+    static platform::GpuStats g_prev, g_now;
+    static bool have_prev = false, have = false;
+    static double last_sample = -1;
+    static float busy[4] = { 0, 0, 0, 0 }, cpu_share = 0;
+    double now = platform::time_seconds();
+    if (last_sample < 0 || now - last_sample > 0.5) {
+        last_sample = now;
+        if (platform::gpu_stats(&g_now)) {
+            have = true;
+            if (have_prev && g_now.now_ns > g_prev.now_ns) {
+                double span = (double)(g_now.now_ns - g_prev.now_ns);
+                for (int e = 0; e < 4; e++) busy[e] = (float)((double)(g_now.engine_busy_ns[e] - g_prev.engine_busy_ns[e]) / span);
+                cpu_share = (float)((double)(g_now.cpu_render_ns - g_prev.cpu_render_ns) / span);
+            }
+            g_prev = g_now;
+            have_prev = true;
+        }
+    }
+    if (have) {
+        ImGui::Separator();
+        ImGui::Text("%s", g_now.name[0] ? g_now.name : "Graphics");
+        if (g_now.engines) {
+            static const char* const names[4] = { "3D", "Copy", "Video decode", "Video encode" };
+            for (int e = 0; e < 2; e++) {
+                char ov[32];
+                snprintf(ov, sizeof ov, "%s %.0f%%", names[e], busy[e] * 100.0f);
+                ImGui::ProgressBar(busy[e] > 1 ? 1 : busy[e], ImVec2(220, 0), ov);
+                if (e == 0) ImGui::SameLine();
+            }
+        }
+        char ov[48];
+        snprintf(ov, sizeof ov, "CPU drawing %.0f%%", cpu_share * 100.0f);
+        ImGui::ProgressBar(cpu_share > 1 ? 1 : cpu_share, ImVec2(220, 0), ov);
+        if (g_now.vram_total) {
+            ImGui::SameLine();
+            ImGui::Text("Video memory %.0f / %.0f MB", (double)g_now.vram_used / 1048576.0, (double)g_now.vram_total / 1048576.0);
+        }
+        faint("Since the last half second. The kernel's side of a frame (waits, copies, draws refused): 'gpu perf' in the terminal.");
+    }
+    ImGui::End();
+}
+
 // ---------------------------------------------------------------- Console
 
 void Editor::panel_console() {
     ImGui::Begin(FE_ICON_CONSOLE "  Console###Console");
+    console_dock_id = ImGui::GetWindowDockID();     // the Profiler docks next to it the first time
     static bool show[3] = { true, true, true };
     static char filter[64];
     int counts[3] = { 0, 0, 0 };

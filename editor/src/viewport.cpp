@@ -373,6 +373,20 @@ void Editor::panel_viewport() {
         need = (moving && hash != last_hash) || !fgl_tex.pixels;
         if (moving) { band_final = false; banding = false; }
     }
+    // TAA and GTAO build their picture over several frames, but the view is drawn only when something
+    // changed: after a change, a few more frames are drawn while it stands still, so they converge (the
+    // renderer restarts TAA's history at each change and averages the still frames: accumulate_still).
+    static int settle_left = 0;
+    {
+        const gfx::GraphicsFeatures& ff = fgl.features();
+        const bool temporal = use_fgl && ff.gpu_tier &&
+                              ((ff.antialiasing && ff.aa_mode == gfx::AAMode::TAA) ||
+                               (ff.ambient_occlusion && ff.ao_mode == gfx::AOMode::GTAO));
+        if (need) settle_left = temporal ? kSettleFrames : 0;
+        else if (settle_left > 0 && temporal && !progressive && fgl.ready()) { need = true; settle_left--; }
+        else settle_left = 0;
+        view_settling = settle_left;
+    }
     view_final = !progressive || (band_final && !need);
     bool do_band = progressive && !need && !band_final && shown_tex.pixels && fgl.ready();
     if (do_band) {
@@ -414,6 +428,7 @@ void Editor::panel_viewport() {
             view_renders++;
             fgl_stats = fgl.stats();
             fgl_tier = fgl.gpu_tier_stats();
+            prof_push(fgl_stats.ms);
             quality.report((long)full_w * band_rows, view_ms, false);
             shown_tex.version++;
             band_y += band_rows;
@@ -453,6 +468,7 @@ void Editor::panel_viewport() {
                 bridge.scene.read_asset = model_asset_reader;
                 bridge.scene.asset_user = &assets;
                 bridge.scene.draft = adaptive && moving;       // cheaper shading for a picture that is replaced at once
+                bridge.scene.accumulate_still = true;          // drawn on change: TAA settles over the frames after it
                 ok = fgl.render(bridge.scene);
                 // What runs, for Settings > Graphics.
                 snprintf(fgl_backend, sizeof(fgl_backend), "%s", fgl.backend());
@@ -464,6 +480,7 @@ void Editor::panel_viewport() {
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
                 fgl_tier = fgl.gpu_tier_stats();
+                prof_push(fgl_stats.ms);
                 if (const char* w = fgl.take_warning()) log(LogLevel::Warning, "FarcadeGL: %s", w);
                 if (fgl_compiling) {                    // done: remember how many it took for the next bar
                     int& e = fgl_shader_expect[tier ? 1 : 0];

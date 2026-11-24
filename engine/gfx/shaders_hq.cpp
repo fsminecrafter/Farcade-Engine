@@ -218,7 +218,9 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         for (int c = 0; c < k.cascades; c++) { t.add("varying vec3 v_sh"); t.num(c); t.add(";\n"); }
     }
     if (k.ao) {
-        t.add("uniform sampler2D u_ao;\n");
+        t.add("uniform sampler2D u_ao;\n"
+              "uniform vec4 u_aos;\n"            // 1 / AO size, AO size
+              "uniform vec4 u_aof;\n");          // camera forward, far (m)
         // The AO lookup needs the target size; the post chain declares u_res
         // only when it is not the draft one (set_post sets it either way).
         if (k.post.draft) t.add("uniform vec4 u_res;\n");
@@ -421,7 +423,37 @@ void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k) {
         t.add(tail);
     }
     if (k.ao) {
-        t.add("    float ao = texture(u_ao, gl_FragCoord.xy / u_res.xy).r;\n"
+        // AO is half resolution, its texels carry their depth (g, b: 16 bits of depth / far). The four around
+        // the pixel are weighted by distance and by how close their depth is to the pixel's own, so an edge
+        // pixel takes the AO of its own surface, not of what lies behind it (a bilinear lookup gave objects a
+        // light outline: the background's unoccluded AO bled onto their edges).
+        t.add("    float ao = 1.0;\n"
+              "    {\n"
+              "        vec2 apos = gl_FragCoord.xy / u_res.xy * u_aos.zw - 0.5;\n"
+              "        vec2 abase = floor(apos);\n"
+              "        vec2 afr = apos - abase;\n"
+              "        float vd = dot(v_pos - u_cam.xyz, u_aof.xyz);\n"
+              "        float atol = 0.05 + 0.02 * vd;\n"
+              "        float asum = 0.0;\n"
+              "        float awsum = 0.0;\n");
+        static const char* const taps[4][3] = {
+            { "0.0, 0.0", "(1.0 - afr.x) * (1.0 - afr.y)", "" }, { "1.0, 0.0", "afr.x * (1.0 - afr.y)", "" },
+            { "0.0, 1.0", "(1.0 - afr.x) * afr.y", "" }, { "1.0, 1.0", "afr.x * afr.y", "" },
+        };
+        for (const auto& tp : taps) {
+            t.add("        {\n            vec3 ac = texture(u_ao, (abase + vec2(");
+            t.add(tp[0]);
+            t.add(") + 0.5) * u_aos.xy).rgb;\n"
+                  "            float add = ((ac.g * 65280.0 + ac.b * 255.0) * 1.5259022e-5 * u_aof.w - vd) / atol;\n"
+                  "            float aw = (");
+            t.add(tp[1]);
+            t.add(" + 0.001) / (0.0001 + add * add);\n"
+                  "            asum += ac.r * aw;\n"
+                  "            awsum += aw;\n"
+                  "        }\n");
+        }
+        t.add("        ao = asum / awsum;\n"
+              "    }\n"
               "    float aod = 1.0 - (1.0 - ao) * 0.4;\n");
     } else {
         t.add("    float ao = 1.0;\n    float aod = 1.0;\n");

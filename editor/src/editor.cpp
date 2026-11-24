@@ -1164,6 +1164,7 @@ void Editor::build_ui() {
     panel_console();
     if (focus_files > 0 && --focus_files == 0) ImGui::SetNextWindowFocus();
     panel_files();
+    panel_profiler();
     if (show_settings) window_settings();
     if (show_demo) ImGui::ShowDemoWindow(&show_demo);
     shortcuts();
@@ -1433,6 +1434,7 @@ void Editor::dockspace(float top, float bottom) {
         ImGui::DockBuilderDockWindow("###Inspector", right);
         ImGui::DockBuilderDockWindow("###Files", bottom_id);
         ImGui::DockBuilderDockWindow("###Console", bottom_id);
+        ImGui::DockBuilderDockWindow("###Profiler", bottom_id);
         ImGui::DockBuilderDockWindow("Viewport", center);
         if (ImGuiDockNode* n = ImGui::DockBuilderGetNode(center)) n->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
         ImGui::DockBuilderFinish(id);

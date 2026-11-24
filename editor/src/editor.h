@@ -290,6 +290,8 @@ public:
     SwStats raster_stats;               // the last UI rasterization
     gfx::RendererStats fgl_stats;       // the last FarcadeGL render
     gfx::GpuTierStats fgl_tier;         // its GPU tier passes (Settings > Graphics > Frame timing)
+    int view_settling = 0;              // frames still to draw so TAA / GTAO converge after a change
+    static constexpr int kSettleFrames = 12;
     double fgl_init_ms = 0, fgl_init_shader_ms = 0;
     // FarcadeGL compiles its shaders a few per frame (Renderer::set_compile_budget):
     // while it does, the viewport keeps its last picture and shows a bar.
@@ -351,6 +353,12 @@ private:
     void panel_inspector();
     void panel_files();
     void panel_console();
+    void panel_profiler();
+    void prof_push(double ms);          // a FarcadeGL frame's time, for the Profiler's graph
+    static constexpr int kProfFrames = 240;
+    float prof_ms[kProfFrames] = {};
+    int prof_head = 0, prof_count = 0;
+    ImGuiID console_dock_id = 0;
     void panel_viewport();
     void window_settings();
     void shortcuts();

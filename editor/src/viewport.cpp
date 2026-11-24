@@ -413,6 +413,7 @@ void Editor::panel_viewport() {
             view_ms = (float)((clock() - t0) * 1000.0);
             view_renders++;
             fgl_stats = fgl.stats();
+            fgl_tier = fgl.gpu_tier_stats();
             quality.report((long)full_w * band_rows, view_ms, false);
             shown_tex.version++;
             band_y += band_rows;
@@ -462,6 +463,7 @@ void Editor::panel_viewport() {
                 rgba = fgl.pixels();
                 view_triangles = fgl.stats().triangles;
                 fgl_stats = fgl.stats();
+                fgl_tier = fgl.gpu_tier_stats();
                 if (const char* w = fgl.take_warning()) log(LogLevel::Warning, "FarcadeGL: %s", w);
                 if (fgl_compiling) {                    // done: remember how many it took for the next bar
                     int& e = fgl_shader_expect[tier ? 1 : 0];

@@ -289,6 +289,96 @@ static void field_body_tests() {
     }
 }
 
+// ---- terrain: heightfield contacts
+
+struct TestGround {
+    float slope = 0;            // dy/dx
+    float hole_x0 = 1e9f, hole_x1 = -1e9f;
+};
+static float ground_height(void* user, float x, float z, bool* inside, Vec3* normal) {
+    const TestGround* g = (const TestGround*)user;
+    if (inside) *inside = x >= 0 && z >= 0 && x <= 40 && z <= 40 && !(x > g->hole_x0 && x < g->hole_x1);
+    if (normal) { float l = sqrtf(1 + g->slope * g->slope); *normal = Vec3(-g->slope / l, 1 / l, 0); }
+    return 1.0f + g->slope * (x - 20.0f);
+}
+
+static void terrain_tests() {
+    // A box and a sphere fall onto flat ground at y = 1 and rest on it; a body over a hole falls through.
+    {
+        World w;
+        w.init();
+        PhysicsWorld p;
+        Events ev;
+        PhysicsEvents pe;
+        pe.collision = on_collision;
+        pe.user = &ev;
+        p.init(&w, pe);
+        TestGround g;
+        g.hole_x0 = 30; g.hole_x1 = 34;
+        Entity ground_e = make(w, "Terrain", Vec3(-20, 0, -20));
+        PhysicsTerrain t;
+        t.entity = ground_e;
+        t.origin = Vec3(-20, 0, -20);
+        t.size_x = 40; t.size_z = 40;
+        t.height = ground_height;
+        t.user = &g;
+        p.set_terrains(&t, 1);
+        Entity box = make(w, "Box", Vec3(0, 4, 0));
+        w.add(box, ModuleKind::RigidBody3D); w.add(box, ModuleKind::Collider3D); p.add(box);
+        Entity ball = make(w, "Ball", Vec3(3, 4, 0));
+        w.add(ball, ModuleKind::RigidBody3D); w.add(ball, ModuleKind::Collider3D);
+        ((Collider3D*)w.get_mut(ball, ModuleKind::Collider3D))->shape = ColliderShape::Sphere;
+        p.add(ball);
+        Entity faller = make(w, "Faller", Vec3(12, 4, 0));      // over the hole (local x 32)
+        w.add(faller, ModuleKind::RigidBody3D); w.add(faller, ModuleKind::Collider3D);
+        ((Collider3D*)w.get_mut(faller, ModuleKind::Collider3D))->size = Vec3(0.5f, 0.5f, 0.5f);
+        p.add(faller);
+        Entity walker = make(w, "Walker", Vec3(-5, 3, 5));
+        w.add(walker, ModuleKind::CharacterController3D); p.add(walker);
+        run(w, 3.0f);
+        float by = w.transform(box)->position.y, sy = w.transform(ball)->position.y;
+        CHECK(absf_(by - 1.5f) < 0.06f, "the box rests on the terrain (y %.3f, expected 1.5)", by);
+        CHECK(absf_(sy - 1.5f) < 0.06f, "the ball rests on the terrain (y %.3f)", sy);
+        CHECK(w.transform(faller)->position.y < -5.0f, "a body over a hole falls through (y %.2f)", w.transform(faller)->position.y);
+        const CharacterController3D* cc = (const CharacterController3D*)w.get(walker, ModuleKind::CharacterController3D);
+        CHECK(cc->grounded && absf_(w.transform(walker)->position.y - 1.0f) < 0.08f, "a character stands on it, grounded (y %.3f)",
+              w.transform(walker)->position.y);
+        CHECK(ev.collisions >= 3, "landing on the terrain is a collision (%d)", ev.collisions);
+        CHECK(p.stats().terrain_contacts >= 3, "terrain contacts (%d)", p.stats().terrain_contacts);
+    }
+    // On a slope a ball rolls downhill; a box with friction stays.
+    {
+        World w;
+        w.init();
+        PhysicsWorld p;
+        p.init(&w, PhysicsEvents());
+        TestGround g;
+        g.slope = 0.3f;                 // ~17 degrees
+        PhysicsTerrain t;
+        t.origin = Vec3(-20, 0, -20);
+        t.size_x = 40; t.size_z = 40;
+        t.height = ground_height;
+        t.user = &g;
+        t.friction = 1.0f;
+        p.set_terrains(&t, 1);
+        Entity ball = make(w, "Ball", Vec3(5, 3.0f, 0));
+        w.add(ball, ModuleKind::RigidBody3D); w.add(ball, ModuleKind::Collider3D);
+        ((Collider3D*)w.get_mut(ball, ModuleKind::Collider3D))->shape = ColliderShape::Sphere;
+        p.add(ball);
+        Entity box = make(w, "Box", Vec3(-5, 0.3f * 15.0f + 1.0f - 0.3f * 20.0f + 1.0f, 0));
+        w.add(box, ModuleKind::RigidBody3D); w.add(box, ModuleKind::Collider3D);
+        ((Collider3D*)w.get_mut(box, ModuleKind::Collider3D))->friction = 1.0f;
+        p.add(box);
+        float bx0 = w.transform(box)->position.x;
+        run(w, 2.0f);
+        Vec3 bp = w.transform(ball)->position;
+        CHECK(bp.x < 3.0f, "the ball rolls down the slope (x %.2f)", bp.x);
+        float ground = 1.0f + 0.3f * (bp.x + 20.0f - 20.0f);
+        CHECK(bp.y > ground - 0.1f, "and stays on it (y %.2f, ground %.2f)", bp.y, ground);
+        CHECK(absf_(w.transform(box)->position.x - bx0) < 0.4f, "a box with friction stays put (moved %.2f)", w.transform(box)->position.x - bx0);
+    }
+}
+
 int main() {
     // ---- a dynamic sphere falls and comes to rest on a static box
     {
@@ -854,6 +944,7 @@ int main() {
 
     joint_tests();
     field_body_tests();
+    terrain_tests();
     printf("physics_tests: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

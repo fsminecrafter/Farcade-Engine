@@ -9,7 +9,8 @@ namespace fe {
 
 namespace {
 
-const char* const kObjectKinds[] = { "mesh", "empty", "camera", "skylight", "sky", "post_process" };
+const char* const kObjectKinds[] = { "mesh", "empty", "camera", "skylight", "sky", "post_process", "terrain", "clouds" };
+const char* const kStreamModes[] = { "dynamic", "always", "unloaded" };
 const char* const kMeshKinds[] = { "cube", "plane", "sphere", "cylinder", "model" };
 const char* const kPropTypes[] = { "number", "text", "toggle", "list", "object", "file" };
 static_assert(sizeof(kObjectKinds) / sizeof(kObjectKinds[0]) == (int)ObjectKind::Count, "object kinds");
@@ -94,6 +95,7 @@ void write_fields(Out& o, const ModuleInfo& mi, const void* data, const char* in
         case FieldType::Color:
         case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); o.vec(v); break; }
         case FieldType::Text:
+        case FieldType::PathList:
         case FieldType::Path: o.raw(" ", 1); o.str((const char*)p); break;
         case FieldType::Object: { uint32_t v; memcpy(&v, p, 4); o.f(" %u", (unsigned)v); break; }
         }
@@ -191,6 +193,7 @@ bool read_field(const ModuleInfo& mi, void* data, const Line& l) {
     case FieldType::Vec3: { Vec3 v; if (!parse_vec(l, 1, &v)) return false; memcpy(p, &v, sizeof v); return true; }
     case FieldType::Text:
     case FieldType::Path: copy_str((char*)p, kPathMax, l.tok[1]); return true;
+    case FieldType::PathList: copy_str((char*)p, kPathListMax, l.tok[1]); return true;
     }
     return false;
 }
@@ -215,6 +218,8 @@ char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsig
         o.f("  rotation"); o.num(ob.rotation.x); o.num(ob.rotation.y); o.num(ob.rotation.z); o.num(ob.rotation.w); o.raw("\n", 1);
         o.f("  scale"); o.vec(ob.scale); o.raw("\n", 1);
         if (!ob.visible) o.f("  visible false\n");
+        if (ob.streaming != StreamMode::Dynamic) o.f("  streaming %s\n", kStreamModes[(int)ob.streaming]);
+        if (ob.groups[0]) { o.raw("  groups ", 9); o.str(ob.groups); o.raw("\n", 1); }
         if (ob.kind == ObjectKind::Mesh) {
             o.f("  mesh %s\n", kMeshKinds[(int)ob.mesh]);
             if (ob.model_path[0]) { o.raw("  model ", 8); o.str(relative(ob.model_path, project_dir)); o.raw("\n", 1); }
@@ -354,6 +359,11 @@ bool load_scene_text(Scene& scene, const char* text, size_t size, SceneLoadRepor
                 if (ok) ob->parent = (ObjectId)v;
             } else if (strcmp(key, "expanded") == 0 && l.n >= 2) ok = parse_bool(l.tok[1], &ob->expanded);
             else if (strcmp(key, "visible") == 0 && l.n >= 2) ok = parse_bool(l.tok[1], &ob->visible);
+            else if (strcmp(key, "groups") == 0 && l.n >= 2) copy_str(ob->groups, sizeof ob->groups, l.tok[1]);
+            else if (strcmp(key, "streaming") == 0 && l.n >= 2) {
+                int k = index_of(kStreamModes, 3, l.tok[1]);
+                if (k >= 0) ob->streaming = (StreamMode)k; else ok = false;
+            }
             else if (strcmp(key, "position") == 0) ok = parse_vec(l, 1, &ob->position);
             else if (strcmp(key, "scale") == 0) ok = parse_vec(l, 1, &ob->scale);
             else if (strcmp(key, "rotation") == 0) {

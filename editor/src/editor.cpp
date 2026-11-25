@@ -12,6 +12,7 @@
 #include "scene_io.h"
 #include "model_cache.h"
 #include "model_import.h"
+#include "terrain_bridge.h"
 #include "core/vfs.h"
 
 #include "imgui/imgui.h"
@@ -438,6 +439,14 @@ ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, Ob
     memcpy(o->name, name, sizeof(name));
     o->parent = parent;
     if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    if (o->kind == ObjectKind::Terrain && o->modules.terrain.data[0]) {
+        // A terrain copy gets its own data file (else both would edit one).
+        char from_path[kPathMax];
+        snprintf(from_path, sizeof from_path, "%s", o->modules.terrain.data);
+        unique_terrain_path(*o, o->modules.terrain.data, sizeof o->modules.terrain.data);
+        if (!terrain_copy_data(from_path, o->modules.terrain.data)) o->modules.terrain.data[0] = 0;
+        else if (TerrainData* td = terrain_data(*o)) { o->modules.terrain.revision = td->revision; terrain_mark_dirty(td); }
+    }
     // Only one object per kind is current: the copy is not.
     for (int k = 0; k < kModuleKindCount; k++)
         if (o->modules.has((ModuleKind)k)) set_current_flag(module_info((ModuleKind)k), o->modules.data((ModuleKind)k), false);
@@ -547,6 +556,11 @@ ObjectId Editor::create_kind(const char* name, ObjectKind kind, const Vec3& at, 
             // Looking at the middle of the scene from where the view is.
             o->rotation = Quat::euler_deg(Vec3(-15, 0, 0));
         }
+        if (kind == ObjectKind::Terrain) {
+            // A flat map centred on where it was made: 256 x 256 m in chunks of 32 m with 1 m cells.
+            o->position = Vec3(at.x, at.y, at.z);
+            generate_terrain(o, at.y, 256.0f, 256.0f, 32.0f, 32, true);
+        }
         ModuleKind k = settings_of(kind);
         if (k != ModuleKind::Count && module_info(k).has_current)
             log(LogLevel::Info, "%s created%s", o->name, scene.is_current(id, k) ? " (current)" : "");
@@ -593,6 +607,64 @@ void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     if (menu_item("Sky", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Sky Light", nullptr, false, true, FE_ICON_SUN)) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Post Processing", nullptr, false, true, FE_ICON_WAND)) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Clouds", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Clouds", ObjectKind::Clouds, Vec3(at.x, 6, at.z), parent);
+    ImGui::Separator();
+    if (menu_item("Terrain", nullptr, false, true, FE_ICON_PLANE)) {
+        ObjectId id = create_kind("Terrain", ObjectKind::Terrain, Vec3(0, 0, 0), kNoObject);
+        scene.select_only(id);
+    }
+}
+
+// terrain/<name>_<id>.fterrain, or with _2, _3 ... when a file (or a loaded terrain) has that name.
+void Editor::unique_terrain_path(const Object& o, char* out, size_t cap) {
+    char base[kPathMax];
+    terrain_default_path(o, base, sizeof base);
+    size_t n = strlen(base) - strlen(".fterrain");
+    for (int k = 1; k < 1000; k++) {
+        if (k == 1) snprintf(out, cap, "%s", base);
+        else snprintf(out, cap, "%.*s_%d.fterrain", (int)n, base, k);
+        char full[512];
+        project_path(out, full, sizeof full);
+        bool used = platform::file_exists(full);
+        for (int i = 0; i < scene.count() && !used; i++) {
+            const Object& other = scene.at(i);
+            used = other.id != o.id && other.kind == ObjectKind::Terrain && !strcmp(other.modules.terrain.data, out);
+        }
+        if (!used) return;
+    }
+}
+
+bool Editor::generate_terrain(Object* o, float level, float size_x, float size_z, float chunk_size, int cells, bool keep_center) {
+    if (!o || o->kind != ObjectKind::Terrain) return false;
+    Terrain& ts = o->modules.terrain;
+    TerrainData* td = nullptr;
+    if (!ts.data[0]) {
+        // A new terrain: a data file of its own (never one that is already there).
+        unique_terrain_path(*o, ts.data, sizeof ts.data);
+        td = terrain_new_data(ts.data);
+    } else {
+        td = terrain_data(*o);
+        if (!td) td = terrain_new_data(ts.data);
+    }
+    if (!td) { log(LogLevel::Error, "Terrain: out of memory"); return false; }
+    float old_x = td->valid() ? td->size_x() : 0.0f, old_z = td->valid() ? td->size_z() : 0.0f;
+    if (!(chunk_size > 0.5f)) chunk_size = 32.0f;
+    int cx = (int)(size_x / chunk_size + 0.999f), cz = (int)(size_z / chunk_size + 0.999f);
+    if (cx < 1) cx = 1;
+    if (cz < 1) cz = 1;
+    Vec3 origin = terrain_origin(scene, *o);
+    if (!td->generate(cx, cz, cells, chunk_size, level - origin.y)) { log(LogLevel::Error, "Terrain: out of memory for %d x %d chunks", cx, cz); return false; }
+    if (keep_center) {
+        // Centre the new map where the old one was (or on the object when it had none).
+        float ox = old_x > 0 ? old_x * 0.5f : 0.0f, oz = old_z > 0 ? old_z * 0.5f : 0.0f;
+        o->position.x += ox - td->size_x() * 0.5f;
+        o->position.z += oz - td->size_z() * 0.5f;
+    }
+    ts.revision = td->revision;
+    terrain_mark_dirty(td);
+    log(LogLevel::Info, "%s: %d x %d chunks of %.0f m (%d x %d cells), at y %.2f", o->name, td->chunks_x, td->chunks_z, (double)td->chunk_size,
+        td->side_x(), td->side_z(), (double)level);
+    return true;
 }
 
 void Editor::frame_selection() {
@@ -601,6 +673,12 @@ void Editor::frame_selection() {
     for (int i = 0; i < scene.selected_count(); i++) {
         Object* o = scene.get(scene.selected(i));
         if (!o) continue;
+        if (TerrainData* td = o->kind == ObjectKind::Terrain ? terrain_data(*o) : nullptr) {
+            Vec3 org = terrain_origin(scene, *o);
+            lo = vmin(lo, org);
+            hi = vmax(hi, org + Vec3(td->size_x(), 0, td->size_z()));
+            continue;
+        }
         const MeshData& m = Scene::mesh_for(*o);
         Mat4 mm = scene.world_matrix(*o);
         for (int c = 0; c < 8; c++) {
@@ -718,6 +796,23 @@ bool Editor::save_scene(const char* path) {
         if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
     }
     Scene& src = playing() ? *play_backup_ : scene;
+    // The terrains' data files (terrain/*.fterrain) first: the scene names them.
+    struct TerrainWrite {
+        static bool write(const char* path, const void* data, size_t size, void* user) {
+            Editor* ed = (Editor*)user;
+            char tf[512];
+            ed->project_path(path, tf, sizeof tf);
+            if (const char* sl = strrchr(tf, '/')) {
+                char dir[512];
+                snprintf(dir, sizeof dir, "%.*s", (int)(sl - tf), tf);
+                if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
+            }
+            bool ok = platform::write_file(tf, data, size);
+            if (!ok) ed->log(LogLevel::Error, "Could not write %s", tf);
+            return ok;
+        }
+    };
+    if (!terrain_store_save(src, &TerrainWrite::write, this)) log(LogLevel::Warning, "Save: a terrain's data could not be written");
     size_t size = 0;
     char* text = save_scene_text(src, project_dir, &size);
     if (!text) { log(LogLevel::Error, "Save: out of memory"); return false; }
@@ -883,6 +978,7 @@ bool Editor::open_scene(const char* path) {
     free(text);
     if (!ok) { log(LogLevel::Error, "%s: %s", path_filename(full), rep.error); return false; }
     stop();
+    terrain_store_clear();              // the scene's terrains load from their files
     ObjectId next = scene.next_id();
     scene.copy_from(loaded);
     scene.keep_ids_above(next);         // ids are never handed out twice in a session
@@ -900,6 +996,7 @@ bool Editor::open_scene(const char* path) {
 void Editor::new_scene() {
     stop();
     scene.clear();
+    terrain_store_clear();
     edit_collider = false;
     scene_path[0] = 0;
     history_reset();
@@ -1464,6 +1561,141 @@ void Editor::shortcuts() {
     if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y, true) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, true)))) redo();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scene.clear_selection();
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
+}
+
+// ---------------------------------------------------------------- similar objects, editing several
+
+// Similar: the same kind; meshes of the same shape (and the same model file); empties with the same modules
+// (lights of the same type).
+bool Editor::objects_similar(const Object& a, const Object& b) const {
+    if (a.kind != b.kind) return false;
+    switch (a.kind) {
+        case ObjectKind::Mesh:
+            if (a.mesh != b.mesh) return false;
+            return a.mesh != MeshKind::Model || !strcmp(a.model_path, b.model_path);
+        case ObjectKind::Empty:
+            if (a.modules.present != b.modules.present) return false;
+            if (a.modules.has(ModuleKind::Light) && a.modules.light.type != b.modules.light.type) return false;
+            return true;
+        default:
+            return true;
+    }
+}
+
+int Editor::select_similar(ObjectId id) {
+    Object* a = scene.get(id);
+    if (!a) return 0;
+    Object ref = *a;
+    int added = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        if (o.id == id || !scene.visible_in_tree(o) || !objects_similar(ref, o) || scene.is_selected(o.id)) continue;
+        scene.select_add(o.id);
+        added++;
+    }
+    scene.select_add(id);           // the one clicked stays active
+    const char* what = ref.kind == ObjectKind::Mesh ? (ref.mesh == MeshKind::Model ? path_filename(ref.model_path) : "objects of this shape")
+                                                    : object_kind_name(ref.kind);
+    log(LogLevel::Info, "Selected %d similar (%s): %d selected", added + 1, what, scene.selected_count());
+    return added + 1;
+}
+
+int Editor::select_group(const char* name, bool add) {
+    if (!add) scene.clear_selection();
+    int n = 0;
+    ObjectId keep = scene.active();
+    for (int i = 0; i < scene.count(); i++)
+        if (name_list_has(scene.at(i).groups, name)) { scene.select_add(scene.at(i).id); n++; }
+    // The object whose Inspector was used stays active (when it is in the group).
+    if (keep && name_list_has(scene.get(keep) ? scene.get(keep)->groups : "", name)) scene.select_add(keep);
+    log(LogLevel::Info, "Group \"%s\": %d object%s", name, n, n == 1 ? "" : "s");
+    return n;
+}
+
+namespace {
+template <typename T> bool differs(const T& a, const T& b) { return memcmp(&a, &b, sizeof(T)) != 0; }
+}  // namespace
+
+void Editor::apply_edit_to_selection(const Object& before, const Object& after) {
+    if (scene.selected_count() < 2 || memcmp(&before, &after, sizeof(Object)) == 0) return;
+    for (int si = 0; si < scene.selected_count(); si++) {
+        Object* t = scene.get(scene.selected(si));
+        if (!t || t->id == after.id) continue;
+        bool same_kind = t->kind == after.kind;
+        // Transform: rotation as a whole, scale per axis (position moves them all by the same amount already).
+        if (differs(before.rotation, after.rotation) && after.kind != ObjectKind::Terrain) t->rotation = after.rotation;
+        for (int k = 0; k < 3; k++)
+            if ((&before.scale.x)[k] != (&after.scale.x)[k]) (&t->scale.x)[k] = (&after.scale.x)[k];
+        if (before.parent != after.parent && !scene.is_ancestor(t->id, after.parent) && t->id != after.parent) scene.set_parent(t->id, after.parent);
+        if (before.streaming != after.streaming) t->streaming = after.streaming;
+        // Groups: the names added or removed (each object keeps its other groups).
+        if (strcmp(before.groups, after.groups)) {
+            char name[kPathMax];
+            for (const char* p = path_list_next(after.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax))
+                if (!name_list_has(before.groups, name)) name_list_add(t->groups, (int)sizeof t->groups, name);
+            for (const char* p = path_list_next(before.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax))
+                if (!name_list_has(after.groups, name)) name_list_remove(t->groups, (int)sizeof t->groups, name);
+        }
+        if (before.visible != after.visible) t->visible = after.visible;
+        // Look and mesh (mesh objects).
+        if (after.kind == ObjectKind::Mesh && t->kind == ObjectKind::Mesh) {
+            if (before.mesh != after.mesh) t->mesh = after.mesh;
+            if (strcmp(before.model_path, after.model_path)) memcpy(t->model_path, after.model_path, sizeof t->model_path);
+            if (strcmp(before.texture_path, after.texture_path)) memcpy(t->texture_path, after.texture_path, sizeof t->texture_path);
+            if (strcmp(before.shader_path, after.shader_path)) memcpy(t->shader_path, after.shader_path, sizeof t->shader_path);
+            if (differs(before.color, after.color)) t->color = after.color;
+            if (before.roughness != after.roughness) t->roughness = after.roughness;
+            if (before.metallic != after.metallic) t->metallic = after.metallic;
+            if (before.unlit != after.unlit) t->unlit = after.unlit;
+            if (before.cast_shadows != after.cast_shadows) t->cast_shadows = after.cast_shadows;
+        }
+        // Modules: added or removed ones, then every field that changed (by the reflection tables). A special
+        // object's settings only go to objects of the same kind; the "current" flag and a terrain's data file
+        // and revision stay each object's own.
+        for (int k = 0; k < kModuleKindCount; k++) {
+            ModuleKind mk = (ModuleKind)k;
+            bool was = before.modules.has(mk), is = after.modules.has(mk);
+            if (!is_module(mk) && !same_kind) continue;
+            if (!was && is && is_module(mk) && !t->modules.has(mk)) {
+                if (scene.add_module(t->id, mk)) memcpy(t->modules.data(mk), after.modules.data(mk), module_info(mk).size);
+                continue;
+            }
+            if (was && !is && is_module(mk)) { scene.remove_module(t->id, mk); continue; }
+            if (!was || !is || !t->modules.has(mk)) continue;
+            const ModuleInfo& mi = module_info(mk);
+            const uint8_t* b = (const uint8_t*)before.modules.data(mk);
+            const uint8_t* a = (const uint8_t*)after.modules.data(mk);
+            uint8_t* d = (uint8_t*)t->modules.data(mk);
+            for (int f = 0; f < mi.field_count; f++) {
+                const FieldInfo& fi = mi.fields[f];
+                if (!strcmp(fi.name, "current") || (mk == ModuleKind::Terrain && (!strcmp(fi.name, "data") || !strcmp(fi.name, "revision"))))
+                    continue;
+                uint32_t sz = field_size(fi.type);
+                if (fi.type == FieldType::Color || fi.type == FieldType::Vec3) {
+                    for (int c = 0; c < 3; c++)         // per component: editing x leaves y and z of the others
+                        if (memcmp(b + fi.offset + c * 4, a + fi.offset + c * 4, 4)) memcpy(d + fi.offset + c * 4, a + fi.offset + c * 4, 4);
+                } else if (memcmp(b + fi.offset, a + fi.offset, sz)) {
+                    memcpy(d + fi.offset, a + fi.offset, sz);
+                }
+            }
+        }
+        // Script inputs: the same script (by file) on the other object gets the inputs that changed.
+        for (int s = 0; s < after.script_count && s < before.script_count; s++) {
+            const ScriptSlot& sb = before.scripts[s];
+            const ScriptSlot& sa = after.scripts[s];
+            if (strcmp(sb.path, sa.path)) continue;
+            ScriptSlot* ts = nullptr;
+            for (int j = 0; j < t->script_count && !ts; j++)
+                if (!strcmp(t->scripts[j].path, sa.path)) ts = &t->scripts[j];
+            if (!ts) continue;
+            for (int p = 0; p < sa.prop_count && p < sb.prop_count; p++) {
+                if (!differs(sb.props[p], sa.props[p])) continue;
+                if (ScriptProp* tp = ts->prop(sa.props[p].name)) {
+                    if (tp->type == sa.props[p].type) *tp = sa.props[p];
+                }
+            }
+        }
+    }
 }
 
 }  // namespace fe

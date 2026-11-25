@@ -126,6 +126,9 @@ void Editor::open_file_dialog(PickFor target, uint8_t owner, const char* title, 
     d.want_open = true;
     d.filter[0] = 0;
     d.name[0] = 0;
+    d.multi = false;
+    d.pick_count = 0;
+    d.last_click = -1;
     snprintf(d.title, sizeof d.title, "%s", title);
     snprintf(d.exts, sizeof d.exts, "%s", exts ? exts : "");
     // Start in `start` when it is a folder, in its folder when it is a file,
@@ -240,20 +243,56 @@ void Editor::file_dialog_popup(uint8_t owner) {
     ImGui::BeginChild("##pick_list", ImVec2(0, -footer));
     if (!g_pick.valid) ImGui::TextDisabled("This folder cannot be read.");
     int shown_count = 0;
+    auto visible = [&](const PickEntry& e) {
+        if (!e.is_dir && (d.folder || !ext_matches(e.name, d.exts))) return false;
+        return !d.filter[0] || ImStristr(e.name, nullptr, d.filter, nullptr) != nullptr;
+    };
+    auto picked_at = [&](const char* nm) {
+        for (int k = 0; k < d.pick_count; k++) if (!strcmp(d.picks[k], nm)) return k;
+        return -1;
+    };
+    auto add_pick = [&](const char* nm) {
+        if (picked_at(nm) < 0 && d.pick_count < FileDialog::kMaxPicks) snprintf(d.picks[d.pick_count++], sizeof d.picks[0], "%s", nm);
+    };
+    ImGuiIO& pio = ImGui::GetIO();
+    if (d.multi && pio.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false) && !ImGui::IsAnyItemActive()) {
+        d.pick_count = 0;
+        for (int i = 0; i < g_pick.count; i++)
+            if (!g_pick.items[i].is_dir && visible(g_pick.items[i])) add_pick(g_pick.items[i].name);
+    }
     for (int i = 0; i < g_pick.count; i++) {
         const PickEntry& e = g_pick.items[i];
-        if (!e.is_dir && (d.folder || !ext_matches(e.name, d.exts))) continue;
-        if (d.filter[0] && !ImStristr(e.name, nullptr, d.filter, nullptr)) continue;
+        if (!visible(e)) continue;
         shown_count++;
         ImGui::PushID(i);
         ImVec2 p = ImGui::GetCursorScreenPos();
-        bool sel = !e.is_dir && !strcmp(d.name, e.name);
+        bool sel = !e.is_dir && (d.multi ? picked_at(e.name) >= 0 : !strcmp(d.name, e.name));
         if (ImGui::Selectable("##row", sel, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns,
                               ImVec2(0, bs))) {
             if (e.is_dir && ImGui::IsMouseDoubleClicked(0)) join_path(go, sizeof go, d.dir, e.name);
             else if (!e.is_dir) {
                 snprintf(d.name, sizeof d.name, "%s", e.name);
-                if (ImGui::IsMouseDoubleClicked(0)) join_path(picked, sizeof picked, d.dir, e.name);
+                if (d.multi) {
+                    if (pio.KeyShift && d.last_click >= 0) {
+                        int a = d.last_click < i ? d.last_click : i, b = d.last_click < i ? i : d.last_click;
+                        if (!pio.KeyCtrl) d.pick_count = 0;
+                        for (int k = a; k <= b; k++)
+                            if (!g_pick.items[k].is_dir && visible(g_pick.items[k])) add_pick(g_pick.items[k].name);
+                    } else if (pio.KeyCtrl) {
+                        int at = picked_at(e.name);
+                        if (at >= 0) { for (int k = at; k + 1 < d.pick_count; k++) memcpy(d.picks[k], d.picks[k + 1], sizeof d.picks[0]); d.pick_count--; }
+                        else add_pick(e.name);
+                        d.last_click = i;
+                    } else {
+                        d.pick_count = 0;
+                        add_pick(e.name);
+                        d.last_click = i;
+                    }
+                }
+                if (ImGui::IsMouseDoubleClicked(0)) {
+                    join_path(picked, sizeof picked, d.dir, e.name);
+                    if (d.multi) { d.pick_count = 0; add_pick(e.name); }
+                }
             }
         }
         char k[160];
@@ -281,6 +320,10 @@ void Editor::file_dialog_popup(uint8_t owner) {
     if (d.folder) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("Folder: %s", path_filename(d.dir));
+    } else if (d.multi && d.pick_count > 1) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%d files", d.pick_count);
+        ImGui::TextDisabled("Ctrl-click adds or removes one, Shift-click a range, Ctrl+A all");
     } else {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("File");
@@ -291,16 +334,18 @@ void Editor::file_dialog_popup(uint8_t owner) {
         if (ImGui::InputText("##pick_name", d.name, sizeof d.name, ImGuiInputTextFlags_EnterReturnsTrue) && d.name[0])
             join_path(picked, sizeof picked, d.dir, d.name);
         track("pick:name");
-        if (d.exts[0]) ImGui::TextDisabled("Shows %s", d.exts);
+        if (d.multi) ImGui::TextDisabled("Shows %s. Ctrl-click or Shift-click to choose several", d.exts[0] ? d.exts : "every file");
+        else if (d.exts[0]) ImGui::TextDisabled("Shows %s", d.exts);
         else ImGui::NewLine();
     }
     if (d.folder) ImGui::NewLine();
     float bw = ImGui::CalcTextSize("Select folder").x + 32;
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - bw * 2 - 8);
-    bool can = d.folder || d.name[0];
+    bool can = d.folder || d.name[0] || (d.multi && d.pick_count > 0);
     ImGui::BeginDisabled(!can);
     if (primary_button(d.folder ? "Select folder" : "Open")) {
         if (d.folder) snprintf(picked, sizeof picked, "%s", d.dir);
+        else if (d.multi && d.pick_count > 1) snprintf(picked, sizeof picked, "%s", "*");     // every pick, below
         else join_path(picked, sizeof picked, d.dir, d.name);
     }
     track("pick:ok");
@@ -317,7 +362,15 @@ void Editor::file_dialog_popup(uint8_t owner) {
         PickFor t = d.target;
         d.target = PickFor::None;
         ImGui::CloseCurrentPopup();
-        if (picked[0]) file_dialog_done(t, picked);
+        if (picked[0] == '*' && !picked[1]) {
+            for (int k = 0; k < d.pick_count; k++) {
+                char full[640];
+                join_path(full, sizeof full, d.dir, d.picks[k]);
+                file_dialog_done(t, full);
+            }
+        } else if (picked[0]) {
+            file_dialog_done(t, picked);
+        }
     }
     ImGui::EndPopup();
 }
@@ -340,6 +393,14 @@ void Editor::file_dialog_done(PickFor target, const char* path) {
         case PickFor::ProjectIcon: relative_to(project_dir, path, project.icon, sizeof project.icon); break;
         case PickFor::ProjectScene: relative_to(project_dir, path, project.entry_scene, sizeof project.entry_scene); break;
         case PickFor::ExportScene: relative_to(project_dir, path, export_scene, sizeof export_scene); break;
+        case PickFor::FoliageModels:
+        case PickFor::FoliageFolder: {
+            char rel[512];
+            relative_to(project_dir, path, rel, sizeof rel);
+            if (!foliage_add_model(foliage_pick_object_, foliage_pick_layer_, rel) && target == PickFor::FoliageModels)
+                log(LogLevel::Warning, "%s was not added (not a .mof, already in the layer, or the list is full)", path_filename(path));
+            break;
+        }
         case PickFor::None: break;
     }
 }

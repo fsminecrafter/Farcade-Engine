@@ -31,6 +31,16 @@ struct RenderMesh {
     uint32_t vertex_count = 0;
     uint64_t key = 0;
     const float* uvs = nullptr;         // optional, 2 floats per vertex (else a box projection is used)
+    // Optional object space box (else it is computed from the vertices, cached by key): culling, shadows.
+    bool has_bounds = false;
+    Vec3 bounds_min = Vec3(), bounds_max = Vec3();
+    // Draw only the first draw_count vertices (0 = all; rounded down to whole triangles). The whole mesh is
+    // still uploaded once per key: foliage draws fewer of a chunk's instances as it gets further away.
+    uint32_t draw_count = 0;
+    // Optional triangles for occlusion culling (object space) that never stick out of the real surface,
+    // e.g. a terrain chunk's coarse mesh. Without them small meshes occlude with their own triangles.
+    const Vec3* occluder_positions = nullptr;
+    uint32_t occluder_count = 0;
 };
 
 struct DrawItem {
@@ -43,6 +53,8 @@ struct DrawItem {
     float metallic = 0.0f;              // GPU tier (PBR)
     bool unlit = false;
     bool cast_shadows = true;           // GPU tier
+    bool occluder = true;               // may hide other items from the camera (occlusion culling)
+    bool foliage = false;               // grass and the like: never an occluder, left out of the probe GI
 };
 
 // A light in world space (filled from a Light module and its object).
@@ -69,6 +81,10 @@ struct RenderScene {
     RenderCamera camera;
     const DrawItem* items = nullptr;
     int item_count = 0;
+    // Set by the renderer, not by callers: the items the camera passes draw are the ones that survived
+    // culling (items); shadows and GI use every item (shadow_items, or items when null).
+    const DrawItem* shadow_items = nullptr;
+    int shadow_item_count = 0;
     const RenderLight* lights = nullptr;
     int light_count = 0;
     // The current sky, sky light and post processing (defaults when the
@@ -76,6 +92,9 @@ struct RenderScene {
     Sky sky;
     SkyLight sky_light;
     PostProcess post;
+    // The current Clouds object's settings (clouds_on false: no clouds).
+    bool clouds_on = false;
+    Clouds clouds;
     // Optional project asset reader. It returns malloc-compatible file bytes
     // (or null); the renderer releases them with free(). Required when a draw
     // item references a texture or custom shader.
@@ -127,6 +146,11 @@ struct RendererStats {
     double gi_ms = 0;                       // the probe GI's CPU update (gi.h)
     double screen_ms = 0;                   // the camera's screen shaders (upload, passes, readback)
     int screen_passes = 0;
+    // Culling (culling.h): items given, left out by the view frustum and by occluders, the occluders drawn
+    // into the CPU depth buffer (and their triangles), and the time it took.
+    int items_in = 0, culled_frustum = 0, culled_occlusion = 0, occluders = 0, occluder_triangles = 0;
+    double cull_ms = 0;
+    int cloud_quality = 0;                  // clouds drawn: 0 none, 1 low, 2 medium, 3 ultra (after the caps)
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

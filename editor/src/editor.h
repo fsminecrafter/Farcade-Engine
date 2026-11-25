@@ -5,6 +5,7 @@
 #include "fx/particles.h"
 
 #include "scene.h"
+#include "terrain_bridge.h"
 #include "play_session.h"
 #include "project.h"
 #include "widgets.h"
@@ -171,7 +172,7 @@ public:
 
     // ---- the file and folder picker (file_dialog.cpp): every "choose a
     // file" field opens it instead of asking for a typed path.
-    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene };
+    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene, FoliageModels, FoliageFolder };
     enum PickOwner : uint8_t { PickRoot = 0, PickExport = 1, PickProject = 2 };
     struct FileDialog {
         PickFor target = PickFor::None;
@@ -183,7 +184,20 @@ public:
         char exts[96] = {};         // ".gltf;.glb;.obj", empty: every file
         char name[256] = {};        // the chosen file's name in `dir`
         char filter[64] = {};
+        // Several files at once (set `multi` after open_file_dialog): Ctrl-click adds or removes one,
+        // Shift-click a range, Ctrl+A all; Open hands each to file_dialog_done.
+        bool multi = false;
+        static constexpr int kMaxPicks = 64;
+        char picks[kMaxPicks][128] = {};
+        int pick_count = 0;
+        int last_click = -1;
     } file_dialog_;
+    // Where FoliageModels / FoliageFolder picks go: a terrain's foliage layer.
+    ObjectId foliage_pick_object_ = kNoObject;
+    int foliage_pick_layer_ = 0;
+    // Adds a .mof (or every .mof in a folder) to a foliage layer's list; false when it was not added
+    // (not a model, already there, or the list is full).
+    bool foliage_add_model(ObjectId terrain, int layer, const char* path);
     void open_file_dialog(PickFor target, uint8_t owner, const char* title, bool folder, const char* start, const char* exts);
     void file_dialog_popup(uint8_t owner);
     void file_dialog_done(PickFor target, const char* path);
@@ -193,6 +207,47 @@ public:
     void open_project(const char* dir);
     void request_open_project(const char* dir);
     ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
+    // Shift + double-click (viewport or Hierarchy): adds every visible object similar to `id` to the selection
+    // (same kind; meshes of the same shape and model file; empties with the same modules, lights of the same
+    // type). Returns how many are now selected of them.
+    bool objects_similar(const Object& a, const Object& b) const;
+    int select_similar(ObjectId id);
+    // Selects every object in a group (add: keeps the selection). Returns how many.
+    int select_group(const char* name, bool add = false);
+    void groups_field(Object* o);           // the Inspector's Groups row
+    // Editing several objects: the Inspector edits the active one; whatever changed is copied to the other
+    // selected objects that have it (fields of the same modules, a special object's settings to the same
+    // kind, script inputs of the same script). Names, ids, links' data files and "current" stay their own.
+    void apply_edit_to_selection(const Object& before, const Object& after);
+    bool suppress_release_ = false;     // a double-click was handled: its release is no click
+    // ---- terrain (terrain_bridge.h). Generate replaces a Terrain object's data with a flat map at `level`
+    // (world y) of size_x x size_z meters in chunks of chunk_size meters with `cells` grid cells a side;
+    // with keep_center the object moves so the map's middle stays where it was. A history step (undo).
+    bool generate_terrain(Object* o, float level, float size_x, float size_z, float chunk_size, int cells, bool keep_center);
+    void unique_terrain_path(const Object& o, char* out, size_t cap);
+    // The brushes of the Inspector's terrain tools, applied in the viewport with the left mouse button
+    // (Shift: the opposite - Lower, Restore, Erase; Ctrl-click with Level: take the height under the mouse).
+    enum class TerrainTool : uint8_t { None, Raise, Lower, Smooth, Level, Delete, Foliage };
+    TerrainTool terrain_tool = TerrainTool::None;
+    float terrain_radius = 6.0f;            // meters
+    float terrain_strength = 0.5f;          // 0..1
+    float terrain_hardness = 0.3f;          // 0..1
+    float terrain_level = 0.0f;             // Level: world y
+    int terrain_layer = 0;                  // Foliage: the layer painted
+    float terrain_density = 1.0f;           // Foliage: the density painted, 0..1
+    float terrain_gen_level = 0.0f;         // the Generate fields
+    float terrain_gen_size[2] = { 256.0f, 256.0f };
+    int terrain_gen_chunk = 1;              // 16 / 32 / 64 m
+    int terrain_gen_cells = 1;              // 16 / 32 / 64 cells a chunk
+    void terrain_section(Object* o);
+    // The brush in the viewport: true while it owns the mouse (no picking, no gizmo).
+    bool terrain_brush_input(const Mat4& view, const Mat4& proj, float x, float y, float w, float h, bool hovered);
+    // The terrain under a ray (world), the nearest hit; kNoObject when none.
+    ObjectId pick_terrain(const Ray& r, float* distance, Vec3* hit);
+    bool terrain_stroke_ = false;
+    ObjectId terrain_stroke_obj_ = kNoObject;
+    bool terrain_pending_ = false;              // foliage batches still being built: the view keeps redrawing
+    TerrainViewStats terrain_stats_;            // the last view's (Profiler)
     ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
     // The items of every "add object" menu (Create, the Hierarchy's + and
     // right-click menus): meshes, empty, lights, camera, sky ...

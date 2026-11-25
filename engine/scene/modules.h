@@ -7,7 +7,7 @@
 //   AudioStream, AudioSampler, Light, ParticleEmitter, Joint3D, Animator,
 //   ForceField, Spawner, ReverbZone, Billboard, Text3D.
 // - Special objects are object kinds with their own settings: Camera,
-//   SkyLight, Sky, PostProcess (ObjectKind).
+//   SkyLight, Sky, PostProcess, Terrain, Clouds (ObjectKind).
 // - Some kinds have a "current" flag: only one object (or module) of that
 //   kind is current in a scene at a time - the camera the game renders
 //   with, the active sky, the listener that hears. Setting one current
@@ -32,20 +32,26 @@ namespace fe {
 // What an object is. Mesh objects draw a mesh (Object::mesh); Empty is a
 // plain transform (a group, a spawn point, a holder for modules); the others
 // carry the settings struct of the same name.
-enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProcess, Count };
+enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProcess, Terrain, Clouds, Count };
 
 // Modules, and the settings of special objects, share one numbering so one
 // reflection table covers both.
 enum class ModuleKind : uint8_t {
     RigidBody3D, Collider3D, CharacterController3D, AudioListener, AudioStream, AudioSampler, Light, // modules
     ParticleEmitter, Joint3D, Animator, ForceField, Spawner, ReverbZone, Billboard, Text3D,         // more modules
-    Camera, SkyLight, Sky, PostProcess,                                          // special objects
+    Camera, SkyLight, Sky, PostProcess, Terrain, Clouds,                         // special objects
     Count
 };
 constexpr int kModuleKindCount = (int)ModuleKind::Count;
 constexpr int kFirstObjectSettings = (int)ModuleKind::Camera;
 
 constexpr int kPathMax = 256;
+constexpr int kPathListMax = 1024;      // a FieldType::PathList: paths separated by ';'
+
+// How an object is loaded at run time (the Object's Streaming property; scene/terrain.h).
+// Dynamic: loaded while the terrain chunk under it is (always, when it is over no terrain).
+// AlwaysLoaded: never unloaded. Unloaded: not loaded until a script sets obj.loaded = true.
+enum class StreamMode : uint8_t { Dynamic, AlwaysLoaded, Unloaded };
 
 // ---------------------------------------------------------------- modules
 
@@ -399,11 +405,173 @@ struct PostProcess {
     float auto_exposure_max = 3.0f;
 };
 
+// ---------------------------------------------------------------- terrain
+
+constexpr int kFoliageLayers = 4;
+
+// One kind of foliage on a terrain: a .mof model scattered where the layer is
+// painted, turned randomly around its up axis (never tipped into the ground),
+// thinned out with distance and drawn in batches per chunk (scene/terrain.h).
+struct FoliageLayer {
+    // A name scripts find the layer by (fe.find_foliage("grass")); names match without regard to case.
+    char name[kPathMax] = {};
+    // The .mof models, separated by ';' ("grass_a.mof;grass_b.mof;flower.mof"): each instance takes one of
+    // them at random. Empty = the layer is off.
+    char model[kPathListMax] = {};
+    float density = 2.0f;               // instances per square meter where painted at full strength
+    float scale_min = 0.8f;
+    float scale_max = 1.2f;
+    float distance = 60.0f;             // meters: drawn up to here, thinning out over the last 60%
+    float max_slope = 40.0f;            // degrees: steeper ground gets none
+    bool align_to_slope = false;        // stand along the ground's normal (else straight up)
+    bool cast_shadows = false;
+    // A custom .fshader material for every instance (a wind sway): it replaces the models' own look and gets
+    // u_time like screen shaders do. Empty = the models' textures and colours.
+    char shader[kPathMax] = {};
+};
+
+// A heightfield split into square chunks. Heights, holes and the painted
+// foliage live in the `data` file (.fterrain, scene/terrain.h); the terrain
+// sits at its object's position (rotation and scale are not used). Chunks
+// farther than load_distance from the camera are unloaded at run time, with
+// the Dynamic objects standing on them.
+struct Terrain {
+    char data[kPathMax] = {};           // the .fterrain file (made by Generate)
+    float load_distance = 250.0f;       // meters from the camera to a chunk's edge
+    bool stream_in_editor = false;      // the editor view unloads chunks (and objects) too
+    float lod_distance = 64.0f;         // full detail up to here; half the detail per further step
+    char texture[kPathMax] = {};
+    Vec3 color = Vec3(0.34f, 0.46f, 0.24f);
+    float roughness = 0.9f;
+    float uv_scale = 4.0f;              // meters per texture repeat
+    bool cast_shadows = true;
+    float friction = 0.8f;
+    uint32_t layer = 1;                 // collision layer bits
+    int revision = 0;                   // the data's edit revision (undo / redo; set by the editor)
+    FoliageLayer foliage[kFoliageLayers];
+};
+
+// ---------------------------------------------------------------- clouds
+
+enum class CloudQuality : uint8_t { Low, Medium, Ultra };
+
+// Volumetric clouds, ray marched in the sky (gfx/clouds.h): lit by the sun (its colour and direction, with
+// forward scattering around it), the Sky Light's colours as ambient, and the sky behind them. They sit in
+// up to three layers above the world, drift with the wind and fade towards the horizon. Quality is the
+// performance preset (steps along the ray and towards the sun); Settings > Graphics > Clouds caps it.
+// Current: one at a time.
+struct Clouds {
+    bool current = false;
+    CloudQuality quality = CloudQuality::Medium;
+    float height = 1500.0f;             // meters (world y): the bottom of the lowest layer
+    float thickness = 900.0f;           // meters, each layer
+    int layers = 1;                     // 1..3, stacked
+    float layer_spacing = 700.0f;       // meters between one layer's top and the next one's bottom
+    float coverage = 0.5f;              // 0..1: share of the sky covered
+    float density = 0.7f;               // how thick (dark at the bottom, opaque) they are, 0..3
+    Vec3 color = Vec3(1.0f, 1.0f, 1.0f);    // what they reflect (the sun's colour is applied on top)
+    float scale = 1.0f;                 // size of the cloud shapes: 1 = about 4 km across a big one
+    Vec3 wind = Vec3(12.0f, 0.0f, 5.0f);    // m/s
+    float sun_glow = 0.6f;              // 0..1: the bright rim towards the sun (forward scattering)
+    float ambient = 1.0f;               // 0..2: light from the sky on the shaded sides
+    float distance = 25000.0f;          // meters: faded into the horizon by here
+};
+
 // ---------------------------------------------------------------- reflection
 
 // Object: a link to another object (an ObjectLink, 32 bits, 0 = none).
 // Text: free text in a char[kPathMax] (like Path, but not a file).
-enum class FieldType : uint8_t { Float, Int, Bool, Enum, Color, Vec3, Path, Bits, Object, Text };
+// PathList: files in a char[kPathListMax], separated by ';' (path_list_next() walks them).
+enum class FieldType : uint8_t { Float, Int, Bool, Enum, Color, Vec3, Path, Bits, Object, Text, PathList };
+
+// The bytes a field of this type takes.
+inline uint32_t field_size(FieldType t) {
+    switch (t) {
+        case FieldType::Path: case FieldType::Text: return (uint32_t)kPathMax;
+        case FieldType::PathList: return (uint32_t)kPathListMax;
+        case FieldType::Color: case FieldType::Vec3: return (uint32_t)sizeof(Vec3);
+        case FieldType::Bool: case FieldType::Enum: return 1;
+        default: return 4;
+    }
+}
+
+// Walks a PathList: copies the next path (spaces around it trimmed) into out and returns where the one after
+// starts, or nullptr when there are no more. Empty entries are skipped.
+inline const char* path_list_next(const char* list, char* out, int cap) {
+    while (list && *list) {
+        while (*list == ';' || *list == ' ') list++;
+        if (!*list) break;
+        const char* end = list;
+        while (*end && *end != ';') end++;
+        const char* e = end;
+        while (e > list && e[-1] == ' ') e--;
+        int n = (int)(e - list);
+        if (n >= cap) n = cap - 1;
+        for (int i = 0; i < n; i++) out[i] = list[i];
+        out[n] = 0;
+        return end;
+    }
+    if (cap > 0) out[0] = 0;
+    return nullptr;
+}
+
+// Name lists: names separated by ';' (an object's groups). Names compare without regard to case; spaces around
+// a name are ignored. name_list_has: whether `name` is in the list.
+inline bool name_eq_nocase(const char* a, const char* b) {
+    for (;; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return false;
+        if (!x) return true;
+    }
+}
+inline bool name_list_has(const char* list, const char* name) {
+    char item[kPathMax];
+    for (const char* p = path_list_next(list, item, (int)sizeof item); p; p = path_list_next(p, item, (int)sizeof item))
+        if (name_eq_nocase(item, name)) return true;
+    return false;
+}
+// Whether a name may go into a list: not empty, at most 63 characters, no ';' and no spaces at its ends.
+inline bool name_list_valid(const char* name) {
+    int n = 0;
+    while (name[n]) { if (name[n] == ';') return false; n++; }
+    return n > 0 && n < 64 && name[0] != ' ' && name[n - 1] != ' ';
+}
+// Adds a name (when valid and not there yet). False when it is invalid or the list (cap bytes) is full.
+inline bool name_list_add(char* list, int cap, const char* name) {
+    if (!name_list_valid(name)) return false;
+    if (name_list_has(list, name)) return true;
+    int len = 0, n = 0;
+    while (list[len]) len++;
+    while (name[n]) n++;
+    int need = len + (len ? 1 : 0) + n;
+    if (need >= cap) return false;
+    if (len) list[len++] = ';';
+    for (int i = 0; i <= n; i++) list[len + i] = name[i];
+    return true;
+}
+// Removes a name; returns whether it was there. The list is rewritten without empty entries.
+inline bool name_list_remove(char* list, int cap, const char* name) {
+    char out[kPathListMax];
+    char item[kPathMax];
+    int len = 0;
+    bool found = false;
+    out[0] = 0;
+    for (const char* p = path_list_next(list, item, (int)sizeof item); p; p = path_list_next(p, item, (int)sizeof item)) {
+        if (name_eq_nocase(item, name)) { found = true; continue; }
+        int n = 0;
+        while (item[n]) n++;
+        if (len + (len ? 1 : 0) + n >= (int)sizeof out) break;
+        if (len) out[len++] = ';';
+        for (int i = 0; i <= n; i++) out[len + i] = item[i];
+        len += n;
+    }
+    if (len >= cap) len = cap - 1;
+    for (int i = 0; i < len; i++) list[i] = out[i];
+    list[len] = 0;
+    return found;
+}
 
 struct FieldInfo {
     const char* name;                   // "intensity" (also the Lua name)
@@ -474,6 +642,8 @@ struct ModuleSet {
     SkyLight sky_light;
     Sky sky;
     PostProcess post_process;
+    Terrain terrain;
+    Clouds clouds;
 
     bool has(ModuleKind k) const { return (present >> (int)k) & 1u; }
     void add(ModuleKind k) { present |= 1u << (int)k; }

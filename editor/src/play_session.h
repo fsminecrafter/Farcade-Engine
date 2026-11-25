@@ -20,6 +20,7 @@ class ScriptRuntime;
 class AudioSystem;
 class AudioDevice;
 class FxWorld;
+class TerrainData;
 namespace platform { struct Event; }
 namespace gfx { struct GraphicsSettings; }
 
@@ -92,6 +93,10 @@ private:
     uint64_t* entities_ = nullptr;
     int count_ = 0;
     int script_count_ = 0;
+    // Terrains as they were when play started (physics ground, fe.terrain_height).
+    struct TerrainRef { TerrainData* data; Vec3 origin; };
+    TerrainRef terrains_[8];
+    int terrain_count_ = 0;
     void log(PlayLog level, const char* fmt, ...);
 };
 

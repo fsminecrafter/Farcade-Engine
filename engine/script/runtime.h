@@ -38,6 +38,22 @@ struct ScriptHost {
     // Where print() and errors go (the editor's console).
     void (*log)(ScriptLogLevel level, const char* text, void* user) = nullptr;
     void* user = nullptr;
+    // fe.terrain_height(x, z): the ground's world height (and normal) at x, z; false when no terrain is
+    // under it. Null: fe.terrain_height returns nil.
+    bool (*terrain_height)(float x, float z, float* height, Vec3* normal, void* user) = nullptr;
+    // obj.streaming / obj.loaded (the object's Streaming property, StreamMode in scene/modules.h, and the
+    // flag that loads an Unloaded object). get returns false for objects it does not know. set: -1 keeps
+    // a value. Null: both read as "always" / true and cannot be set.
+    bool (*stream_get)(Entity e, int* mode, bool* loaded, void* user) = nullptr;
+    void (*stream_set)(Entity e, int mode, int loaded, void* user) = nullptr;
+    // Groups: an object's names separated by ';' (name_list_* in scene/modules.h; names compare without regard
+    // to case). groups_get copies the object's list (false for objects the host does not know), groups_set
+    // replaces it, find_group writes the entities in a group in scene order and returns how many there are
+    // (more than max: it is called again with room for all). Null: objects have no groups (obj.groups is
+    // empty, fe.find_group returns an empty table, add_group raises an error).
+    bool (*groups_get)(Entity e, char* out, int cap, void* user) = nullptr;
+    void (*groups_set)(Entity e, const char* groups, void* user) = nullptr;
+    int (*find_group)(const char* name, Entity* out, int max, void* user) = nullptr;
 };
 
 // What a game shows about itself while it loads or works (fe.status): the

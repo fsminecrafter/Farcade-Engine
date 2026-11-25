@@ -44,7 +44,8 @@ static void test_meta(World& w) {
         const EcsStruct* st = ecs_get(ew, c, EcsStruct);
         ECS_CHECK(st != nullptr);
         if (!st) continue;
-        ECS_CHECK(ecs_vec_count(&st->members) == mi.field_count);
+        // flecs reflects at most 32 members (world.cpp register_module_meta): longer tables list their first 32.
+        ECS_CHECK(ecs_vec_count(&st->members) == (mi.field_count < 32 ? mi.field_count : 32));
         const ecs_member_t* m = (const ecs_member_t*)ecs_vec_first(&st->members);
         for (int i = 0; i < mi.field_count && i < ecs_vec_count(&st->members); i++) {
             ECS_CHECK(strcmp(m[i].name, mi.fields[i].name) == 0);
@@ -65,6 +66,9 @@ static void test_meta(World& w) {
             case FieldType::Text:
             case FieldType::Path:
                 ECS_CHECK(m[i].type == ecs_id(ecs_char_t) && m[i].count == kPathMax);
+                break;
+            case FieldType::PathList:
+                ECS_CHECK(m[i].type == ecs_id(ecs_char_t) && m[i].count == kPathListMax);
                 break;
             case FieldType::Enum: {
                 const EcsEnum* en = ecs_get(ew, m[i].type, EcsEnum);

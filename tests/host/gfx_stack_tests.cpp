@@ -1382,6 +1382,53 @@ void test_screen_shaders() {
     r.shutdown();
 }
 
+// A custom item shader gets u_time (seconds rendered): the foliage sway sample moves the cube between frames
+// and stays put while no time passes.
+void* read_sway_src(const char* path, size_t* size, void*) {
+    if (strcmp(path, "sway.fshader")) return nullptr;
+    FILE* f = fopen("assets/samples/foliage/sway.fshader", "rb");
+    if (!f) return nullptr;
+    char* m = (char*)malloc(8192);
+    *size = m ? fread(m, 1, 8191, f) : 0;
+    fclose(f);
+    if (m) m[*size] = 0;
+    return m;
+}
+
+void test_item_shader_time() {
+    Renderer r;
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    GraphicsSettings s;
+    s.apply_preset(GraphicsPreset::Low);
+    r.set_settings(s);
+    static SmokeScene smoke;
+    smoke.build();
+    RenderScene sc = smoke.scene;
+    sc.read_asset = read_sway_src;
+    smoke.items[1].shader_path = "sway.fshader";
+    smoke.items[1].foliage = true;
+    sc.delta_time = 0.4f;
+    CHECK(render_ok(r, sc));
+    const char* err = r.error();
+    CHECK(!err || !err[0]);
+    const int n = kSmokeWidth * kSmokeHeight;
+    uint32_t* a = (uint32_t*)malloc((size_t)n * 4);
+    memcpy(a, r.pixels(), (size_t)n * 4);
+    sc.delta_time = 0.0f;
+    CHECK(render_ok(r, sc));
+    long same = 0, moved = 0;
+    for (int i = 0; i < n; i++) same += a[i] != r.pixels()[i];
+    sc.delta_time = 0.9f;
+    CHECK(render_ok(r, sc));
+    for (int i = 0; i < n; i++) moved += a[i] != r.pixels()[i];
+    CHECK(same == 0);
+    CHECK(moved > 20);
+    free(a);
+    smoke.items[1].shader_path = nullptr;
+    smoke.items[1].foliage = false;
+    r.shutdown();
+}
+
 // The editor on Minimal-OS: draft frames while the camera moves, full ones when it stops, now and then another
 // size (adaptive resolution). After the first round nothing may compile again.
 void test_no_recompile() {
@@ -1412,6 +1459,158 @@ void test_no_recompile() {
     r.shutdown();
 }
 
+// ---------------------------------------------------------------- culling
+
+void test_culling() {
+    // A wall in front of the camera hides a cube behind it; another cube is behind the camera; one stands
+    // to the side in view. Culling leaves out the hidden two and the picture stays the same.
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    g.allow_gpu_effects_on_cpu = false;
+    CHECK(g.occlusion_culling);
+    r.set_settings(g);
+    CHECK(r.init(200, 150));
+    Vec3 cp[kCubeVertices], cn[kCubeVertices];
+    make_cube(cp, cn, 0.5f);
+    DrawItem it[4];
+    for (int i = 0; i < 4; i++) { it[i].mesh = RenderMesh{ cp, cn, kCubeVertices, 31 }; it[i].color = Vec3(0.6f, 0.5f, 0.4f); }
+    it[0].model = Mat4::trs(Vec3(0, 0, 0), Quat(), Vec3(6, 6, 0.3f));         // the wall
+    it[1].model = Mat4::translation(Vec3(0.3f, 0.2f, -3.0f));                 // hidden behind it
+    it[2].model = Mat4::translation(Vec3(0, 0, 12.0f));                        // behind the camera
+    it[3].model = Mat4::translation(Vec3(2.2f, 1.2f, 2.0f));                   // in view, in front of the wall
+    FlatScene f(Vec3(0.2f, 0.3f, 0.4f));
+    f.scene.camera.proj = Mat4::perspective(radians(60.0f), 200.0f / 150.0f, 0.1f, 100.0f);
+    f.scene.camera.view = Mat4::look_at(Vec3(0, 0, 6), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    f.scene.camera.position = Vec3(0, 0, 6);
+    f.scene.items = it;
+    f.scene.item_count = 4;
+    CHECK(render_ok(r, f.scene));
+    const RendererStats& st = r.stats();
+    printf("culling: %d items, %d outside the view, %d occluded, %d occluders, %d draws, %.3f ms\n", st.items_in, st.culled_frustum,
+           st.culled_occlusion, st.occluders, st.draws, st.cull_ms);
+    CHECK_MSG(st.items_in == 4 && st.culled_frustum == 1, "the cube behind the camera is outside the frustum");
+    CHECK_MSG(st.culled_occlusion == 1 && st.occluders >= 1, "the cube behind the wall is occluded");
+    CHECK_MSG(st.draws == 2, "two draws");
+    uint32_t* on = (uint32_t*)malloc(200 * 150 * 4);
+    memcpy(on, r.pixels(), 200 * 150 * 4);
+    g.occlusion_culling = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0 && r.stats().draws == 3, "off: the hidden cube is drawn");
+    CHECK_MSG(memcmp(on, r.pixels(), 200 * 150 * 4) == 0, "the same picture with and without occlusion culling");
+    // The hidden cube peeks out past the wall's edge: it is drawn again.
+    g.occlusion_culling = true;
+    r.set_settings(g);
+    it[1].model = Mat4::translation(Vec3(4.5f, 0.2f, -3.0f));
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "a cube that sticks out is not culled");
+    // An occluder mesh that is given replaces the item's own triangles; a tiny one hides nothing.
+    Vec3 tiny[3] = { Vec3(0, 0, 0), Vec3(0.01f, 0, 0), Vec3(0, 0.01f, 0) };
+    it[0].mesh.occluder_positions = tiny;
+    it[0].mesh.occluder_count = 3;
+    it[1].model = Mat4::translation(Vec3(0.3f, 0.2f, -3.0f));
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "the occluder mesh is what occludes");
+    it[0].mesh.occluder_positions = nullptr;
+    it[0].mesh.occluder_count = 0;
+    it[0].occluder = false;
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "occluder = false");
+    it[0].occluder = true;
+    // draw_count: only the first triangles of a mesh.
+    it[3].mesh.draw_count = 6;
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().triangles == 12 + 2, "draw_count limits the triangles");
+    it[3].mesh.draw_count = 0;
+    // Bounds that are given are used: a box far away puts the item out of view.
+    it[3].mesh.has_bounds = true;
+    it[3].mesh.bounds_min = Vec3(100, 100, 100);
+    it[3].mesh.bounds_max = Vec3(101, 101, 101);
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_frustum == 2, "has_bounds is trusted");
+    free(on);
+}
+
+// ---------------------------------------------------------------- clouds
+
+void test_clouds() {
+    // A sun low in the sky and clouds overhead: every quality and layer count compiles (no step down) in the
+    // base tier and the GPU tier, the sky looking up gets brighter/whiter where clouds are, and Off removes them.
+    Vec3 cp[kCubeVertices], cn[kCubeVertices];
+    make_cube(cp, cn, 0.5f);
+    DrawItem it;
+    it.mesh = RenderMesh{ cp, cn, kCubeVertices, 41 };
+    it.model = Mat4::translation(Vec3(0, -3, -6));
+    RenderLight sun;
+    sun.type = LightType::Directional;
+    sun.direction = normalize(Vec3(-0.5f, -0.4f, -0.6f));
+    sun.intensity = 2.0f;
+    FlatScene f(Vec3(0.2f, 0.3f, 0.4f));
+    f.scene.camera.proj = Mat4::perspective(radians(70.0f), 160.0f / 120.0f, 0.1f, 1000.0f);
+    f.scene.camera.view = Mat4::look_at(Vec3(0, 2, 0), Vec3(0, 6, -10), Vec3(0, 1, 0));
+    f.scene.camera.position = Vec3(0, 2, 0);
+    f.scene.items = &it;
+    f.scene.item_count = 1;
+    f.scene.lights = &sun;
+    f.scene.light_count = 1;
+    f.scene.clouds_on = true;
+    f.scene.clouds.coverage = 0.8f;
+    f.scene.clouds.density = 1.2f;
+    for (int tier = 0; tier < 2; tier++) {
+        Renderer r;
+        GraphicsSettings g;
+        g.apply_preset(tier ? GraphicsPreset::Ultra : GraphicsPreset::Low);
+        g.allow_gpu_effects_on_cpu = tier == 1;
+        if (tier) g.feature_level = FeatureLevelMode::GpuTier;
+        g.antialiasing = false;
+        g.clouds = CloudSetting::Ultra;
+        r.set_settings(g);
+        CHECK(r.init(160, 120));
+        for (int q = 0; q < 3; q++)
+            for (int layers = 1; layers <= 3; layers++) {
+                f.scene.clouds.quality = (CloudQuality)q;
+                f.scene.clouds.layers = layers;
+                bool ok = render_ok(r, f.scene);
+                CHECK_MSG(ok, "renders with clouds");
+                if (r.stats().cloud_quality != q + 1)
+                    printf("clouds: tier %d quality %d layers %d drew quality %d (%s)\n", tier, q + 1, layers, r.stats().cloud_quality, r.error());
+                CHECK_MSG(r.stats().cloud_quality == q + 1, "every cloud variant compiles");
+            }
+        // The upper half with and without clouds: they change many pixels, and differently across the sky.
+        f.scene.clouds.quality = CloudQuality::Medium;
+        f.scene.clouds.layers = 1;
+        render_ok(r, f.scene);
+        static int with[160 * 50];
+        for (int y = 0; y < 50; y++)
+            for (int x = 0; x < 160; x++) with[y * 160 + x] = lum(px(r, x, y));
+        f.scene.clouds_on = false;
+        render_ok(r, f.scene);
+        int changed = 0, mn = 255, mx = -255;
+        for (int y = 0; y < 50; y++)
+            for (int x = 0; x < 160; x++) {
+                int dlt = with[y * 160 + x] - lum(px(r, x, y));
+                if (dlt > 6 || dlt < -6) changed++;
+                if (dlt < mn) mn = dlt;
+                if (dlt > mx) mx = dlt;
+            }
+        printf("clouds: tier %d, %d of 8000 sky pixels changed, by %d .. %d\n", tier, changed, mn, mx);
+        CHECK_MSG(changed > 60, "clouds change the sky overhead");
+        CHECK_MSG(mx - mn > 10, "lit and shaded parts (shapes, not a flat veil)");
+        CHECK_MSG(r.stats().cloud_quality == 0, "no clouds without the object");
+        f.scene.clouds_on = true;
+        g.clouds = CloudSetting::Low;
+        r.set_settings(g);
+        f.scene.clouds.quality = CloudQuality::Ultra;
+        render_ok(r, f.scene);
+        CHECK_MSG(r.stats().cloud_quality == 1, "the setting caps the quality");
+        g.clouds = CloudSetting::Off;
+        r.set_settings(g);
+        render_ok(r, f.scene);
+        CHECK_MSG(r.stats().cloud_quality == 0, "Off hides them");
+    }
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1432,6 +1631,9 @@ int main() {
     test_new_modes_everything();
     test_ssaa_and_vsync();
     test_screen_shaders();
+    test_item_shader_time();
     test_no_recompile();
+    test_culling();
+    test_clouds();
     return finish_tests("gfx_stack_tests");
 }

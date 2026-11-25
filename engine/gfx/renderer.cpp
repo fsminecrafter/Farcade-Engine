@@ -25,6 +25,7 @@
 #include "gfx/gi.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
+#include "gfx/culling.h"
 #include "stb/stb_image.h"
 
 #if defined(FE_HOST)
@@ -70,12 +71,14 @@ struct Locs {
     int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
     int lift = -1, gamma = -1, gain = -1, grain = -1;
     int gi = -1, gi0 = -1, gi1 = -1;
+    int time = -1;                          // custom item shaders: u_time (seconds, delta, frame, 0)
 };
 
 struct Shader {
     FGLShader* sh = nullptr;
     Locs loc;
     shaders::PostKey key;                   // the post chain compiled in
+    CloudKey clouds;                        // sky: the clouds compiled in
 };
 
 struct Variant {
@@ -174,6 +177,8 @@ struct Renderer::Impl {
     uint32_t* screen_buf = nullptr;         // XRGB: the image uploaded, then the pass read back
     size_t screen_cap = 0;
     double screen_time = 0;
+    double item_time = 0;                   // u_time of custom item shaders (a wind sway): seconds rendered
+    float item_dt = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
     char warning[256] = "";             // take_warning()
@@ -199,6 +204,31 @@ struct Renderer::Impl {
     DeviceCaps caps;                        // from fglGetDeviceInfo (feature_level.h)
     char backend[40] = "";
     GpuTier tier;
+    // Culling (culling.h): the camera's items of the frame.
+    struct VisList {
+        int* idx = nullptr;
+        DrawItem* items = nullptr;
+        int cap = 0;
+        ~VisList() { free(idx); free(items); }
+    } vis;
+    Culler culler;
+    // Clouds (clouds.h): the noise textures (made the first time clouds are drawn), the wind clock, the
+    // highest quality that compiled per layer count, and this frame's uniforms.
+    FGLTexture cloud_noise = 0, cloud_weather = 0;
+    float cloud_time = 0;
+    uint8_t cloud_ok[4] = { 3, 3, 3, 3 };
+    CloudFrame cloud_frame;
+    bool make_cloud_textures() {
+        if (cloud_noise && cloud_weather) return true;
+        int w = 0, h = 0;
+        uint32_t* px = clouds_noise_atlas(&w, &h);
+        if (px && !cloud_noise) cloud_noise = fglCreateTexture(gl, (uint32_t)w, (uint32_t)h, px);
+        free(px);
+        px = clouds_weather_map(&w, &h);
+        if (px && !cloud_weather) cloud_weather = fglCreateTexture(gl, (uint32_t)w, (uint32_t)h, px);
+        free(px);
+        return cloud_noise && cloud_weather;
+    }
     // Probe GI (gi.h): updated once a frame on the CPU, uploaded as a texture both tiers sample.
     GiSystem gi;
     FGLTexture gi_tex = 0;
@@ -222,8 +252,9 @@ struct Renderer::Impl {
         int m = 0;
         for (int i = 0; i < n && occluders && m < occluder_cap; i++) {
             const DrawItem& it = scene.items[i];
+            if (it.foliage) continue;                       // grass does not hide particles
             occluders[m].positions = it.mesh.positions;
-            occluders[m].vertex_count = it.mesh.vertex_count;
+            occluders[m].vertex_count = it.mesh.draw_count ? it.mesh.draw_count : it.mesh.vertex_count;
             occluders[m].model = it.model;
             m++;
         }
@@ -313,6 +344,7 @@ struct Renderer::Impl {
         l->gi = fglUniformLocation(sh, "u_gi");
         l->gi0 = fglUniformLocation(sh, "u_gi0");
         l->gi1 = fglUniformLocation(sh, "u_gi1");
+        l->time = fglUniformLocation(sh, "u_time");
     }
 
     CompileGate gate;
@@ -566,16 +598,16 @@ struct Renderer::Impl {
     }
 
     // The unlit and the sky shader (compiled on first use, cached).
-    bool use_shader(Shader* s, bool sky_shader, const shaders::PostKey& key) {
-        if (s->sh && s->key == key) return true;
+    bool use_shader(Shader* s, bool sky_shader, const shaders::PostKey& key, CloudKey ck = CloudKey()) {
+        if (s->sh && s->key == key && s->clouds == ck) return true;
         if (s->sh) drop(s);
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return false; }
-        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, key); }
+        if (sky_shader) { shaders::sky_vertex(vs, shaders::kSourceBytes); shaders::sky_fragment(fs, shaders::kSourceBytes, key, ck); }
         else { shaders::unlit_vertex(vs, shaders::kSourceBytes); shaders::unlit_fragment(fs, shaders::kSourceBytes, key); }
         bool ok = compile(s, vs, fs, sky_shader ? "sky" : "unlit");
-        if (ok) s->key = key;
+        if (ok) { s->key = key; s->clouds = ck; }
         free(vs);
         free(fs);
         return ok;
@@ -1007,9 +1039,12 @@ struct Renderer::Impl {
         else fglEnable(gl, FGL_CULL_FACE);
         fglSetModel(gl, to_fgl(it.model));
         uint32_t first = 0;
-        for (uint32_t c = 0; c < e->chunks; c++) {
-            fglDraw(gl, e->buffer[c], 0, e->chunk_vertices[c]);
-            first += e->chunk_vertices[c];
+        uint32_t limit = it.mesh.draw_count ? it.mesh.draw_count / 3 * 3 : e->vertex_count;
+        for (uint32_t c = 0; c < e->chunks && first < limit; c++) {
+            uint32_t k = e->chunk_vertices[c];
+            if (k > limit - first) k = limit - first;
+            if (k) fglDraw(gl, e->buffer[c], 0, k);
+            first += k;
         }
         if (count) {
             stats.draws++;
@@ -1024,6 +1059,7 @@ struct Renderer::Impl {
         fglUseShader(gl, s.sh);
         fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
         fglUniformTexture(gl, s.sh, s.loc.texture, texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        if (s.loc.time >= 0) fglUniform4f(s.sh, s.loc.time, (float)item_time, item_dt, (float)frame, 0.0f);
         return draw_mesh(it, true, failed);
     }
 
@@ -1043,8 +1079,8 @@ struct Renderer::Impl {
     bool update_gi(const RenderScene& scene, float dt) {
         double t0 = now_ms();
         GiInput in;
-        in.items = scene.items;
-        in.item_count = scene.item_count;
+        in.items = scene.shadow_items ? scene.shadow_items : scene.items;
+        in.item_count = scene.shadow_items ? scene.shadow_item_count : scene.item_count;
         in.lights = scene.lights;
         in.light_count = scene.light_count;
         const SkyLight& sl = scene.sky_light;
@@ -1077,13 +1113,44 @@ struct Renderer::Impl {
     // rows == 0: the whole image into `pixels` (as RGBA); else rows
     // [y0, y0 + rows) into dst (XRGB, width * rows words). Bands are not
     // available while the GPU tier or fog is on (render_rows fails then).
-    bool render(const RenderScene& scene, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
+    // The camera passes draw `out->items`: the items of `in` the camera can see. Shadows and GI keep
+    // every item (out->shadow_items).
+    void cull(const RenderScene& in, RenderScene* out) {
+        *out = in;
+        out->shadow_items = in.items;
+        out->shadow_item_count = in.item_count;
+        stats.items_in = in.item_count;
+        if (in.item_count <= 0) return;
+        if (vis.cap < in.item_count) {
+            int nc = in.item_count * 2;
+            int* ni = (int*)realloc(vis.idx, sizeof(int) * (size_t)nc);
+            if (ni) vis.idx = ni;
+            DrawItem* nit = (DrawItem*)realloc((void*)vis.items, sizeof(DrawItem) * (size_t)nc);
+            if (nit) vis.items = nit;
+            if (!ni || !nit) return;
+            vis.cap = nc;
+        }
+        CullStats cs;
+        int n = culler.run(in, settings.occlusion_culling, vis.idx, &cs);
+        for (int i = 0; i < n; i++) vis.items[i] = in.items[vis.idx[i]];
+        out->items = vis.items;
+        out->item_count = n;
+        stats.culled_frustum = cs.frustum_culled;
+        stats.culled_occlusion = cs.occlusion_culled;
+        stats.occluders = cs.occluders;
+        stats.occluder_triangles = cs.occluder_triangles;
+        stats.cull_ms = cs.ms;
+    }
+
+    bool render(const RenderScene& scene_in, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
         double t0 = now_ms();
         stats = RendererStats();
         in_render = true;
         error[0] = 0;
         banding = rows > 0;
         band_y0 = y0;
+        RenderScene scene;
+        cull(scene_in, &scene);
 
         // Internal resolution (post_stack.h): the passes draw at iw x ih and the image is upscaled
         // when read back. Bands are always drawn at full size (the editor has its own adaptive resolution).
@@ -1136,7 +1203,7 @@ struct Renderer::Impl {
         // from the previous frame). Bands of one image share the values of the image.
         float dt = scene.delta_time;
         if (dt < 0) dt = last_render_end_ms > 0 ? fclamp((float)((t0 - last_render_end_ms) * 0.001), 0.0f, 0.25f) : 1.0f / 60.0f;
-        if (!banding) post_frames++;
+        if (!banding) { post_frames++; item_time += dt; item_dt = dt; }
         pf = PostFrame::make(scene.post, scene.post.auto_exposure ? ae.ev : 0.0f, post_frames, scene.draft, false);
         stats.exposure_ev = pf.exposure_ev;
 
@@ -1153,6 +1220,27 @@ struct Renderer::Impl {
         GpuPlan plan = GpuTier::plan(scene, feature_set());
         LightSet ls;
         pack_lights(scene, &ls, plan.local_shadows ? settings.local_shadow_lights : 0);
+        // Clouds: the quality is the object's, capped by the settings (and Low for draft frames).
+        {
+            CloudKey ck;
+            if (scene.clouds_on && settings.clouds != CloudSetting::Off) {
+                int layers = scene.clouds.layers < 1 ? 1 : (scene.clouds.layers > 3 ? 3 : scene.clouds.layers);
+                int q = (int)scene.clouds.quality + 1, cap = (int)settings.clouds;
+                if (q > cap) q = cap;
+                if (scene.draft && q > 1) q = 1;
+                if (q > cloud_ok[layers]) q = cloud_ok[layers];
+                if (q > 0 && make_cloud_textures()) { ck.quality = (uint8_t)q; ck.layers = (uint8_t)layers; }
+            }
+            if (ck.quality) {
+                if (!banding) cloud_time += dt;
+                const SkyLight& sl = scene.sky_light;
+                Vec3 sun_col = ls.has_sun ? ls.sun_color : Vec3(0, 0, 0);
+                clouds_frame(scene.clouds, ck, scene.camera.position, cloud_time, ls.has_sun ? ls.sun_dir : Vec3(0, 1, 0), sun_col,
+                             sl.sky_color * sl.intensity, (uint32_t)frame, &cloud_frame);
+            } else {
+                cloud_frame = CloudFrame();
+            }
+        }
         bool has_asset_material = false;
         for (int i = 0; i < scene.item_count; i++)
             has_asset_material |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
@@ -1182,7 +1270,12 @@ struct Renderer::Impl {
             host.gi_texture = gi_tex;
             memcpy(host.gi0, gi_frame.u0, sizeof host.gi0);
             memcpy(host.gi1, gi_frame.u1, sizeof host.gi1);
+            host.clouds = cloud_frame;
+            host.cloud_noise = cloud_noise;
+            host.cloud_weather = cloud_weather;
+            host.cloud_ok = cloud_ok;
             failed = !tier.render(gl, scene, pl, settings, plan, host, pf, error, (int)sizeof error);
+            stats.cloud_quality = tier.cloud_quality();
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
             tier_done = true;
         }
@@ -1199,7 +1292,19 @@ struct Renderer::Impl {
         Shader& sky_s = sky[scene.draft ? 1 : 0];
         bool any_unlit = false;
         for (int i = 0; i < scene.item_count; i++) if (scene.items[i].unlit) { any_unlit = true; break; }
-        if ((any_unlit && !use_shader(&unlit_s, false, pf.key)) || !use_shader(&sky_s, true, pf.key)) return false;
+        if (any_unlit && !use_shader(&unlit_s, false, pf.key)) return false;
+        // The sky with the clouds; a cloud variant that does not compile steps down a quality.
+        {
+            CloudKey ck = cloud_frame.key;
+            while (!use_shader(&sky_s, true, pf.key, ck)) {
+                if (!ck.quality || gate.deferred) return false;
+                cloud_ok[ck.layers] = (uint8_t)(ck.quality - 1);
+                ck.quality--;
+                error[0] = 0;
+            }
+            cloud_frame.key = ck;
+            stats.cloud_quality = ck.quality;
+        }
         if (any_unlit) set_post(unlit_s, scene.post);
         set_sky_frame(sky_s, scene, ls);
 
@@ -1221,6 +1326,8 @@ struct Renderer::Impl {
             // The sky last, at the far plane: only uncovered pixels are shaded.
             fglDisable(gl, FGL_CULL_FACE);
             fglUseShader(gl, sky_s.sh);
+            // The clouds' textures now: the items before rebound the texture units.
+            set_cloud_uniforms(gl, sky_s.sh, cloud_frame, cloud_noise, cloud_weather);
             fglSetModel(gl, to_fgl(Mat4::identity()));
             fglDraw(gl, sky_buffer, 0, 3);
             if (submit() != 0) { set_error("FarcadeGL: submit failed", gl->error); failed = true; }
@@ -1299,6 +1406,9 @@ struct Renderer::Impl {
             if (gi_tex) fglDestroyTexture(gl, gi_tex);
             gi_tex = 0;
             gi_started = false;
+            if (cloud_noise) fglDestroyTexture(gl, cloud_noise);
+            if (cloud_weather) fglDestroyTexture(gl, cloud_weather);
+            cloud_noise = cloud_weather = 0;
             gi.reset();
             if (sky_buffer) fglDestroyBuffer(gl, sky_buffer);
             sky_buffer = 0;

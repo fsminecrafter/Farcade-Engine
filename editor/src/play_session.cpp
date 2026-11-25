@@ -5,6 +5,7 @@
 #include "audio/audio.h"
 #include "fx/fx.h"
 #include "platform/platform.h"
+#include "terrain_bridge.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -86,9 +87,71 @@ bool PlaySession::start(Scene& scene, const PlayHost& host, AudioDevice* audio_d
     world_->update_transforms();
     // Scripts (Lua): one instance per script on each object, in Inspector
     // order; object inputs become the linked objects' entities.
+    // Terrains: their data (loaded through the store) and where they sit.
+    terrain_count_ = 0;
+    for (int i = 0; i < scene.count() && terrain_count_ < 8; i++) {
+        Object& o = scene.at(i);
+        if (o.kind != ObjectKind::Terrain) continue;
+        if (TerrainData* td = terrain_data(o)) terrains_[terrain_count_++] = { td, terrain_origin(scene, o) };
+    }
     scripts_ = new ScriptRuntime();
     ScriptHost sh;
     sh.user = this;
+    sh.terrain_height = [](float x, float z, float* h, Vec3* n, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        for (int t = 0; t < self->terrain_count_; t++) {
+            const TerrainRef& r = self->terrains_[t];
+            bool inside = false;
+            float lh = r.data->height_at(x - r.origin.x, z - r.origin.z, &inside);
+            if (!inside) continue;
+            *h = lh + r.origin.y;
+            *n = r.data->normal_at(x - r.origin.x, z - r.origin.z);
+            return true;
+        }
+        return false;
+    };
+    sh.stream_get = [](Entity e, int* mode, bool* loaded, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (!o) return false;
+        *mode = (int)o->streaming;
+        *loaded = o->streaming != StreamMode::Unloaded || o->stream_loaded;
+        return true;
+    };
+    sh.stream_set = [](Entity e, int mode, int loaded, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (!o) return;
+        if (mode >= 0 && mode < 3) o->streaming = (StreamMode)mode;
+        if (loaded >= 0) o->stream_loaded = loaded != 0;
+    };
+    sh.groups_get = [](Entity e, char* out, int cap, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (!o) return false;
+        snprintf(out, (size_t)cap, "%s", o->groups);
+        return true;
+    };
+    sh.groups_set = [](Entity e, const char* groups, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (o) snprintf(o->groups, sizeof o->groups, "%s", groups);
+    };
+    sh.find_group = [](const char* name, Entity* out, int max, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        int n = 0;
+        if (!self->scene_) return 0;
+        // Scene order (the Hierarchy's; copies made while playing come last).
+        for (int i = 0; i < self->scene_->count(); i++) {
+            const Object& o = self->scene_->at(i);
+            if (!name_list_has(o.groups, name)) continue;
+            Entity e = self->entity_of(o.id);
+            if (!e) continue;
+            if (n < max) out[n] = e;
+            n++;
+        }
+        return n;
+    };
     sh.log = [](ScriptLogLevel level, const char* text, void* u) {
         PlaySession* self = (PlaySession*)u;
         if (self->host_.log)
@@ -153,6 +216,31 @@ bool PlaySession::start(Scene& scene, const PlayHost& host, AudioDevice* audio_d
     pe.trigger_exit = [](Entity t, Entity o, void* u) { ((PlaySession*)u)->physics_event("left", t, o); };
     pe.collision = [](Entity a, Entity b, void* u) { ((PlaySession*)u)->physics_event("hit", a, b); };
     physics_->init(world_, pe);
+    {
+        PhysicsTerrain pts[8];
+        int npt = 0;
+        for (int i = 0; i < count_ && npt < 8; i++) {
+            Object* o = scene.get(objects_[i]);
+            if (!o || o->kind != ObjectKind::Terrain) continue;
+            TerrainData* td = terrain_data(*o);
+            if (!td) continue;
+            PhysicsTerrain& pt = pts[npt++];
+            pt.entity = entities_[i];
+            pt.origin = terrain_origin(scene, *o);
+            pt.size_x = td->size_x();
+            pt.size_z = td->size_z();
+            pt.user = td;
+            pt.height = [](void* user, float x, float z, bool* inside, Vec3* normal) {
+                const TerrainData* t = (const TerrainData*)user;
+                float h = t->height_at(x, z, inside);
+                if (normal) *normal = t->normal_at(x, z);
+                return h;
+            };
+            pt.friction = o->modules.terrain.friction;
+            pt.layer = o->modules.terrain.layer;
+        }
+        physics_->set_terrains(pts, npt);
+    }
     for (int i = 0; i < count_; i++) {
         physics_->add(entities_[i]);
         // A Mesh collider is the convex hull of its object's mesh.

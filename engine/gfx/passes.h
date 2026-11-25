@@ -11,6 +11,7 @@
 #include "gfx/renderer.h"
 #include "gfx/shaders_hq.h"
 #include "gfx/post_stack.h"
+#include "gfx/clouds.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -57,7 +58,26 @@ struct PassHost {
     bool gi_on = false;
     FGLTexture gi_texture = 0;
     float gi0[4] = {}, gi1[4] = {};
+    // Clouds (gfx/clouds.h): this frame's key and uniforms, their noise textures, and the renderer's
+    // highest quality that compiled per layer count (the tier lowers it when a variant does not compile).
+    CloudFrame clouds;
+    FGLTexture cloud_noise = 0, cloud_weather = 0;
+    uint8_t* cloud_ok = nullptr;
 };
+
+// The clouds' uniforms and textures on a sky shader that has them compiled in.
+inline void set_cloud_uniforms(FGLContext* gl, FGLShader* sh, const CloudFrame& f, FGLTexture noise, FGLTexture weather) {
+    if (!f.key.quality) return;
+    fglUniform4f(sh, fglUniformLocation(sh, "u_cl0"), f.cl0[0], f.cl0[1], f.cl0[2], f.cl0[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_cl1"), f.cl1[0], f.cl1[1], f.cl1[2], f.cl1[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_cl2"), f.cl2[0], f.cl2[1], f.cl2[2], f.cl2[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_cl3"), f.cl3[0], f.cl3[1], f.cl3[2], f.cl3[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_cpos"), f.cpos[0], f.cpos[1], f.cpos[2], f.cpos[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_csky"), f.csky[0], f.csky[1], f.csky[2], f.csky[3]);
+    fglUniform4f(sh, fglUniformLocation(sh, "u_csun"), f.csun[0], f.csun[1], f.csun[2], f.csun[3]);
+    fglUniformTexture(gl, sh, fglUniformLocation(sh, "u_cnoise"), noise, FGL_TEXTURE_LINEAR);
+    fglUniformTexture(gl, sh, fglUniformLocation(sh, "u_cweather"), weather, FGL_TEXTURE_LINEAR);
+}
 
 // What runs this frame: the features, limited by what the scene has.
 struct GpuPlan {
@@ -110,6 +130,7 @@ public:
     void set_gate(CompileGate* gate);
 
     const GpuTierStats& stats() const;
+    int cloud_quality() const;              // the clouds the last frame's sky had (0 none)
     // Live FarcadeGL surfaces and programs the tier holds (tests: no leaks).
     int live_surfaces() const;
     int live_programs() const;

@@ -1,8 +1,10 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
+#include "terrain_bridge.h"
 #include "icon_glyphs.h"
 #include "icons.h"
 #include "model_import.h"
+#include "model_cache.h"
 #include "widgets.h"
 #include "platform/platform.h"
 
@@ -25,6 +27,8 @@ Icon object_icon(const Object& o) {
         case ObjectKind::Sky: return Icon::Cloud;
         case ObjectKind::SkyLight: return Icon::Sun;
         case ObjectKind::PostProcess: return Icon::Wand;
+        case ObjectKind::Terrain: return Icon::Plane;
+        case ObjectKind::Clouds: return Icon::Cloud;
         case ObjectKind::Empty:
             if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
             if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
@@ -62,6 +66,8 @@ Icon module_icon(ModuleKind k) {
         case ModuleKind::SkyLight: return Icon::Sun;
         case ModuleKind::Sky: return Icon::Cloud;
         case ModuleKind::PostProcess: return Icon::Wand;
+        case ModuleKind::Terrain: return Icon::Plane;
+        case ModuleKind::Clouds: return Icon::Cloud;
         default: return Icon::File;
     }
 }
@@ -110,7 +116,7 @@ void Editor::panel_hierarchy() {
     ImGui::Begin(FE_ICON_HIERARCHY "  Hierarchy###Hierarchy");
     const float bs = ImGui::GetFrameHeight();
     static char filter[64];
-    search_field("##filter", "Filter objects", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
+    search_field("##filter", "Filter by name or group", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
     track("hier:filter");
     ImGui::SameLine(0, 4);
     if (icon_button(Icon::Plus, "Add an object", false, bs)) ImGui::OpenPopup("##add");
@@ -171,7 +177,8 @@ void Editor::panel_hierarchy() {
     int nrows = 0;
     if (filter[0]) {
         for (int i = 0; i < scene.count(); i++)
-            if (ImStristr(scene.at(i).name, nullptr, filter, nullptr)) rows[nrows++] = { scene.at(i).id, 0 };
+            if (ImStristr(scene.at(i).name, nullptr, filter, nullptr) || ImStristr(scene.at(i).groups, nullptr, filter, nullptr))
+                rows[nrows++] = { scene.at(i).id, 0 };
     } else {
         // Depth-first with an explicit stack; children keep the scene's order.
         struct Frame { ObjectId parent; int next; int depth; };
@@ -198,7 +205,7 @@ void Editor::panel_hierarchy() {
         }
     }
 
-    ObjectId clicked = kNoObject;
+    ObjectId clicked = kNoObject, similar = kNoObject;
     bool shift = ImGui::GetIO().KeyShift;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
@@ -219,7 +226,10 @@ void Editor::panel_hierarchy() {
         char key[32];
         snprintf(key, sizeof(key), "hier:%u", o.id);
         track(key);
-        if (hov && ImGui::IsMouseDoubleClicked(0)) frame_selection();
+        if (hov && ImGui::IsMouseDoubleClicked(0)) {
+            if (shift) similar = o.id;              // Shift + double-click: everything like it
+            else frame_selection();
+        }
         // Drag a row onto another to make it a child, onto "Scene" to take it out.
         if (ImGui::BeginDragDropSource()) {
             ObjectId id = o.id;
@@ -308,6 +318,7 @@ void Editor::panel_hierarchy() {
         if (shift) scene.toggle(clicked);
         else scene.select_only(clicked);
     }
+    if (similar != kNoObject) select_similar(similar);
     // Empty area: click clears, right-click creates.
     ImGui::InvisibleButton("##empty", ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 40)));
     if (ImGui::IsItemClicked(0) && !shift) scene.clear_selection();
@@ -479,6 +490,9 @@ static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f
             if (sk.mode == SkyMode::Color) return strcmp(n, "horizon") && strcmp(n, "ground") && strcmp(n, "sun_size");
             return true;
         }
+        case ModuleKind::Terrain:
+            // The data file, its revision and the foliage layers have their own sections (terrain_section).
+            return strcmp(n, "data") && strcmp(n, "revision") && strncmp(n, "foliage", 7);
         case ModuleKind::AudioStream:
         case ModuleKind::AudioSampler: {
             bool spatial = kind == ModuleKind::AudioStream ? ((const AudioStream*)data)->spatial : ((const AudioSampler*)data)->spatial;
@@ -638,6 +652,10 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
             case FieldType::Text:
                 prop_label(f.label);
                 ImGui::InputText("##v", (char*)fp, kPathMax);
+                break;
+            case FieldType::PathList:
+                prop_label(f.label);
+                ImGui::InputText("##v", (char*)fp, kPathListMax);
                 break;
             case FieldType::Object: {
                 // A link to another object: pick from the list or drop a hierarchy row.
@@ -1088,6 +1106,21 @@ void Editor::settings_graphics() {
         prop_label("Dynamic resolution");
         toggle_switch("##dynres", &g.dynamic_resolution);
         track("gfx:dynres");
+        {
+            static const char* cq[] = { "Off", "Low", "Medium", "Ultra" };
+            int c = (int)g.clouds;
+            prop_label("Clouds");
+            if (ImGui::Combo("##clouds", &c, cq, 4)) { g.clouds = (gfx::CloudSetting)c; g.preset = gfx::GraphicsPreset::Custom; }
+            track("gfx:clouds");
+            faint("The highest quality the Clouds object is drawn at (it asks for its own; the lower wins). Low: 22 "
+                  "samples a ray, sun light estimated; Medium: 16 with finer edges; Ultra: 13 with edges and a real sample "
+                  "towards the sun. Shared by the layers.");
+        }
+        prop_label("Occlusion culling");
+        toggle_switch("##occl", &g.occlusion_culling);
+        track("gfx:occlusion");
+        faint("Items hidden behind terrain and other big nearby objects are not drawn (a small CPU depth "
+              "buffer each frame). Items outside the view are always left out. The Profiler shows what was culled.");
         if (g.dynamic_resolution) {
             prop_label("  Target");
             ImGui::SliderFloat("##dynms", &g.target_frame_ms, 8.0f, 100.0f, "%.0f ms");
@@ -1234,6 +1267,10 @@ void Editor::panel_inspector() {
     ImGui::Begin(FE_ICON_INSPECTOR "  Inspector###Inspector");
     int n = scene.selected_count();
     Object* o = scene.get(scene.active());
+    // Several selected: the edits made below to the active object go to the others too (end of this function).
+    static Object before;
+    ObjectId edited = o && n > 1 ? o->id : kNoObject;
+    if (edited) before = *o;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float fs = ImGui::GetFontSize();
     if (!o) {
@@ -1295,7 +1332,7 @@ void Editor::panel_inspector() {
         ImGui::AlignTextToFramePadding();
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         const char* kind_text = o->kind == ObjectKind::Mesh ? kinds[(int)o->mesh] : object_kind_name(o->kind);
-        if (n > 1) ImGui::Text("%s   #%u   +%d more selected", kind_text, o->id, n - 1);
+        if (n > 1) ImGui::Text("%s   #%u   +%d more: edits apply to all", kind_text, o->id, n - 1);
         else ImGui::Text("%s   #%u", kind_text, o->id);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
@@ -1335,12 +1372,30 @@ void Editor::panel_inspector() {
                 if (Object* s = scene.get(sid)) s->position += d;
             }
         }
-        if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
-        if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
+        if (o->kind != ObjectKind::Terrain) {
+            if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
+            if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
+            // Streaming: when the object is loaded at run time (terrain chunks, scripts). Not for the
+            // scene-wide settings objects.
+            bool scene_wide = o->kind == ObjectKind::Sky || o->kind == ObjectKind::SkyLight || o->kind == ObjectKind::PostProcess ||
+                              o->kind == ObjectKind::Clouds;
+            if (!scene_wide) {
+                static const char* modes[] = { "Dynamic (with its terrain chunk)", "Always loaded", "Unloaded (a script loads it)" };
+                int sm = (int)o->streaming;
+                prop_label("Streaming");
+                if (ImGui::Combo("##streaming", &sm, modes, 3)) {
+                    for (int i = 0; i < n; i++)
+                        if (Object* so = scene.get(scene.selected(i))) so->streaming = (StreamMode)sm;
+                }
+                track("inspector:streaming");
+            }
+        }
+        groups_field(o);
         ImGui::Dummy(ImVec2(0, 4));
     }
     // A special object's own settings (Camera, Sky, ...) come right after
     // the transform.
+    if (o->kind == ObjectKind::Terrain) terrain_section(o);
     if (settings_of(o->kind) != ModuleKind::Count) module_section(o, settings_of(o->kind));
     if (o->kind == ObjectKind::Mesh && section_header("Mesh", Icon::Cube)) {
         static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model (.mof)" };
@@ -1389,7 +1444,383 @@ void Editor::panel_inspector() {
         ImGui::TextWrapped("%d script input%s link%s to this object.", links, links == 1 ? "" : "s", links == 1 ? "s" : "");
         ImGui::PopStyleColor();
     }
+    if (edited) {
+        if (Object* now = scene.get(edited)) apply_edit_to_selection(before, *now);
+    }
     ImGui::End();
+}
+
+// ---------------------------------------------------------------- terrain
+
+// ---- an object's groups: chips (click selects the group, x removes it) and a field that adds one
+void Editor::groups_field(Object* o) {
+    const Palette& pal = ui_palette();
+    prop_label("Groups");
+    ImGui::BeginGroup();
+    float right = ImGui::GetContentRegionAvail().x;
+    float used = 0;
+    char name[kPathMax];
+    char remove[kPathMax] = {};
+    int i = 0;
+    for (const char* p = path_list_next(o->groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax), i++) {
+        ImGui::PushID(i);
+        float w = ImGui::CalcTextSize(name).x + ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetFrameHeight();
+        if (used > 0 && used + w <= right) ImGui::SameLine(0, 4);
+        else used = 0;
+        used += w + 4;
+        ImGui::PushStyleColor(ImGuiCol_Button, pal.accent_soft);
+        if (ImGui::Button(name)) select_group(name, ImGui::GetIO().KeyShift);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: select every object in \"%s\" (Shift: add them)\nScripts: fe.find_group(\"%s\")", name, name);
+        ImGui::SameLine(0, 0);
+        if (icon_button(Icon::Close, "Remove from the group", false, ImGui::GetFrameHeight())) snprintf(remove, sizeof remove, "%s", name);
+        ImGui::PopID();
+    }
+    if (remove[0]) name_list_remove(o->groups, (int)sizeof o->groups, remove);
+    static char add[64];
+    ImGui::SetNextItemWidth(right - ImGui::GetFrameHeight() - 4);
+    bool enter = ImGui::InputTextWithHint("##addgroup", "Add a group (Enter)", add, sizeof add, ImGuiInputTextFlags_EnterReturnsTrue);
+    track("inspector:groups");
+    ImGui::SameLine(0, 4);
+    if (icon_button(Icon::Plus, "Groups used in the scene", false, ImGui::GetFrameHeight())) ImGui::OpenPopup("##groups");
+    if (enter && add[0]) {
+        // Trim and refuse ';'.
+        char* a = add;
+        while (*a == ' ') a++;
+        size_t n = strlen(a);
+        while (n && a[n - 1] == ' ') a[--n] = 0;
+        if (!name_list_valid(a)) log(LogLevel::Warning, "A group name is 1 to 63 characters without ';'");
+        else if (!name_list_add(o->groups, (int)sizeof o->groups, a)) log(LogLevel::Warning, "%s has too many groups", o->name);
+        add[0] = 0;
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+    if (ImGui::BeginPopup("##groups")) {
+        // Every group some object in the scene has, to add with one click.
+        char seen[2048] = {};
+        int shown = 0;
+        for (int k = 0; k < scene.count(); k++) {
+            const Object& so = scene.at(k);
+            for (const char* p = path_list_next(so.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax)) {
+                if (name_list_has(seen, name)) continue;
+                name_list_add(seen, (int)sizeof seen, name);
+                bool has = name_list_has(o->groups, name);
+                if (ImGui::MenuItem(name, nullptr, has) && !has) name_list_add(o->groups, (int)sizeof o->groups, name);
+                shown++;
+            }
+        }
+        if (!shown) ImGui::TextDisabled("No groups yet: type a name and press Enter");
+        ImGui::EndPopup();
+    }
+    ImGui::EndGroup();
+}
+
+// ---- a foliage layer's model list ("a.mof;b.mof")
+
+static int foliage_list_count(const char* list) {
+    char one[kPathMax];
+    int n = 0;
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax)) n++;
+    return n;
+}
+
+static bool foliage_list_has(const char* list, const char* path) {
+    char one[kPathMax];
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax))
+        if (!strcmp(one, path)) return true;
+    return false;
+}
+
+static void foliage_list_remove(char* list, int index) {
+    char out[kPathListMax] = {}, one[kPathMax];
+    int i = 0;
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax), i++) {
+        if (i == index) continue;
+        if (out[0]) strncat(out, ";", sizeof out - strlen(out) - 1);
+        strncat(out, one, sizeof out - strlen(out) - 1);
+    }
+    memcpy(list, out, kPathListMax);
+}
+
+// Appends a path that is not there yet; false when it is or the list is full.
+static bool foliage_list_add(char* list, const char* path) {
+    if (foliage_list_has(list, path)) return false;
+    size_t len = strlen(list), n = strlen(path);
+    if (len + (len ? 1 : 0) + n >= (size_t)kPathListMax) return false;
+    if (len) strcat(list, ";");
+    strcat(list, path);
+    return true;
+}
+
+namespace {
+struct MofList { char names[256][128]; int count = 0; };
+void collect_mof(const platform::DirEntry& e, void* user) {
+    MofList* l = (MofList*)user;
+    size_t n = strlen(e.name);
+    if (!e.is_dir && n > 4 && l->count < 256 && (!strcmp(e.name + n - 4, ".mof") || !strcmp(e.name + n - 4, ".MOF")))
+        snprintf(l->names[l->count++], sizeof l->names[0], "%s", e.name);
+}
+}  // namespace
+
+bool Editor::foliage_add_model(ObjectId terrain, int layer, const char* path) {
+    Object* o = scene.get(terrain);
+    if (!o || o->kind != ObjectKind::Terrain || layer < 0 || layer >= kFoliageLayers || !path || !path[0]) return false;
+    char* list = o->modules.terrain.foliage[layer].model;
+    char full[512];
+    project_path(path, full, sizeof full);
+    // A folder: every .mof in it, by name.
+    static MofList mofs;
+    mofs.count = 0;
+    if (platform::list_dir(full, collect_mof, &mofs)) {
+        for (int i = 1; i < mofs.count; i++)
+            for (int j = i; j > 0 && strcmp(mofs.names[j - 1], mofs.names[j]) > 0; j--) {
+                char t[128];
+                memcpy(t, mofs.names[j], sizeof t); memcpy(mofs.names[j], mofs.names[j - 1], sizeof t); memcpy(mofs.names[j - 1], t, sizeof t);
+            }
+        int added = 0;
+        for (int i = 0; i < mofs.count; i++) {
+            char one[512];
+            snprintf(one, sizeof one, "%s/%s", path, mofs.names[i]);
+            added += foliage_list_add(list, one);
+        }
+        if (added) log(LogLevel::Info, "Foliage layer %d: %d model%s from %s", layer + 1, added, added == 1 ? "" : "s", path_filename(path));
+        else log(LogLevel::Warning, "No new .mof models in %s", path_filename(path));
+        return added > 0;
+    }
+    size_t n = strlen(path);
+    if (n < 5 || strcmp(path + n - 4, ".mof")) return false;          // foliage takes .mof (import other formats first)
+    if (foliage_list_has(list, path)) return false;
+    if (!foliage_list_add(list, path)) {
+        log(LogLevel::Warning, "Foliage layer %d is full (its list holds %d characters of paths)", layer + 1, kPathListMax - 1);
+        return false;
+    }
+    return true;
+}
+
+void Editor::terrain_section(Object* o) {
+    const Palette& pal = ui_palette();
+    auto faint = [&](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    Terrain& ts = o->modules.terrain;
+    TerrainData* td = terrain_data(*o);
+    if (section_header("Terrain tools", Icon::Plane)) {
+        if (td) {
+            char info[160];
+            snprintf(info, sizeof info, "%d x %d chunks of %.0f m, %d x %d cells of %.2f m, %.1f MB", td->chunks_x, td->chunks_z,
+                     (double)td->chunk_size, td->side_x(), td->side_z(), (double)td->cell(), (double)td->memory() / (1024.0 * 1024.0));
+            faint(info);
+        } else {
+            faint(ts.data[0] ? "The terrain's data file could not be read. Generate makes a new one." : "No data yet: Generate makes the map.");
+        }
+        struct ToolDef { TerrainTool tool; const char* label; const char* tip; };
+        static const ToolDef tools[] = {
+            { TerrainTool::Raise, "Add", "Raises the ground under the brush (Shift: lowers)" },
+            { TerrainTool::Lower, "Remove", "Lowers the ground under the brush (Shift: raises)" },
+            { TerrainTool::Smooth, "Smooth", "Evens out bumps under the brush" },
+            { TerrainTool::Level, "Level", "Flattens to the level height (Ctrl-click: take the height under the mouse)" },
+            { TerrainTool::Delete, "Delete", "Cuts holes into the terrain (Shift: fills them back in)" },
+            { TerrainTool::Foliage, "Foliage", "Paints the chosen foliage layer (Shift: erases it)" },
+        };
+        ImGui::BeginDisabled(!td || playing());
+        float avail = ImGui::GetContentRegionAvail().x;
+        float bw = (avail - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+        for (int i = 0; i < 6; i++) {
+            bool on = terrain_tool == tools[i].tool;
+            if (i % 3) ImGui::SameLine();
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(pal.accent));
+            if (ImGui::Button(tools[i].label, ImVec2(bw, 0))) terrain_tool = on ? TerrainTool::None : tools[i].tool;
+            if (on) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tools[i].tip);
+            char key[48];
+            snprintf(key, sizeof key, "terrain:tool:%s", tools[i].label);
+            track(key);
+        }
+        ImGui::EndDisabled();
+        if (terrain_tool != TerrainTool::None && td) {
+            prop_label("Radius");
+            ImGui::SliderFloat("##tr", &terrain_radius, 0.5f, 100.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+            prop_label("Strength");
+            ImGui::SliderFloat("##ts", &terrain_strength, 0.01f, 1.0f, "%.2f");
+            prop_label("Hardness");
+            ImGui::SliderFloat("##th", &terrain_hardness, 0.0f, 1.0f, "%.2f");
+            if (terrain_tool == TerrainTool::Level) {
+                prop_label("Level height");
+                ImGui::DragFloat("##tl", &terrain_level, 0.05f, 0, 0, "%.2f m");
+            }
+            if (terrain_tool == TerrainTool::Foliage) {
+                char names[kFoliageLayers][96];
+                const char* ptrs[kFoliageLayers];
+                for (int l = 0; l < kFoliageLayers; l++) {
+                    int nm = foliage_list_count(ts.foliage[l].model);
+                    char first[kPathMax];
+                    path_list_next(ts.foliage[l].model, first, kPathMax);
+                    const char* fn = strrchr(first, '/');
+                    if (ts.foliage[l].name[0]) snprintf(names[l], sizeof names[l], "Layer %d: %.60s", l + 1, ts.foliage[l].name);
+                    else if (nm > 1) snprintf(names[l], sizeof names[l], "Layer %d: %d models", l + 1, nm);
+                    else snprintf(names[l], sizeof names[l], "Layer %d: %s", l + 1, nm ? (fn ? fn + 1 : first) : "(no model yet)");
+                    ptrs[l] = names[l];
+                }
+                prop_label("Layer");
+                ImGui::Combo("##tfl", &terrain_layer, ptrs, kFoliageLayers);
+                prop_label("Density");
+                ImGui::SliderFloat("##tfd", &terrain_density, 0.05f, 1.0f, "%.2f");
+                if (!ts.foliage[terrain_layer].model[0]) faint("Choose a .mof model for this layer under Foliage below.");
+            }
+            faint("Left mouse in the viewport paints; right and middle mouse still move the view. Ctrl+Z undoes a stroke.");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Generate", Icon::Refresh)) {
+        static const float chunk_sizes[] = { 16.0f, 32.0f, 64.0f };
+        static const int cell_counts[] = { 16, 32, 64 };
+        static const char* chunk_names[] = { "16 m", "32 m", "64 m" };
+        static const char* cell_names[] = { "16 cells", "32 cells", "64 cells" };
+        prop_label("Y level");
+        ImGui::DragFloat("##gy", &terrain_gen_level, 0.1f, -10000.0f, 10000.0f, "%.2f m");
+        prop_label("Map size");
+        ImGui::DragFloat2("##gs", terrain_gen_size, 1.0f, 16.0f, 16384.0f, "%.0f m");
+        prop_label("Chunk size");
+        ImGui::Combo("##gc", &terrain_gen_chunk, chunk_names, 3);
+        prop_label("Chunk detail");
+        ImGui::Combo("##gd", &terrain_gen_cells, cell_names, 3);
+        float cs = chunk_sizes[terrain_gen_chunk];
+        int cells = cell_counts[terrain_gen_cells];
+        int ncx = (int)(terrain_gen_size[0] / cs + 0.999f), ncz = (int)(terrain_gen_size[1] / cs + 0.999f);
+        int maxc = kTerrainMaxCells / cells;
+        if (ncx > maxc) ncx = maxc;
+        if (ncz > maxc) ncz = maxc;
+        char info[160];
+        snprintf(info, sizeof info, "%d x %d chunks (%.0f x %.0f m), cells of %.2f m, %.1f MB of heights", ncx, ncz, (double)(ncx * cs),
+                 (double)(ncz * cs), (double)(cs / (float)cells), (double)((ncx * cells + 1) * (ncz * cells + 1) * 4) / (1024.0 * 1024.0));
+        faint(info);
+        prop_label("");
+        ImGui::BeginDisabled(playing());
+        if (ImGui::Button("Generate")) {
+            if (td) ImGui::OpenPopup("Replace terrain?");
+            else generate_terrain(o, terrain_gen_level, ncx * cs, ncz * cs, cs, cells, true);
+        }
+        ImGui::EndDisabled();
+        track("terrain:generate");
+        if (ImGui::BeginPopupModal("Replace terrain?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Generate replaces the heights, holes and foliage with a flat map.");
+            ImGui::TextUnformatted("Undo (Ctrl+Z) brings the old one back.");
+            if (ImGui::Button("Generate")) {
+                generate_terrain(o, terrain_gen_level, ncx * cs, ncz * cs, cs, cells, true);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Foliage", Icon::Sparks)) {
+        for (int l = 0; l < kFoliageLayers; l++) {
+            FoliageLayer& fl = ts.foliage[l];
+            ImGui::PushID(l);
+            int nmodels = foliage_list_count(fl.model);
+            char first[kPathMax];
+            path_list_next(fl.model, first, kPathMax);
+            const char* fn = strrchr(first, '/');
+            char title[384];
+            if (fl.name[0]) snprintf(title, sizeof title, "Layer %d: %s (%d model%s)###layer", l + 1, fl.name, nmodels, nmodels == 1 ? "" : "s");
+            else if (nmodels > 1) snprintf(title, sizeof title, "Layer %d: %d models###layer", l + 1, nmodels);
+            else snprintf(title, sizeof title, "Layer %d: %s###layer", l + 1, nmodels ? (fn ? fn + 1 : first) : "empty");
+            if (ImGui::TreeNodeEx(title, l == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+                // The name scripts find the layer by: fe.find_foliage("grass").
+                prop_label("Name");
+                ImGui::InputTextWithHint("##fname", "for scripts: fe.find_foliage(name)", fl.name, sizeof fl.name);
+                track("terrain:fname");
+                // The models: each instance picks one at random. Drop .mof files or folders here, or add them.
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("Models (each instance takes one at random)");
+                float rowh = ImGui::GetFrameHeight();
+                int remove = -1;
+                {
+                    char one[kPathMax];
+                    int i = 0;
+                    for (const char* at = path_list_next(fl.model, one, kPathMax); at; at = path_list_next(at, one, kPathMax), i++) {
+                        ImGui::PushID(i);
+                        const char* nm = strrchr(one, '/');
+                        bool loads = model_load(one) != nullptr;
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        draw_icon(dl, Icon::Model, ImVec2(p0.x + 2, p0.y + (rowh - ImGui::GetFontSize()) * 0.5f), ImGui::GetFontSize(),
+                                  loads ? pal.text_dim : IM_COL32(230, 90, 90, 255));
+                        ImGui::Dummy(ImVec2(ImGui::GetFontSize() + 6, rowh));
+                        ImGui::SameLine();
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TextUnformatted(nm ? nm + 1 : one);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", one, loads ? "" : "\n(cannot be read: not drawn)");
+                        ImGui::SameLine(ImGui::GetContentRegionMax().x - rowh);
+                        if (icon_button(Icon::Close, "Remove from the layer", false, rowh)) remove = i;
+                        ImGui::PopID();
+                    }
+                }
+                if (remove >= 0) foliage_list_remove(fl.model, remove);
+                if (!nmodels) ImGui::TextDisabled("None yet: drop .mof files or a folder here");
+                if (ImGui::Button("Add models...")) {
+                    foliage_pick_object_ = o->id;
+                    foliage_pick_layer_ = l;
+                    open_file_dialog(PickFor::FoliageModels, PickRoot, "Add foliage models", false, project_dir, ".mof");
+                    file_dialog_.multi = true;
+                }
+                track("terrain:fadd");
+                ImGui::SameLine();
+                if (ImGui::Button("Add folder...")) {
+                    foliage_pick_object_ = o->id;
+                    foliage_pick_layer_ = l;
+                    open_file_dialog(PickFor::FoliageFolder, PickRoot, "Add every .mof in a folder", true, project_dir, nullptr);
+                }
+                track("terrain:ffolder");
+                if (nmodels) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear")) fl.model[0] = 0;
+                }
+                ImGui::EndGroup();
+                // Files (or folders) dropped anywhere on the list.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kFilePayload)) {
+                        char rel[512];
+                        const char* dropped = (const char*)pl->Data;
+                        size_t pn = strlen(project_dir);
+                        snprintf(rel, sizeof rel, "%s", pn && !strncmp(dropped, project_dir, pn) && dropped[pn] == '/' ? dropped + pn + 1 : dropped);
+                        if (!foliage_add_model(o->id, l, rel)) log(LogLevel::Warning, "%s was not added to the layer", path_filename(dropped));
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                prop_label("Density");
+                ImGui::DragFloat("##d", &fl.density, 0.05f, 0.0f, 50.0f, "%.2f / m2");
+                track("terrain:fdensity");
+                prop_label("Scale");
+                float sc[2] = { fl.scale_min, fl.scale_max };
+                if (ImGui::DragFloat2("##s", sc, 0.01f, 0.01f, 100.0f, "%.2f")) { fl.scale_min = sc[0]; fl.scale_max = sc[1] < sc[0] ? sc[0] : sc[1]; }
+                track("terrain:fscale");
+                prop_label("Distance");
+                ImGui::DragFloat("##r", &fl.distance, 0.5f, 1.0f, 2000.0f, "%.0f m");
+                track("terrain:fdist");
+                prop_label("Max slope");
+                ImGui::SliderFloat("##sl", &fl.max_slope, 0.0f, 90.0f, "%.0f deg");
+                track("terrain:fslope");
+                prop_label("Align to slope");
+                toggle_switch("##al", &fl.align_to_slope);
+                track("terrain:falign");
+                prop_label("Shadows");
+                toggle_switch("##sh", &fl.cast_shadows);
+                track("terrain:fshadow");
+                // A custom material for every instance (a wind sway): it gets u_time.
+                slot_field("Shader", fl.shader, sizeof fl.shader, this, path_is_shader, Icon::Wand);
+                if (fl.shader[0]) faint("A custom shader draws this layer on the base FarcadeGL path (no shadows, AO or fog that frame).");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        faint("Each instance is turned at random around its up axis and stands on the ground. Paint where a layer "
+              "grows with the Foliage tool; it thins out towards its distance and is drawn in batches per chunk.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
 }
 
 // ---------------------------------------------------------------- Files
@@ -1775,6 +2206,17 @@ void Editor::panel_profiler() {
                 prof_count);
     ImGui::Text("%d x %d, %d draws, %d passes%s", st.internal_width, st.internal_height, st.draws, t.passes,
                 view_settling ? "  |  settling (TAA / AO converge over the next frames)" : "");
+    // Culling, and what the terrains drew.
+    ImGui::Text("Culling: %d items, %d outside the view, %d hidden by %d occluders (%d triangles), %.2f ms%s", st.items_in,
+                st.culled_frustum, st.culled_occlusion, st.occluders, st.occluder_triangles, st.cull_ms,
+                settings.graphics.occlusion_culling ? "" : "  (occlusion culling off)");
+    if (terrain_stats_.terrains > 0) {
+        const TerrainViewStats& ts = terrain_stats_;
+        ImGui::Text("Terrain: %d of %d chunks drawn (detail %d / %d / %d / %d), %d unloaded, %d objects unloaded", ts.chunks_drawn, ts.chunks,
+                    ts.lod_chunks[0], ts.lod_chunks[1], ts.lod_chunks[2], ts.lod_chunks[3], ts.chunks_unloaded, ts.objects_unloaded);
+        ImGui::Text("Foliage: %ld instances in %d batches, %d built this frame%s, %.1f MB", ts.foliage_instances, ts.foliage_batches,
+                    ts.foliage_built, ts.pending ? " (more waiting)" : "", (double)ts.memory / (1024.0 * 1024.0));
+    }
     if (prof_count > 1) {
         float top = mx > 33.4f ? mx * 1.1f : 33.4f;
         char overlay[48];

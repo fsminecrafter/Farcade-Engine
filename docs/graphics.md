@@ -32,8 +32,11 @@ void main() {
 `u_texture` is bound to the material image; without one it is a white texture.
 Built-in meshes currently get generated planar UVs, and texture alpha is not
 blended by the XRGB material path.
-The renderer also supplies the usual FarcadeGL matrix uniforms and `u_mat`
-(material color and roughness). A custom shader replaces the built-in material
+The renderer also supplies the usual FarcadeGL matrix uniforms, `u_mat`
+(material color and roughness) and `u_time` (x: seconds rendered, y: the
+frame's delta, z: the frame number) for animated materials such as wind sway
+(`assets/samples/foliage/sway.fshader`, docs/terrain.md). The editor draws
+only when something changes, so `u_time` moves in Play and in the player. A custom shader replaces the built-in material
 shading. When a visible mesh has a texture or custom shader, the renderer uses
 its base FarcadeGL path for that frame, so advanced GPU-tier effects (such as
 shadows, SSAO and fog) are not applied.
@@ -157,6 +160,54 @@ time ratio, down by up to 15% a frame, up by at most 3% and only with 15% of the
 It uses the measured frame time (render, readback and upscale). Bands (`render_rows`) always draw at
 full size. Screenshots: `gfx-agx.png`, `gfx-graded.png`, `gfx-autoexposure.png`, `gfx-post-high.png`
 (`fe-gfx-shot --tonemap agx --grade warm --auto-exposure --scale 0.5 ...`).
+
+## Volumetric clouds
+
+A **Clouds** object (Create > Clouds; one is current at a time) draws ray marched clouds in the sky of both
+tiers (`engine/gfx/clouds.{h,cpp}`). They are computed in the sky shader, on the sky's pixels only, and
+blended over the sky and the sun disc.
+
+| Setting | Meaning |
+| --- | --- |
+| Quality | Low, Medium or Ultra: the performance preset (below) |
+| Height, Thickness | The lowest layer's base (world y, meters) and each layer's depth |
+| Layers, Layer spacing | 1 to 3 stacked layers, and the gap between them |
+| Coverage, Density | The share of sky covered, and how thick (dark bottoms, opaque) |
+| Color, Ambient | What they reflect, and how much sky light reaches their shaded sides |
+| Scale | Size of the cloud shapes (1: a large one is about 4 km across) |
+| Wind | Drift in m/s (they move in Play and in games) |
+| Sun glow | The bright rim towards the sun (forward scattering) |
+| Fade distance | Where they melt into the horizon |
+
+Shapes come from a tileable 32^3 noise (a 34 x 1122 texture: 33 slices, two lookups and a blend) shaped by a
+height profile (flat bases, round tops) and a 2D coverage map that drifts with the wind. Light: the sun's
+colour and direction with a Henyey-Greenstein phase, Beer-Lambert through the cloud above each sample, a
+"powder" term on thin sunlit edges, a soft multiple scattering term, and the Sky Light's sky colour as
+ambient (darker underneath).
+
+FGSL unrolls loops into at most 2048 instructions with 32 registers, so each preset is a step budget that the
+layers share (at least 4 steps each):
+
+| Quality | Steps along the ray | Edges | Towards the sun |
+| --- | --- | --- | --- |
+| Low | 20 | smooth | estimated from the height in the layer and the density |
+| Medium | 16 | eroded by a finer noise | estimated |
+| Ultra | 12 | eroded, plus a second shape octave | estimated plus one real sample |
+
+A per-pixel jittered start hides banding (TAA averages it out). **Settings > Graphics > Clouds** (Off, Low,
+Medium, Ultra; `clouds` in graphics.cfg, set by the presets) caps the quality, draft frames use Low, and a
+variant that a backend cannot compile steps down to the next lower one. `RendererStats::cloud_quality` says
+what was drawn. Clouds are not drawn in the editor's CPU preview, and they cast no shadows on the ground yet.
+
+## Culling
+
+Every frame starts with culling (`engine/gfx/culling.{h,cpp}`). Items whose world box is outside the view
+frustum are left out of the camera passes. With `occlusion_culling` on (the default, Settings > Graphics),
+big nearby items are drawn into a 256 pixel wide CPU depth buffer and items hidden behind them at every pixel
+are left out too. Shadow maps and the probe GI still see every item (`RenderScene::shadow_items`). Terrain
+chunks occlude with a coarse mesh that never rises above the ground, and foliage never occludes. The
+Profiler shows what was culled. See docs/terrain.md for the mesh fields (`has_bounds`,
+`occluder_positions`, `draw_count`) and the foliage batches that use them.
 
 ## Graphics settings in games
 

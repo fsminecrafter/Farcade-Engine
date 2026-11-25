@@ -39,6 +39,12 @@
 // with World::link_entity and must be added too.
 // Force Fields (the Force Field module): volumes whose force acts on dynamic
 // bodies inside them (add() the field's entity too).
+// Terrain (set_terrains): heightfields that dynamic bodies and character
+// controllers rest on. Each step, a shape's lowest points (box corners,
+// cylinder rims, hull vertices, sphere and capsule ends) are tested against
+// the height under them and the deepest up to 4 become a contact manifold
+// with the terrain as a static body (friction, bounciness, layers, collision
+// events with the terrain's entity). Holes let bodies through.
 // Not done: continuous collision (very fast small bodies can pass
 // through thin colliders), sleeping, concave meshes. Broadphase: sweep and
 // prune on x.
@@ -55,11 +61,26 @@ struct PhysicsEvents {
     void* user = nullptr;
 };
 
+// A heightfield ground. height() is in the terrain's own coordinates (x, z from its first corner, which
+// sits at `origin`); *inside is false outside it and over holes.
+struct PhysicsTerrain {
+    Entity entity = 0;                  // named in collision events (0: none sent)
+    Vec3 origin;
+    float size_x = 0, size_z = 0;
+    float (*height)(void* user, float x, float z, bool* inside, Vec3* normal) = nullptr;
+    void* user = nullptr;
+    float friction = 0.8f;
+    float bounciness = 0.0f;
+    uint32_t layer = 1;
+};
+constexpr int kMaxPhysicsTerrains = 8;
+
 struct PhysicsStats {
     int bodies = 0;                     // with a rigidbody or character controller
     int joints = 0;                     // active joints in the last step
     int colliders = 0;
     int contacts = 0;                   // last step
+    int terrain_contacts = 0;           // of them, with a terrain
     int steps = 0;                      // fixed steps so far
 };
 
@@ -94,6 +115,8 @@ public:
     // count 0 removes them. The editor calls it for every Mesh collider
     // (the object's mesh vertices) when play starts.
     void set_mesh(Entity e, const Vec3* points, int count);
+    // The terrains (copied; at most kMaxPhysicsTerrains). count 0 removes them.
+    void set_terrains(const PhysicsTerrain* terrains, int count);
 
     Vec3 gravity = Vec3(0, -9.81f, 0);
     float fixed_step = 1.0f / 60.0f;
@@ -122,6 +145,8 @@ private:
     int mesh_count_ = 0, mesh_cap_ = 0;
     JointState* joints_ = nullptr;
     int joint_count_ = 0, joint_cap_ = 0;
+    PhysicsTerrain terrains_[kMaxPhysicsTerrains];
+    int terrain_count_ = 0;
     double time_ = 0;                   // simulated seconds (the clock of field turbulence)
     float accumulator_ = 0;
     PhysicsStats stats_;

@@ -164,7 +164,11 @@ using a handle as a table key work.
 | `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
 | `obj.alive` | false once destroyed |
 | `obj.material` | the look of a mesh object, or nil for objects without a mesh (see below) |
-| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
+| `obj.groups` | the object's groups as an array of names. Assign an array (`{"grass", "sway"}`) or a string (`"grass;sway"`) to replace them |
+| `obj:in_group(name)` | whether the object is in that group |
+| `obj:add_group(name)`, `obj:remove_group(name)` | add or remove one group; they return whether anything changed. A name is 1 to 63 characters without `;` |
+| `obj.streaming`, `obj.loaded` | the object's Streaming mode (`"dynamic"`, `"always"`, `"unloaded"`) and whether it is loaded; `obj.loaded = true` loads an Unloaded object (docs/terrain.md) |
+| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process`, `terrain` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
 
 A module's fields read and write through the ECS (`World::get_field` /
 `set_field`): numbers are clamped to the field's range, enums are their name
@@ -211,6 +215,51 @@ Positions, rotations and colors come back as new vec3 values: assign the
 changed vector (`obj.position = obj.position + v`), changing `.x` of the copy
 does nothing.
 
+### Groups
+
+A group is a name you give objects in the Inspector (the **Groups** row of the
+Transform section), so scripts can find several of them at once. An object can
+be in several groups. Names match without regard to case (`"Grass"` finds
+`grass`).
+
+```lua
+for _, o in ipairs(fe.find_group("lamps")) do
+    o.light.intensity = 0
+end
+if other:in_group("enemy") then self.health = self.health - 10 end
+self.object:add_group("collected")
+```
+
+Group changes made while playing are put back on Stop. Objects made while
+playing (spawner copies) keep the groups of the object they copy.
+
+### Foliage layers
+
+`fe.find_foliage(name)` returns handles to terrain foliage layers by their
+**Name** (set in the terrain's Foliage section). A handle reads and writes the
+layer's settings:
+
+| Field | |
+| --- | --- |
+| `name`, `models` | strings (`models` is the `;` separated list) |
+| `density`, `scale_min`, `scale_max`, `distance`, `max_slope` | numbers |
+| `align`, `shadows` | true / false |
+| `shader` | a `.fshader` path, `""` for none |
+| `object`, `layer` | the terrain object and the layer's number (1 to 4), read only |
+
+```lua
+-- Every grass layer sways in the wind (assets/samples/foliage/sway.fshader):
+fe.assign_shader_to_foliage("grass", "shaders/sway.fshader")
+-- The same, one layer at a time:
+for _, layer in ipairs(fe.find_foliage("grass")) do
+    layer.shader = "shaders/sway.fshader"
+    layer.density = layer.density * 0.5
+end
+```
+
+They are the terrain's `foliage<n>_<field>` settings, so
+`obj.terrain.foliage1_shader` is the same value as a layer handle's `shader`.
+
 ### vec3
 
 `fe.vec3(x, y, z)` (also `vec3(...)`, and `fe.vec3(t)` from a table) is a
@@ -225,9 +274,13 @@ give `{x=, y=, z=}` or `{1, 2, 3}`.
 | | |
 | --- | --- |
 | `fe.find(name)` | the root object called `name`, else the match nearest the roots; nil if none |
+| `fe.find_group(name)` | every object in that group, as an array in Hierarchy order (empty when none). Names match without regard to case (see Groups below) |
+| `fe.find_foliage(name)` | every terrain foliage layer called `name`, on every terrain, as an array of layer handles (docs/terrain.md) |
+| `fe.assign_shader_to_foliage(name, path)` | sets the shader of every foliage layer called `name` (`""` or nil clears it); returns how many layers changed |
 | `fe.current(module)` | the current camera/sky/skylight/post_process/listener object, or nil |
 | `fe.broadcast(event, ...)` | `on_<event>` and `on_event` on every script instance |
 | `fe.time()` | seconds since the runtime started |
+| `fe.terrain_height(x, z)` | the ground's world height and normal there (`local h, n = fe.terrain_height(x, z)`), nil off the terrains and over holes (docs/terrain.md) |
 | `fe.status(text [, progress])` | shows a line (and a bar when `progress`, 0..1, is given; without it the bar moves on its own) over the game, in the player and in Play; `fe.status()` hides it. For loading screens and "waiting for ..." messages; it is drawn together with FarcadeGL's "Compiling shaders" bar |
 | `fe.dt` | the dt of the frame being run |
 | `fe.log(...)`, `print(...)` | to the console (Info), arguments as text separated by tabs |

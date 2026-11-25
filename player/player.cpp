@@ -239,6 +239,7 @@ int run(const Options& opt, Result* result) {
                     view = Mat4::look_at(eye, Vec3(0, 0.5f, 0), Vec3(0, 1, 0));
                     proj = Mat4::perspective(radians(50.0f), aspect, 0.1f, 500.0f);
                 }
+                bridge.playing = true;
                 bridge.build(scene, view, proj, eye, zn, zf);
                 static ModelAssetReader assets{ vfs::read_cb, nullptr };
                 bridge.scene.read_asset = model_asset_reader;

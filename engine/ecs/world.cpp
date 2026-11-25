@@ -281,8 +281,10 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
     ecs_world_t* w = I->w;
     const ModuleInfo& mi = module_info(k);
     MemberDef m[ECS_MEMBER_DESC_CACHE_SIZE];
-    if (mi.field_count > ECS_MEMBER_DESC_CACHE_SIZE) return reg_fail(__LINE__);
-    for (int i = 0; i < mi.field_count; i++) {
+    // flecs describes at most 32 members of a struct. The meta data is only reflection (field access goes
+    // through FieldInfo), so a longer table (Terrain with its foliage layers) lists its first 32 fields.
+    int count = mi.field_count < ECS_MEMBER_DESC_CACHE_SIZE ? mi.field_count : ECS_MEMBER_DESC_CACHE_SIZE;
+    for (int i = 0; i < count; i++) {
         const FieldInfo& f = mi.fields[i];
         m[i].name = f.name;
         m[i].count = 0;
@@ -297,6 +299,7 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
         case FieldType::Color: m[i].type = I->t_vec3; break;
         case FieldType::Text:
         case FieldType::Path: m[i].type = ecs_id(ecs_char_t); m[i].count = kPathMax; break;
+        case FieldType::PathList: m[i].type = ecs_id(ecs_char_t); m[i].count = kPathListMax; break;
         case FieldType::Enum: {
             char nm[96];
             snprintf(nm, sizeof nm, "fe.enums.%s_%s", mi.name, f.name);
@@ -306,7 +309,7 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
         }
         }
     }
-    return make_struct(w, I->c_module[(int)k], m, mi.field_count, mi.size);
+    return make_struct(w, I->c_module[(int)k], m, count, mi.size);
 }
 
 bool register_all(WorldImpl* I) {
@@ -602,6 +605,7 @@ bool World::get_field(Entity e, ModuleKind k, const char* field, FieldValue* out
     case FieldType::Vec3:
     case FieldType::Color: r.v = *(const Vec3*)p; break;
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path: r.s = p; break;
     }
     *out = r;
@@ -667,13 +671,15 @@ bool World::set_field(Entity e, ModuleKind k, const char* field, const FieldValu
         *(Vec3*)p = v.v;
         break;
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path: {
         if (v.type != FieldType::Path || !v.s) return false;
+        size_t cap = field_size(f->type);
         size_t n = strlen(v.s);
-        if (n > (size_t)kPathMax - 1) n = (size_t)kPathMax - 1;
-        char tmp[kPathMax];
+        if (n > cap - 1) n = cap - 1;
+        char tmp[kPathListMax];
         memcpy(tmp, v.s, n);      // v.s may point into the component itself
-        memset(p, 0, kPathMax);
+        memset(p, 0, cap);
         memcpy(p, tmp, n);
         break;
     }

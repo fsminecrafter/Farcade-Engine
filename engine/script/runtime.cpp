@@ -21,6 +21,7 @@ namespace {
 const char* const kObjMeta = "fe.object";
 const char* const kModMeta = "fe.module";
 const char* const kMatMeta = "fe.material";
+const char* const kFolMeta = "fe.foliage";
 const char* const kVecMeta = "fe.vec3";
 
 // ---------------------------------------------------------------- instances
@@ -586,6 +587,11 @@ void push_module(lua_State* L, Entity e, ModuleKind k) {
     luaL_setmetatable(L, kModMeta);
 }
 
+// obj.groups (defined with the group functions below).
+bool obj_groups(lua_State* L, Entity e, char* out, int cap);
+void push_name_list(lua_State* L, const char* list);
+int obj_set_groups(lua_State* L, Entity e, int idx);
+
 int obj_index(lua_State* L) {
     Impl* I = impl_of(L);
     World* w = I->world;
@@ -615,6 +621,17 @@ int obj_index(lua_State* L) {
     } else if (strcmp(k, "parent") == 0) {
         Entity p = w->parent(e);
         if (p) push_object(L, p); else lua_pushnil(L);
+    } else if (strcmp(k, "streaming") == 0 || strcmp(k, "loaded") == 0) {
+        static const char* const modes[] = { "dynamic", "always", "unloaded" };
+        int mode = 1;
+        bool loaded = true;
+        if (I->host.stream_get) I->host.stream_get(e, &mode, &loaded, I->host.user);
+        if (k[0] == 's') lua_pushstring(L, modes[mode >= 0 && mode < 3 ? mode : 1]);
+        else lua_pushboolean(L, loaded);
+    } else if (strcmp(k, "groups") == 0) {
+        char list[kPathMax];
+        obj_groups(L, e, list, kPathMax);
+        push_name_list(L, list);
     } else if (strcmp(k, "material") == 0) {
         // Only objects that draw a mesh have one.
         if (w->renderable(e)) {
@@ -654,10 +671,20 @@ int obj_newindex(lua_State* L) {
         } else {
             w->transform(e)->scale = check_vec3(L, 3);
         }
+    } else if (strcmp(k, "loaded") == 0) {
+        if (lua_type(L, 3) != LUA_TBOOLEAN) return luaL_error(L, "obj.loaded expects true or false, got %s", luaL_typename(L, 3));
+        if (I->host.stream_set) I->host.stream_set(e, -1, lua_toboolean(L, 3) ? 1 : 0, I->host.user);
+    } else if (strcmp(k, "streaming") == 0) {
+        const char* v = luaL_checkstring(L, 3);
+        int mode = !strcmp(v, "dynamic") ? 0 : !strcmp(v, "always") ? 1 : !strcmp(v, "unloaded") ? 2 : -1;
+        if (mode < 0) return luaL_error(L, "obj.streaming is \"dynamic\", \"always\" or \"unloaded\", not '%s'", v);
+        if (I->host.stream_set) I->host.stream_set(e, mode, -1, I->host.user);
+    } else if (strcmp(k, "groups") == 0) {
+        return obj_set_groups(L, e, 3);
     } else if (strcmp(k, "world_position") == 0 || strcmp(k, "parent") == 0 || strcmp(k, "alive") == 0 || strcmp(k, "material") == 0) {
         return luaL_error(L, "'%s' is read only", k);
     } else {
-        return luaL_error(L, "cannot set '%s' on an object (settable: name, position, rotation, scale; modules are read with obj.<module>)", k);
+        return luaL_error(L, "cannot set '%s' on an object (settable: name, position, rotation, scale, loaded, streaming, groups; modules are read with obj.<module>)", k);
     }
     return 0;
 }
@@ -822,6 +849,7 @@ int mod_index(lua_State* L) {
     case FieldType::Color:
     case FieldType::Vec3: push_vec3(L, v.v); break;
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path: lua_pushstring(L, v.s ? v.s : ""); break;
     case FieldType::Bits: lua_pushinteger(L, (lua_Integer)(uint32_t)v.i); break;
     case FieldType::Object: {
@@ -872,6 +900,7 @@ int mod_newindex(lua_State* L) {
         break;
     }
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path:
         if (t != LUA_TSTRING) return luaL_error(L, "%s.%s expects a string, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_string(lua_tostring(L, 3));
@@ -908,6 +937,262 @@ int mod_newindex(lua_State* L) {
 int mod_tostring(lua_State* L) {
     ModRef* m = check_mod(L, 1);
     lua_pushfstring(L, "module(%s)", module_info((ModuleKind)m->kind).name);
+    return 1;
+}
+
+// ---------------------------------------------------------------- groups
+//
+// obj.groups (a table of names; set with a table or "a;b"), obj:in_group(name), obj:add_group(name),
+// obj:remove_group(name), fe.find_group(name). The host keeps the lists (ScriptHost::groups_*).
+
+bool obj_groups(lua_State* L, Entity e, char* out, int cap) {
+    Impl* I = impl_of(L);
+    out[0] = 0;
+    return I->host.groups_get && I->host.groups_get(e, out, cap, I->host.user);
+}
+
+void push_name_list(lua_State* L, const char* list) {
+    lua_newtable(L);
+    char name[kPathMax];
+    int i = 1;
+    for (const char* p = path_list_next(list, name, kPathMax); p; p = path_list_next(p, name, kPathMax)) {
+        lua_pushstring(L, name);
+        lua_rawseti(L, -2, i++);
+    }
+}
+
+const char* check_group_name(lua_State* L, int idx) {
+    const char* n = luaL_checkstring(L, idx);
+    if (!name_list_valid(n)) luaL_error(L, "'%s' is not a group name (1 to 63 characters, no ';', no spaces at the ends)", n);
+    return n;
+}
+
+void set_groups(lua_State* L, Entity e, const char* list) {
+    Impl* I = impl_of(L);
+    if (!I->host.groups_set) { luaL_error(L, "objects have no groups here"); return; }
+    I->host.groups_set(e, list, I->host.user);
+}
+
+int obj_in_group(lua_State* L) {
+    Entity e = live_entity(L, 1);
+    const char* n = luaL_checkstring(L, 2);
+    char list[kPathMax];
+    lua_pushboolean(L, obj_groups(L, e, list, kPathMax) && name_list_has(list, n));
+    return 1;
+}
+
+int obj_add_group(lua_State* L) {
+    Entity e = live_entity(L, 1);
+    const char* n = check_group_name(L, 2);
+    char list[kPathMax];
+    obj_groups(L, e, list, kPathMax);
+    if (name_list_has(list, n)) { lua_pushboolean(L, 0); return 1; }
+    if (!name_list_add(list, kPathMax, n)) return luaL_error(L, "the object has too many groups (%d characters in all)", kPathMax - 1);
+    set_groups(L, e, list);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+int obj_remove_group(lua_State* L) {
+    Entity e = live_entity(L, 1);
+    const char* n = luaL_checkstring(L, 2);
+    char list[kPathMax];
+    obj_groups(L, e, list, kPathMax);
+    bool had = name_list_remove(list, kPathMax, n);
+    if (had) set_groups(L, e, list);
+    lua_pushboolean(L, had);
+    return 1;
+}
+
+// obj.groups = {"a", "b"} or "a;b".
+int obj_set_groups(lua_State* L, Entity e, int idx) {
+    char list[kPathMax] = {};
+    if (lua_type(L, idx) == LUA_TSTRING) {
+        char name[kPathMax];
+        for (const char* p = path_list_next(lua_tostring(L, idx), name, kPathMax); p; p = path_list_next(p, name, kPathMax)) {
+            if (!name_list_valid(name)) return luaL_error(L, "'%s' is not a group name (1 to 63 characters)", name);
+            if (!name_list_add(list, kPathMax, name)) return luaL_error(L, "too many groups (%d characters in all)", kPathMax - 1);
+        }
+    } else if (lua_type(L, idx) == LUA_TTABLE) {
+        lua_Integer n = (lua_Integer)lua_rawlen(L, idx);
+        for (lua_Integer i = 1; i <= n; i++) {
+            lua_rawgeti(L, idx, i);
+            if (lua_type(L, -1) != LUA_TSTRING) return luaL_error(L, "obj.groups: entry %d is a %s, not a name", (int)i, luaL_typename(L, -1));
+            const char* name = lua_tostring(L, -1);
+            if (!name_list_valid(name)) return luaL_error(L, "'%s' is not a group name (1 to 63 characters, no ';')", name);
+            if (!name_list_add(list, kPathMax, name)) return luaL_error(L, "too many groups (%d characters in all)", kPathMax - 1);
+            lua_pop(L, 1);
+        }
+    } else if (lua_type(L, idx) != LUA_TNIL) {
+        return luaL_error(L, "obj.groups expects a table of names or a string \"a;b\", got %s", luaL_typename(L, idx));
+    }
+    set_groups(L, e, list);
+    return 0;
+}
+
+int f_find_group(lua_State* L) {
+    Impl* I = impl_of(L);
+    const char* name = luaL_checkstring(L, 1);
+    lua_newtable(L);
+    if (!I->host.find_group) return 1;
+    Entity small[256];
+    Entity* out = small;
+    int n = I->host.find_group(name, small, 256, I->host.user);
+    if (n > 256) {
+        out = (Entity*)malloc(sizeof(Entity) * (size_t)n);
+        if (!out) return luaL_error(L, "out of memory");
+        int m = I->host.find_group(name, out, n, I->host.user);
+        if (m < n) n = m;
+    }
+    int k = 1;
+    for (int i = 0; i < n; i++) {
+        if (I->dead(out[i])) continue;
+        push_object(L, out[i]);
+        lua_rawseti(L, -2, k++);
+    }
+    if (out != small) free(out);
+    return 1;
+}
+
+// ---------------------------------------------------------------- foliage layers
+//
+// fe.find_foliage(name) returns handles to the terrain foliage layers called `name` (on every terrain).
+// A handle reads and writes the layer's settings: h.name, h.models, h.density, h.scale_min, h.scale_max,
+// h.distance, h.max_slope, h.align, h.shadows, h.shader; h.object is the terrain, h.layer its number (1..4).
+// They are the terrain's foliage<n>_<field> fields (obj.terrain.foliage1_shader is the same value).
+
+struct FolRef { Entity e; int layer; };
+
+FolRef* check_fol(lua_State* L, int idx) { return (FolRef*)luaL_checkudata(L, idx, kFolMeta); }
+
+// The terrain field behind a handle's key ("models" is foliage<n>_model), or false.
+bool fol_field(const FolRef* f, const char* key, char* out, size_t cap) {
+    static const char* const keys[] = { "name", "models", "density", "scale_min", "scale_max", "distance", "max_slope", "align",
+                                        "shadows", "shader", nullptr };
+    for (int i = 0; keys[i]; i++)
+        if (!strcmp(key, keys[i]) || (!strcmp(key, "model") && i == 1)) {
+            snprintf(out, cap, "foliage%d_%s", f->layer + 1, i == 1 ? "model" : keys[i]);
+            return true;
+        }
+    return false;
+}
+
+void push_foliage(lua_State* L, Entity e, int layer) {
+    FolRef* f = (FolRef*)lua_newuserdatauv(L, sizeof(FolRef), 0);
+    f->e = e;
+    f->layer = layer;
+    luaL_setmetatable(L, kFolMeta);
+}
+
+int fol_index(lua_State* L) {
+    Impl* I = impl_of(L);
+    FolRef* f = check_fol(L, 1);
+    const char* key = luaL_checkstring(L, 2);
+    if (!strcmp(key, "layer")) { lua_pushinteger(L, f->layer + 1); return 1; }
+    if (!strcmp(key, "object")) { if (I->dead(f->e)) lua_pushnil(L); else push_object(L, f->e); return 1; }
+    char field[48];
+    if (!fol_field(f, key, field, sizeof field))
+        return luaL_error(L, "a foliage layer has no field '%s' (name, models, density, scale_min, scale_max, distance, max_slope, "
+                             "align, shadows, shader, object, layer)", key);
+    if (I->dead(f->e)) return luaL_error(L, "cannot read foliage.%s: the terrain no longer exists", key);
+    FieldValue v;
+    if (!I->world->get_field(f->e, ModuleKind::Terrain, field, &v)) return luaL_error(L, "cannot read foliage.%s", key);
+    const FieldInfo* fi = find_field(module_info(ModuleKind::Terrain), field);
+    switch (fi ? fi->type : FieldType::Float) {
+    case FieldType::Bool: lua_pushboolean(L, v.b); break;
+    case FieldType::Text: case FieldType::Path: case FieldType::PathList: lua_pushstring(L, v.s ? v.s : ""); break;
+    default: lua_pushnumber(L, v.f); break;
+    }
+    return 1;
+}
+
+int fol_newindex(lua_State* L) {
+    Impl* I = impl_of(L);
+    FolRef* f = check_fol(L, 1);
+    const char* key = luaL_checkstring(L, 2);
+    char field[48];
+    if (!fol_field(f, key, field, sizeof field)) return luaL_error(L, "cannot set '%s' on a foliage layer", key);
+    if (I->dead(f->e)) return luaL_error(L, "cannot set foliage.%s: the terrain no longer exists", key);
+    const FieldInfo* fi = find_field(module_info(ModuleKind::Terrain), field);
+    FieldValue v;
+    int t = lua_type(L, 3);
+    switch (fi ? fi->type : FieldType::Float) {
+    case FieldType::Bool:
+        if (t != LUA_TBOOLEAN) return luaL_error(L, "foliage.%s expects true or false, got %s", key, luaL_typename(L, 3));
+        v = FieldValue::from_bool(lua_toboolean(L, 3) != 0);
+        break;
+    case FieldType::Text: case FieldType::Path: case FieldType::PathList:
+        if (t != LUA_TSTRING) return luaL_error(L, "foliage.%s expects a string, got %s", key, luaL_typename(L, 3));
+        v = FieldValue::from_string(lua_tostring(L, 3));
+        break;
+    default:
+        if (t != LUA_TNUMBER) return luaL_error(L, "foliage.%s expects a number, got %s", key, luaL_typename(L, 3));
+        v = FieldValue::from_float((float)lua_tonumber(L, 3));
+        break;
+    }
+    if (!I->world->set_field(f->e, ModuleKind::Terrain, field, v)) return luaL_error(L, "cannot set foliage.%s", key);
+    return 0;
+}
+
+int fol_eq(lua_State* L) {
+    FolRef* a = check_fol(L, 1);
+    FolRef* b = check_fol(L, 2);
+    lua_pushboolean(L, a->e == b->e && a->layer == b->layer);
+    return 1;
+}
+
+int fol_tostring(lua_State* L) {
+    Impl* I = impl_of(L);
+    FolRef* f = check_fol(L, 1);
+    const Terrain* t = I->dead(f->e) ? nullptr : (const Terrain*)I->world->get(f->e, ModuleKind::Terrain);
+    lua_pushfstring(L, "foliage(%s, layer %d)", t && t->foliage[f->layer].name[0] ? t->foliage[f->layer].name : "?", f->layer + 1);
+    return 1;
+}
+
+// Calls fn for every foliage layer called `name` (every layer when name is null). Returns the count.
+template <typename Fn> int each_foliage(lua_State* L, const char* name, Fn fn) {
+    Impl* I = impl_of(L);
+    Entity small[64];
+    Entity* ts = small;
+    int n = script_find_with_module(*I->world, ModuleKind::Terrain, small, 64);
+    if (n > 64) {
+        ts = (Entity*)malloc(sizeof(Entity) * (size_t)n);
+        if (!ts) return 0;
+        n = script_find_with_module(*I->world, ModuleKind::Terrain, ts, n);
+    }
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        if (I->dead(ts[i])) continue;
+        const Terrain* t = (const Terrain*)I->world->get(ts[i], ModuleKind::Terrain);
+        if (!t) continue;
+        for (int l = 0; l < kFoliageLayers; l++)
+            if (name ? name_eq_nocase(t->foliage[l].name, name) : true) { fn(ts[i], l); found++; }
+    }
+    if (ts != small) free(ts);
+    return found;
+}
+
+int f_find_foliage(lua_State* L) {
+    const char* name = luaL_checkstring(L, 1);
+    lua_newtable(L);
+    int k = 1;
+    each_foliage(L, name, [&](Entity e, int l) { push_foliage(L, e, l); lua_rawseti(L, -2, k++); });
+    return 1;
+}
+
+// fe.assign_shader_to_foliage(name, path): sets the shader of every layer called name (path "" or nil clears
+// it). Returns how many layers changed.
+int f_assign_shader_to_foliage(lua_State* L) {
+    Impl* I = impl_of(L);
+    const char* name = luaL_checkstring(L, 1);
+    const char* path = lua_isnoneornil(L, 2) ? "" : luaL_checkstring(L, 2);
+    if (strlen(path) >= (size_t)kPathMax) return luaL_error(L, "the shader path is too long (maximum %d bytes)", kPathMax - 1);
+    int n = each_foliage(L, name, [&](Entity e, int l) {
+        char field[32];
+        snprintf(field, sizeof field, "foliage%d_shader", l + 1);
+        I->world->set_field(e, ModuleKind::Terrain, field, FieldValue::from_string(path));
+    });
+    lua_pushinteger(L, n);
     return 1;
 }
 
@@ -985,6 +1270,18 @@ int f_status(lua_State* L) {
         I->status.progress = -1.0f;
     }
     return 0;
+}
+
+// fe.terrain_height(x, z) -> height, normal (or nil when no terrain is under x, z)
+int f_terrain_height(lua_State* L) {
+    Impl* I = impl_of(L);
+    float x = (float)luaL_checknumber(L, 1), z = (float)luaL_checknumber(L, 2);
+    float h = 0;
+    Vec3 n(0, 1, 0);
+    if (!I->host.terrain_height || !I->host.terrain_height(x, z, &h, &n, I->host.user)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, h);
+    push_vec3(L, n);
+    return 2;
 }
 
 int f_time(lua_State* L) {
@@ -1102,7 +1399,8 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
         { "__newindex", obj_newindex }, { "__eq", obj_eq }, { "__tostring", obj_tostring }, { nullptr, nullptr } };
     static const luaL_Reg obj_methods[] = {
         { "children", obj_children }, { "script", obj_script }, { "scripts", obj_scripts }, { "send", obj_send },
-        { "move", obj_move }, { "destroy", obj_destroy }, { nullptr, nullptr } };
+        { "move", obj_move }, { "destroy", obj_destroy }, { "in_group", obj_in_group }, { "add_group", obj_add_group },
+        { "remove_group", obj_remove_group }, { nullptr, nullptr } };
     make_meta(L, kObjMeta, obj_meta);
     luaL_getmetatable(L, kObjMeta);
     luaL_newlib(L, obj_methods);
@@ -1116,6 +1414,9 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
     static const luaL_Reg mat_meta[] = {
         { "__index", mat_index }, { "__newindex", mat_newindex }, { "__tostring", mat_tostring }, { nullptr, nullptr } };
     make_meta(L, kMatMeta, mat_meta);
+    static const luaL_Reg fol_meta[] = {
+        { "__index", fol_index }, { "__newindex", fol_newindex }, { "__eq", fol_eq }, { "__tostring", fol_tostring }, { nullptr, nullptr } };
+    make_meta(L, kFolMeta, fol_meta);
 
     // the shared library table: the safe base functions, the libraries, fe
     lua_newtable(L);                                    // lib
@@ -1138,7 +1439,8 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
         { "broadcast", f_broadcast }, { "time", f_time }, { "status", f_status },
         { "key_down", f_key_down }, { "key_pressed", f_key_pressed }, { "key_released", f_key_released },
         { "mouse_x", f_mouse_x }, { "mouse_y", f_mouse_y }, { "mouse_wheel", f_mouse_wheel },
-        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { nullptr, nullptr } };
+        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { "terrain_height", f_terrain_height },
+        { "find_group", f_find_group }, { "find_foliage", f_find_foliage }, { "assign_shader_to_foliage", f_assign_shader_to_foliage }, { nullptr, nullptr } };
     luaL_setfuncs(L, fe_funcs, 0);
     set_funcs_with_upvalue(L, "log", f_print, (int)ScriptLogLevel::Info);
     set_funcs_with_upvalue(L, "warn", f_print, (int)ScriptLogLevel::Warning);

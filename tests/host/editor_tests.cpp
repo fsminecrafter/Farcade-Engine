@@ -8,6 +8,8 @@
 #include "scene_io.h"
 #include "fx_bridge.h"
 #include "fx/fx.h"
+#include "terrain_bridge.h"
+#include "render_bridge.h"
 #include "platform/headless.h"
 #include "platform/frame_pacer.h"
 
@@ -112,6 +114,18 @@ static const Editor::UiRect* ui(const char* key) { return E->find_rect(key); }
 
 static bool click_ui(const char* key, int b = 0) {
     const Editor::UiRect* r = ui(key);
+    if (!r) return false;
+    // Below the panels (a long Inspector; the status bar takes the bottom): scroll the panel up to it first.
+    const float win_h = 800.0f;
+    for (int tries = 0; r && r->y + r->h > win_h - 36 && tries < 40; tries++) {
+        ev_move(r->x + r->w * 0.5f, win_h - 60);
+        platform::Event wheel;
+        wheel.type = platform::EventType::MouseWheel;
+        wheel.wheel_y = E->settings.invert_scrolling ? 1.0f : -1.0f;
+        platform::headless_push(wheel);
+        frames(1);
+        r = ui(key);
+    }
     if (!r) return false;
     click(r->x + r->w * 0.5f, r->y + r->h * 0.5f, b);
     return true;
@@ -783,7 +797,7 @@ int main() {
             CHECK(mi.has_current == (cf != nullptr), "%s: has_current matches a 'current' field", mi.name);
             if (cf) CHECK(cf->offset == mi.current_offset && cf->type == FieldType::Bool, "%s: current offset", mi.name);
         }
-        CHECK(with_current == 5, "camera, sky, sky light, post processing and listener have Current (%d)", with_current);
+        CHECK(with_current == 6, "camera, sky, sky light, post processing, clouds and listener have Current (%d)", with_current);
 
         int objects0 = ed.scene.count();
         ObjectId c1 = ed.create_kind("Cam A", ObjectKind::Camera, Vec3(0, 2, 5));
@@ -1349,6 +1363,7 @@ int main() {
                     case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
                     case FieldType::Text:
                     case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
+                    case FieldType::PathList: snprintf((char*)p, kPathListMax, "models/a.mof; models/b \"c\".mof;d.mof"); break;
                     }
                 }
             }
@@ -1367,8 +1382,7 @@ int main() {
                 const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
                 for (int f = 0; f < mi.field_count; f++) {
                     const FieldInfo& fi = mi.fields[f];
-                    size_t sz = fi.type == FieldType::Path || fi.type == FieldType::Text ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
-                              : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
+                    size_t sz = field_size(fi.type);
                     if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
                 }
             }
@@ -1805,6 +1819,338 @@ int main() {
         frames(3);
         if (ui("unsaved:discard")) { click_ui("unsaved:discard"); frames(3); }
         CHECK(strstr(ed.project_dir, "other-project") != nullptr, "the project is open (%s)", ed.project_dir);
+    }
+
+    // ---- Shift + double-click selects similar objects; edits go to every selected object
+    {
+        ed.stop();
+        ed.new_scene();
+        ObjectId c1 = ed.create_object("C1", MeshKind::Cube, Vec3(-2, 0.5f, 0));
+        ObjectId c2 = ed.create_object("C2", MeshKind::Cube, Vec3(2, 0.5f, 0));
+        ObjectId c3 = ed.create_object("C3", MeshKind::Cube, Vec3(0, 0.5f, -3));
+        ObjectId sp = ed.create_object("S", MeshKind::Sphere, Vec3(0, 0.5f, 2));
+        ObjectId l1 = ed.create_light(LightType::Point, Vec3(0, 3, 0));
+        ObjectId l2 = ed.create_light(LightType::Point, Vec3(3, 3, 0));
+        ObjectId l3 = ed.create_light(LightType::Spot, Vec3(-3, 3, 0));
+        ed.scene.get(c3)->visible = false;
+        ed.camera.target = Vec3(0, 0.5f, 0);
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 25;
+        ed.camera.distance = 10;
+        ed.tool = Tool::Select;
+        ed.terrain_tool = Editor::TerrainTool::None;
+        ed.scene.clear_selection();
+        frames(3);
+        float x1, y1;
+        object_screen(c1, &x1, &y1);
+        ev_key(platform::KEY_LSHIFT, true, platform::MOD_SHIFT); frames(1);
+        ev_move(x1, y1); frames(1);
+        ev_button(x1, y1, 0, true); frames(1);
+        ev_button(x1, y1, 0, false); frames(1);
+        ev_button(x1, y1, 0, true); frames(1);
+        ev_button(x1, y1, 0, false); frames(1);
+        ev_key(platform::KEY_LSHIFT, false, 0); frames(2);
+        CHECK(ed.scene.is_selected(c1) && ed.scene.is_selected(c2) && !ed.scene.is_selected(c3) && !ed.scene.is_selected(sp) &&
+              ed.scene.active() == c1, "Shift + double-click selects the visible cubes, not the sphere (%d selected)", ed.scene.selected_count());
+        ed.scene.clear_selection();
+        CHECK(ed.select_similar(l1) == 2 && ed.scene.is_selected(l2) && !ed.scene.is_selected(l3), "point lights, not the spot light");
+        // Edits: the active object's changes go to the others that have the same thing.
+        ed.scene.clear_selection();
+        ed.scene.select_add(c2);
+        ed.scene.select_add(sp);
+        ed.scene.select_add(c1);
+        Object before = *ed.scene.get(c1);
+        Object* a = ed.scene.get(c1);
+        a->color = Vec3(0.1f, 0.9f, 0.2f);
+        a->roughness = 0.13f;
+        a->scale.y = 3.0f;
+        ed.scene.add_module(c1, ModuleKind::RigidBody3D);
+        a->modules.rigidbody3d.mass = 7.0f;
+        ed.apply_edit_to_selection(before, *a);
+        Object* b = ed.scene.get(c2);
+        Object* s2 = ed.scene.get(sp);
+        CHECK(b->color.y > 0.89f && s2->color.y > 0.89f && b->roughness == 0.13f && s2->roughness == 0.13f, "look goes to all");
+        CHECK(b->scale.y == 3.0f && b->scale.x == 1.0f && b->position.x == 2.0f, "scale per axis, positions stay");
+        CHECK(b->modules.has(ModuleKind::RigidBody3D) && b->modules.rigidbody3d.mass == 7.0f && s2->modules.has(ModuleKind::RigidBody3D),
+              "an added module (with its values) goes to all");
+        CHECK(!strcmp(b->name, "C2"), "names stay");
+        before = *a;
+        a->modules.rigidbody3d.mass = 2.0f;
+        a->modules.rigidbody3d.velocity.x = 5.0f;
+        b->modules.rigidbody3d.velocity.z = -4.0f;
+        ed.apply_edit_to_selection(before, *a);
+        CHECK(b->modules.rigidbody3d.mass == 2.0f && b->modules.rigidbody3d.velocity.x == 5.0f && b->modules.rigidbody3d.velocity.z == -4.0f,
+              "a module field, a vector per component");
+        // Through the Inspector: the Unlit switch with three selected.
+        frames(2);
+        bool was = ed.scene.get(c2)->unlit;
+        CHECK(click_ui("inspector:unlit"), "the Unlit switch");
+        frames(2);
+        CHECK(ed.scene.get(c1)->unlit != was && ed.scene.get(c2)->unlit != was && ed.scene.get(sp)->unlit != was, "the Inspector edits all three");
+        ed.new_scene();
+        frames(2);
+    }
+
+    // ---- groups: the name list, the scene file, multi-edit, select by group, the Inspector, scripts in Play
+    {
+        ed.stop();
+        ed.new_scene();
+        char gl[256] = {};
+        CHECK(name_list_add(gl, sizeof gl, "grass") && name_list_add(gl, sizeof gl, "Sway") && name_list_add(gl, sizeof gl, "SWAY") &&
+              !strcmp(gl, "grass;Sway"), "add skips a name already there whatever its case (%s)", gl);
+        CHECK(!name_list_add(gl, sizeof gl, "a;b") && !name_list_add(gl, sizeof gl, "") && !name_list_add(gl, sizeof gl, " x"), "bad names");
+        CHECK(name_list_has(gl, "GRASS") && name_list_remove(gl, sizeof gl, "grass") && !strcmp(gl, "Sway") && !name_list_remove(gl, sizeof gl, "x"),
+              "has / remove");
+        char tiny[8] = {};
+        CHECK(name_list_add(tiny, sizeof tiny, "abc") && !name_list_add(tiny, sizeof tiny, "defg") && !strcmp(tiny, "abc"), "a full list");
+        ObjectId g1 = ed.create_object("G1", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        ObjectId g2 = ed.create_object("G2", MeshKind::Cube, Vec3(2, 0.5f, 0));
+        ObjectId g3 = ed.create_object("G3", MeshKind::Sphere, Vec3(-2, 0.5f, 0));
+        snprintf(ed.scene.get(g1)->groups, 256, "%s", "grass;sway");
+        snprintf(ed.scene.get(g2)->groups, 256, "%s", "grass");
+        snprintf(ed.scene.get(g3)->groups, 256, "%s", "rock");
+        size_t n = 0;
+        char* text = save_scene_text(ed.scene, ed.project_dir, &n);
+        CHECK(text && strstr(text, "  groups \"grass;sway\"\n"), "the scene file writes groups");
+        Scene back;
+        SceneLoadReport rep;
+        CHECK(text && load_scene_text(back, text, n, &rep) && rep.skipped == 0 && back.get(g1) && !strcmp(back.get(g1)->groups, "grass;sway") &&
+              !strcmp(back.get(g3)->groups, "rock"), "and reads them back");
+        free(text);
+        CHECK(ed.select_group("GRASS") == 2 && ed.scene.is_selected(g1) && ed.scene.is_selected(g2) && !ed.scene.is_selected(g3), "select a group");
+        CHECK(ed.select_group("rock", true) == 1 && ed.scene.selected_count() == 3, "Shift adds a group to the selection");
+        // Multi-edit: groups added and removed on the active one go to the others, their other groups stay.
+        ed.scene.clear_selection();
+        ed.scene.select_add(g3);
+        ed.scene.select_add(g2);
+        ed.scene.select_add(g1);
+        Object before = *ed.scene.get(g1);
+        Object* a = ed.scene.get(g1);
+        name_list_add(a->groups, sizeof a->groups, "tall");
+        name_list_remove(a->groups, sizeof a->groups, "grass");
+        ed.apply_edit_to_selection(before, *a);
+        CHECK(!strcmp(ed.scene.get(g2)->groups, "tall") && !strcmp(ed.scene.get(g3)->groups, "rock;tall"),
+              "multi-edit adds and removes the changed groups only (%s / %s)", ed.scene.get(g2)->groups, ed.scene.get(g3)->groups);
+        // The Inspector's Groups field adds a group to all three.
+        frames(2);
+        const Editor::UiRect* gr = ui("inspector:groups");
+        CHECK(gr != nullptr, "the Inspector has a Groups field");
+        if (gr) {
+            click(gr->x + 10, gr->y + gr->h * 0.5f);
+            frames(1);
+            type_text("bush");
+            frames(1);
+            ev_key(platform::KEY_ENTER, true, 0); frames(1);
+            ev_key(platform::KEY_ENTER, false, 0); frames(2);
+            CHECK(name_list_has(ed.scene.get(g1)->groups, "bush") && name_list_has(ed.scene.get(g2)->groups, "bush") &&
+                  name_list_has(ed.scene.get(g3)->groups, "bush"), "typed into the Inspector, it goes to every selected object (%s)",
+                  ed.scene.get(g2)->groups);
+        }
+        // Scripts while playing.
+        ed.scene.clear_selection();
+        ed.play();
+        ScriptRuntime* rt = ed.play_scripts();
+        CHECK(rt && rt->run("_G.ng = #fe.find_group('tall'); fe.find('G3'):add_group('found'); _G.first = fe.find_group('tall')[1].name"),
+              "fe.find_group runs in Play");
+        if (rt) {
+            CHECK(rt->run("assert(ng == 3 and first == 'G1')"), "it finds the three, in Hierarchy order");
+            CHECK(name_list_has(ed.scene.get(g3)->groups, "found"), "obj:add_group changes the object");
+        }
+        ed.stop();
+        CHECK(!name_list_has(ed.scene.get(g3)->groups, "found"), "Stop puts the groups back");
+        ed.new_scene();
+        frames(2);
+    }
+
+    // ---- terrain: create, brush in the viewport, undo / redo, foliage, streaming, save and open
+    {
+        ed.stop();
+        ed.new_scene();
+        ObjectId t = ed.create_kind("Terrain", ObjectKind::Terrain, Vec3(0, 0, 0));
+        Object* to = ed.scene.get(t);
+        TerrainData* td = to ? terrain_data(*to) : nullptr;
+        CHECK(to && to->modules.terrain.data[0] && td, "a new terrain has data (%s)", to ? to->modules.terrain.data : "");
+        CHECK(td && td->chunks_x == 8 && td->chunks_z == 8 && td->cells == 32, "256 m in chunks of 32 m");
+        CHECK(to && to->position.x == -128.0f && to->position.z == -128.0f, "centred on where it was made");
+        ed.history_reset();
+        ed.scene.select_only(t);
+        ed.tool = Tool::Select;
+        ed.terrain_tool = Editor::TerrainTool::Raise;
+        ed.terrain_radius = 12.0f;
+        ed.terrain_strength = 1.0f;
+        ed.camera.target = Vec3(0, 0, 0);
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 50;
+        ed.camera.distance = 60;
+        frames(3);
+        float cx = ed.view_rect[0] + ed.view_rect[2] * 0.5f, cy = ed.view_rect[1] + ed.view_rect[3] * 0.5f;
+        drag(cx - 5, cy, cx + 5, cy, 0, 30);
+        frames(2);
+        float raised = td->height_at(128, 128);
+        CHECK(raised > 0.5f, "dragging with Add raises the ground (%.3f)", raised);
+        CHECK(ed.scene.selected_count() == 1 && ed.scene.active() == t, "the brush does not change the selection");
+        int rev = to->modules.terrain.revision;
+        CHECK(rev == td->revision && ed.can_undo(), "the stroke is a history step (revision %d)", rev);
+        ed.undo();
+        frames(2);
+        to = ed.scene.get(t);
+        td = to ? terrain_data(*to) : nullptr;
+        CHECK(td && absf_(td->height_at(128, 128)) < 1e-4f, "undo flattens it again (%.3f)", td ? td->height_at(128, 128) : -1.0f);
+        ed.redo();
+        frames(2);
+        to = ed.scene.get(t);
+        td = to ? terrain_data(*to) : nullptr;
+        CHECK(td && absf_(td->height_at(128, 128) - raised) < 1e-4f, "redo raises it again");
+        // Shift with Add lowers.
+        ev_key(platform::KEY_LSHIFT, true, platform::MOD_SHIFT); frames(1);
+        drag(cx - 5, cy, cx + 5, cy, 0, 30);
+        ev_key(platform::KEY_LSHIFT, false, 0);
+        frames(2);
+        CHECK(td->height_at(128, 128) < raised - 0.2f, "Shift turns Add into Remove (%.3f)", td->height_at(128, 128));
+        // Level to 2 m, then a click selects the terrain with no tool.
+        ed.terrain_tool = Editor::TerrainTool::Level;
+        ed.terrain_level = 2.0f;
+        drag(cx - 3, cy, cx + 3, cy, 0, 60);
+        frames(2);
+        CHECK(absf_(td->height_at(128, 128) - 2.0f) < 0.1f, "Level flattens to 2 m (%.3f)", td->height_at(128, 128));
+        ed.terrain_tool = Editor::TerrainTool::None;
+        ed.scene.clear_selection();
+        frames(2);
+        click(cx, cy);
+        CHECK(ed.scene.active() == t, "a click on the ground selects the terrain");
+        // Foliage: a layer with a model, painted, drawn by the render bridge in batches.
+        {
+            size_t n = 0;
+            void* m = platform::read_file("assets/samples/cube_textured.mof", &n);
+            char mp[512];
+            snprintf(mp, sizeof mp, "%s/grass.mof", ed.project_dir);
+            if (m) platform::write_file(mp, m, n);
+            free(m);
+            snprintf(to->modules.terrain.foliage[0].model, kPathMax, "grass.mof");
+            to->modules.terrain.foliage[0].density = 0.5f;
+            to->modules.terrain.foliage[0].scale_min = 0.1f;
+            to->modules.terrain.foliage[0].scale_max = 0.2f;
+            ed.scene.select_only(t);
+            ed.terrain_tool = Editor::TerrainTool::Foliage;
+            ed.terrain_radius = 20.0f;
+            drag(cx - 3, cy, cx + 3, cy, 0, 40);
+            frames(2);
+            CHECK(td->has_foliage(4, 4, 0) || td->has_foliage(3, 3, 0), "the Foliage tool paints the layer");
+            ed.terrain_tool = Editor::TerrainTool::None;
+            RenderBridge rb;
+            rb.terrain.build_budget_ms = 1e9;
+            Mat4 view = Mat4::look_at(Vec3(0, 20, 40), Vec3(0, 0, 0), Vec3(0, 1, 0));
+            Mat4 proj = Mat4::perspective(radians(60.0f), 1.5f, 0.1f, 500.0f);
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 40), 0.1f, 500.0f);
+            const TerrainViewStats& st = rb.terrain.stats();
+            CHECK(st.chunks_drawn == 64 && st.foliage_batches > 0 && st.foliage_instances > 50,
+                  "64 chunks and foliage batches (%d chunks, %d batches, %ld instances)", st.chunks_drawn, st.foliage_batches, st.foliage_instances);
+            int fol = 0;
+            for (int i = 0; i < rb.scene.item_count; i++) fol += rb.scene.items[i].foliage;
+            CHECK(fol == st.foliage_batches, "foliage items are marked");
+            // Several models in one layer: a folder of them, each instance picks one.
+            {
+                long one_model = st.foliage_instances;
+                char dirp[512];
+                snprintf(dirp, sizeof dirp, "%s/plants", ed.project_dir);
+                platform::make_dir(dirp);
+                size_t n2 = 0;
+                void* m2 = platform::read_file("assets/samples/cube_textured.mof", &n2);
+                for (int k = 0; k < 3; k++) {
+                    char fp[600];
+                    snprintf(fp, sizeof fp, "%s/plant_%d.mof", dirp, k);
+                    if (m2) platform::write_file(fp, m2, n2);
+                }
+                free(m2);
+                to->modules.terrain.foliage[0].model[0] = 0;
+                CHECK(ed.foliage_add_model(t, 0, "plants"), "a folder adds its models");
+                CHECK(!ed.foliage_add_model(t, 0, "plants/plant_1.mof"), "one already there is not added twice");
+                CHECK(ed.foliage_add_model(t, 0, "grass.mof") && !ed.foliage_add_model(t, 0, "notes.txt"), "a .mof is added, other files are not");
+                CHECK(!strcmp(to->modules.terrain.foliage[0].model, "plants/plant_0.mof;plants/plant_1.mof;plants/plant_2.mof;grass.mof"),
+                      "the list (%s)", to->modules.terrain.foliage[0].model);
+                rb.build(ed.scene, view, proj, Vec3(0, 20, 40), 0.1f, 500.0f);
+                int nb = 0;
+                for (int i = 0; i < rb.scene.item_count; i++) nb += rb.scene.items[i].foliage;
+                CHECK(rb.terrain.stats().foliage_batches > st.foliage_batches || nb >= 4, "the models get batches of their own (%d)", nb);
+                long many = rb.terrain.stats().foliage_instances;
+                CHECK(many >= one_model * 9 / 10 && many <= one_model * 11 / 10 + 8, "about as many instances, spread over the models (%ld vs %ld)", many, one_model);
+                // Back to one model for the rest.
+                snprintf(to->modules.terrain.foliage[0].model, kPathListMax, "grass.mof");
+            }
+            // Far away, the same batch draws fewer instances (a prefix), and none past the distance.
+            to->modules.terrain.foliage[0].distance = 400.0f;
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 40), 0.1f, 500.0f);
+            long near_n = rb.terrain.stats().foliage_instances;
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 300), 0.1f, 500.0f);
+            long far_n = rb.terrain.stats().foliage_instances;
+            CHECK(far_n < near_n && far_n > 0, "fewer instances far away (%ld < %ld)", far_n, near_n);
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 800), 0.1f, 1000.0f);
+            CHECK(rb.terrain.stats().foliage_instances == 0, "none past the distance");
+            // Streaming: chunks within the load distance, Dynamic objects with them.
+            ObjectId near_c = ed.create_object("Near", MeshKind::Cube, Vec3(0, 3, 0));
+            ObjectId far_c = ed.create_object("Far", MeshKind::Cube, Vec3(120, 3, 120));
+            ObjectId off_c = ed.create_object("Off", MeshKind::Cube, Vec3(500, 3, 500));
+            ObjectId unl = ed.create_object("Later", MeshKind::Cube, Vec3(2, 3, 0));
+            ed.scene.get(unl)->streaming = StreamMode::Unloaded;
+            to = ed.scene.get(t);
+            to->modules.terrain.load_distance = 40.0f;
+            rb.playing = true;
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 0), 0.1f, 500.0f);
+            CHECK(rb.terrain.stats().chunks_unloaded > 40 && rb.terrain.stats().chunks_drawn < 24, "far chunks unload (%d drawn)", rb.terrain.stats().chunks_drawn);
+            CHECK(rb.unloaded == 2, "the far cube and the Unloaded one are out (%d)", rb.unloaded);
+            CHECK(rb.terrain.loaded(ed.scene, *ed.scene.get(near_c)) && !rb.terrain.loaded(ed.scene, *ed.scene.get(far_c)) &&
+                  rb.terrain.loaded(ed.scene, *ed.scene.get(off_c)), "near loaded, far not, off the terrain always");
+            ed.scene.get(far_c)->streaming = StreamMode::AlwaysLoaded;
+            ed.scene.get(unl)->stream_loaded = true;
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 0), 0.1f, 500.0f);
+            CHECK(rb.unloaded == 0, "Always loaded, and a loaded Unloaded object (%d)", rb.unloaded);
+            rb.playing = false;
+            rb.build(ed.scene, view, proj, Vec3(0, 20, 0), 0.1f, 500.0f);
+            CHECK(rb.terrain.stats().chunks_unloaded == 0, "the editor shows every chunk unless stream_in_editor");
+            ed.scene.remove(near_c); ed.scene.remove(far_c); ed.scene.remove(off_c); ed.scene.remove(unl);
+            to = ed.scene.get(t);
+            to->modules.terrain.load_distance = 250.0f;
+        }
+        // Play: a body dropped on the terrain lands on it.
+        {
+            float gh = td->height_at(128, 128);
+            ObjectId bx = ed.create_object("Dropped", MeshKind::Cube, Vec3(0, gh + 6.0f, 0));
+            ed.scene.add_module(bx, ModuleKind::RigidBody3D);
+            ed.scene.add_module(bx, ModuleKind::Collider3D);
+            ed.play();
+            frames(150);
+            Object* bo = ed.scene.get(bx);
+            CHECK(ed.playing() && bo && absf_(bo->position.y - (gh + 0.5f)) < 0.1f, "in Play a body lands on the terrain (y %.2f, ground %.2f)",
+                  bo ? bo->position.y : -1.0f, gh);
+            ed.stop();
+            frames(2);
+            ed.scene.remove(bx);
+            to = ed.scene.get(t);
+            td = terrain_data(*to);
+        }
+        // Save, open: the data file comes back with the scene.
+        float hs = td->height_at(128, 128);
+        uint8_t dens = td->density(0, 128, 128);
+        CHECK(ed.save_scene("scenes/terrain.fscene"), "save the terrain scene");
+        char tf[512];
+        snprintf(tf, sizeof tf, "%s/%s", ed.project_dir, to->modules.terrain.data);
+        CHECK(platform::file_exists(tf), "the data file is written (%s)", tf);
+        CHECK(!terrain_store_unsaved(), "nothing left unsaved");
+        ed.new_scene();
+        CHECK(ed.open_scene("scenes/terrain.fscene"), "open it again");
+        Object* back = nullptr;
+        for (int i = 0; i < ed.scene.count(); i++) if (ed.scene.at(i).kind == ObjectKind::Terrain) back = &ed.scene.at(i);
+        TerrainData* bd = back ? terrain_data(*back) : nullptr;
+        CHECK(bd && absf_(bd->height_at(128, 128) - hs) < 1e-5f && bd->density(0, 128, 128) == dens, "heights and foliage are back");
+        // A duplicate gets its own data.
+        if (back) {
+            ObjectId dup = ed.duplicate_tree(back->id, kNoObject, true);
+            Object* d = ed.scene.get(dup);
+            CHECK(d && strcmp(d->modules.terrain.data, back->modules.terrain.data) != 0 && terrain_data(*d) && terrain_data(*d) != bd,
+                  "a duplicated terrain has its own data file");
+        }
+        ed.new_scene();
+        frames(2);
     }
 
     printf("editor_tests: %d checks, %d failed\n", g_checks, g_failed);

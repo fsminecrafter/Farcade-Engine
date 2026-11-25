@@ -1,4 +1,5 @@
 #include "gfx/shaders.h"
+#include <stdlib.h>
 #include "gfx/shaders_post.h"
 
 #include <string.h>
@@ -225,7 +226,7 @@ void sky_vertex(char* out, size_t cap) {
           "}\n");
 }
 
-void sky_fragment(char* out, size_t cap, const PostKey& pk) {
+void sky_fragment(char* out, size_t cap, const PostKey& pk, CloudKey ck) {
     Text t(out, cap);
     const bool draft = pk.draft;
     t.add("uniform vec4 u_fwd;\n"
@@ -238,6 +239,10 @@ void sky_fragment(char* out, size_t cap, const PostKey& pk) {
           "uniform vec4 u_suncol;\n"
           "varying vec2 v_ndc;\n");
     add_post(t, pk);
+    if (ck.quality) {
+        char* cs = (char*)malloc(kSourceBytes);
+        if (cs) { clouds_shader(cs, kSourceBytes, ck, 0); t.add(cs); free(cs); }
+    }
     t.add("void main() {\n"
           "    vec3 d = normalize(u_fwd.xyz + u_rx.xyz * v_ndc.x + u_ry.xyz * v_ndc.y);\n"
           "    float up = clamp(d.y, 0.0, 1.0);\n"
@@ -245,12 +250,18 @@ void sky_fragment(char* out, size_t cap, const PostKey& pk) {
           "    vec3 col = mix(above, u_grd.rgb, smoothstep(0.0, 0.12, -d.y));\n"
           "    col = mix(col, u_zen.rgb, u_zen.w);\n");
     if (!draft)
-        t.add("    float c = dot(d, u_sun.xyz);\n"
+        t.add("    {\n"
+              "    float c = dot(d, u_sun.xyz);\n"
               "    float core = u_sun.w;\n"
               "    float rim = 1.0 - (1.0 - core) * 1.6;\n"
               "    float disc = smoothstep(rim, core, c) * step(core, 1.0);\n"
               "    float halo = pow(max(c, 0.0), 256.0) * 0.15 * step(core, 1.0);\n"
-              "    col += u_suncol.rgb * (disc + halo) * (1.0 - u_zen.w);\n");
+              "    col += u_suncol.rgb * (disc + halo) * (1.0 - u_zen.w);\n"
+              "    }\n");
+    if (ck.quality) {
+        char* cs = (char*)malloc(kSourceBytes);
+        if (cs) { clouds_shader(cs, kSourceBytes, ck, 1); t.add(cs); free(cs); }
+    }
     t.add("    gl_FragColor = vec4(post(col), 1.0);\n"
           "}\n");
 }

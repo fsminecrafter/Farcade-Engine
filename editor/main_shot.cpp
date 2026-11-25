@@ -7,6 +7,8 @@
 // project (a few files to show in the Files panel) is created in
 // <out_dir>/demo-project.
 #include "editor.h"
+#include "terrain_bridge.h"
+#include "model_import.h"
 #include "platform/headless.h"
 
 #include "imgui/imgui.h"
@@ -269,6 +271,30 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }
+    // Groups and a selection of two: the Inspector's Groups row, edits applying to both.
+    {
+        ObjectId ball = kNoObject, pil = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) {
+            if (!strcmp(ed.scene.at(i).name, "Ball")) ball = ed.scene.at(i).id;
+            if (!strcmp(ed.scene.at(i).name, "Pillar")) pil = ed.scene.at(i).id;
+        }
+        char saved_b[256] = {}, saved_p[256] = {};
+        if (ball && pil) {
+            memcpy(saved_b, ed.scene.get(ball)->groups, sizeof saved_b);
+            memcpy(saved_p, ed.scene.get(pil)->groups, sizeof saved_p);
+            snprintf(ed.scene.get(ball)->groups, 256, "%s", "props;round;pickup");
+            snprintf(ed.scene.get(pil)->groups, 256, "%s", "props");
+            ed.scene.select_only(pil);
+            ed.scene.select_add(ball);
+            ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
+            for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 0); ed.frame(); }
+            snprintf(path, sizeof(path), "%s/editor-groups.png", out);
+            if (!platform::headless_save_png(path)) return 1;
+            printf("wrote %s\n", path);
+            memcpy(ed.scene.get(ball)->groups, saved_b, sizeof saved_b);
+            memcpy(ed.scene.get(pil)->groups, saved_p, sizeof saved_p);
+        }
+    }
     // Shaping a collider: the pillar's cylinder collider with its handles.
     {
         ObjectId pil = kNoObject;
@@ -472,6 +498,118 @@ int main(int argc, char** argv) {
                             ".gltf;.glb;.obj;.mof");
         for (int i = 0; i < 4; i++) ed.frame();
         snprintf(path, sizeof(path), "%s/editor-picker.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+    }
+
+    // Terrain: hills, a hole, grass blades as foliage, a few objects; the CPU preview, FarcadeGL and the GPU tier.
+    {
+        ed.show_settings = false;
+        ed.new_scene();
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::High);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = false;
+        ed.settings.graphics.feature_level = gfx::FeatureLevelMode::Auto;
+        // A tuft of three crossed blades as an .obj with a green material, converted to .mof.
+        char objp[700], mofp[700], msg[256];
+        snprintf(objp, sizeof objp, "%s/assets/grass.mtl", project);
+        FILE* f = fopen(objp, "wb");
+        if (f) { fputs("newmtl blade\nKd 0.32 0.55 0.18\n", f); fclose(f); }
+        snprintf(objp, sizeof objp, "%s/assets/grass.obj", project);
+        f = fopen(objp, "wb");
+        if (f) {
+            fputs("mtllib grass.mtl\nusemtl blade\n", f);
+            int v = 0;
+            for (int b = 0; b < 3; b++) {
+                float a = (float)b * 1.047f, c = fcos(a) * 0.06f, s2 = fsin(a) * 0.06f;
+                float tx = fcos(a + 0.4f) * 0.08f, tz = fsin(a + 0.4f) * 0.08f;
+                fprintf(f, "v %f 0 %f\nv %f 0 %f\nv %f 0.55 %f\n", -c, -s2, c, s2, tx, tz);
+                fprintf(f, "vn 0 0.3 1\n");
+                fprintf(f, "f %d//%d %d//%d %d//%d\nf %d//%d %d//%d %d//%d\n", v + 1, b + 1, v + 2, b + 1, v + 3, b + 1, v + 2, b + 1, v + 1, b + 1, v + 3, b + 1);
+                v += 3;
+            }
+            fclose(f);
+        }
+        bool grass = model_convert_file(objp, mofp, sizeof mofp, msg, sizeof msg);
+        if (!grass) printf("grass model: %s\n", msg);
+        ObjectId sun = ed.create_light(LightType::Directional, Vec3(0, 20, 0));
+        if (Object* so = ed.scene.get(sun)) so->rotation = Quat::euler_deg(Vec3(-40, 35, 0));
+        ed.create_kind("Sky", ObjectKind::Sky, Vec3(0, 30, 0));
+        ed.create_kind("Sky Light", ObjectKind::SkyLight, Vec3(0, 30, 0));
+        ObjectId t = ed.create_kind("Terrain", ObjectKind::Terrain, Vec3(0, 0, 0));
+        Object* to = ed.scene.get(t);
+        TerrainData* td = to ? terrain_data(*to) : nullptr;
+        if (td) {
+            td->begin_stroke();
+            TerrainBrushOp op;
+            uint32_t seed = 12345;
+            auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return (float)(seed >> 8) / 16777216.0f; };
+            for (int i = 0; i < 70; i++) {
+                op.brush = i % 5 == 4 ? TerrainBrush::Lower : TerrainBrush::Raise;
+                op.x = 20 + rnd() * 216; op.z = 20 + rnd() * 216;
+                op.radius = 10 + rnd() * 30; op.hardness = 0.1f; op.amount = 1.5f + rnd() * 6.0f;
+                td->apply(op);
+            }
+            op.brush = TerrainBrush::Smooth; op.rate = 1.0f; op.radius = 300; op.x = 128; op.z = 128;
+            for (int i = 0; i < 3; i++) td->apply(op);
+            op.brush = TerrainBrush::Delete; op.x = 150; op.z = 100; op.radius = 5;
+            td->apply(op);
+            if (grass) {
+                snprintf(to->modules.terrain.foliage[0].model, kPathMax, "%s", mofp);
+                to->modules.terrain.foliage[0].density = 12.0f;
+                to->modules.terrain.foliage[0].distance = 45.0f;
+                to->modules.terrain.foliage[0].scale_min = 0.6f;
+                to->modules.terrain.foliage[0].scale_max = 1.3f;
+                op.brush = TerrainBrush::Paint; op.layer = 0; op.target = 1.0f; op.rate = 1.0f; op.hardness = 0.6f;
+                op.x = 128; op.z = 150; op.radius = 60;
+                td->apply(op);
+            }
+            td->end_stroke();
+            to->modules.terrain.revision = td->revision;
+            terrain_mark_dirty(td);
+        }
+        // A few boxes on the ground (some hidden behind hills from the view).
+        for (int i = 0; i < 6; i++) {
+            float x = -30.0f + (float)i * 12.0f, z = 10.0f - (float)(i % 3) * 25.0f;
+            float y = td ? td->height_at(x + 128, z + 128) : 0;
+            ObjectId c = ed.create_object("Crate", MeshKind::Cube, Vec3(x, y + 0.5f, z));
+            if (Object* co = ed.scene.get(c)) co->color = Vec3(0.75f, 0.55f, 0.35f);
+        }
+        ed.scene.select_only(t);
+        ed.terrain_tool = Editor::TerrainTool::Raise;
+        ed.camera.target = Vec3(0, td ? td->height_at(128, 150) : 0, 22);
+        ed.camera.yaw = 20;
+        ed.camera.pitch = 18;
+        ed.camera.distance = 28;
+        ed.view_renderer = Editor::ViewRenderer::CpuPreview;
+        for (int i = 0; i < 4; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-terrain-cpu.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
+        for (int i = 0; i < 8; i++) ed.frame();
+        printf("terrain: %d chunks drawn, %d batches, %ld foliage instances, %d culled by occluders\n", ed.terrain_stats_.chunks_drawn,
+               ed.terrain_stats_.foliage_batches, ed.terrain_stats_.foliage_instances, ed.fgl_stats.culled_occlusion);
+        snprintf(path, sizeof(path), "%s/editor-terrain.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        ed.settings.graphics.apply_preset(gfx::GraphicsPreset::Ultra);
+        ed.settings.graphics.allow_gpu_effects_on_cpu = true;
+        ed.settings.graphics.feature_level = gfx::FeatureLevelMode::GpuTier;
+        ed.terrain_tool = Editor::TerrainTool::None;
+        for (int i = 0; i < 16; i++) ed.frame();
+        snprintf(path, sizeof(path), "%s/editor-terrain-ultra.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
+        // Clouds over the hills, looking up from the ground.
+        ObjectId cl = ed.create_kind("Clouds", ObjectKind::Clouds, Vec3(0, 6, 0));
+        if (Object* co = ed.scene.get(cl)) { co->modules.clouds.coverage = 0.6f; co->modules.clouds.quality = CloudQuality::Ultra; }
+        ed.scene.select_only(cl);
+        ed.camera.target = Vec3(0, (td ? td->height_at(128, 150) : 0) + 12.0f, 22);
+        ed.camera.pitch = -14;
+        ed.camera.distance = 10;
+        for (int i = 0; i < 16; i++) ed.frame();
+        printf("clouds: quality %d drawn\n", ed.fgl_stats.cloud_quality);
+        snprintf(path, sizeof(path), "%s/editor-clouds.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }

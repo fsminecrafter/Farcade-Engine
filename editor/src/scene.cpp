@@ -338,6 +338,12 @@ void Scene::select_only(ObjectId id) {
     if (id != kNoObject) toggle(id);
 }
 
+void Scene::select_add(ObjectId id) {
+    if (!get(id)) return;
+    if (is_selected(id)) { active_ = id; return; }
+    toggle(id);
+}
+
 void Scene::toggle(ObjectId id) {
     for (int i = 0; i < sel_count_; i++) {
         if (selection_[i] != id) continue;

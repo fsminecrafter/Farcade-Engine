@@ -51,6 +51,15 @@ struct Object {
     bool unlit = false;
     bool cast_shadows = true;
     bool visible = true;
+    // Streaming (terrain_bridge.h): Dynamic objects load with the terrain chunk under them, AlwaysLoaded ones
+    // never unload, Unloaded ones wait for a script (obj.loaded = true) while playing. stream_loaded is
+    // that live flag (not saved).
+    StreamMode streaming = StreamMode::Dynamic;
+    bool stream_loaded = false;
+    // Groups: names separated by ';' ("grass;sway"), for scripts to find several objects at once
+    // (fe.find_group("grass"), obj:in_group, obj:add_group). Names compare without regard to case
+    // (name_list_* in scene/modules.h).
+    char groups[kPathMax] = {};
 
     Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
     void set_matrix(const Mat4& m) { decompose(m, &position, &rotation, &scale); }
@@ -89,6 +98,7 @@ public:
     bool is_selected(ObjectId id) const;
     void select_only(ObjectId id);      // kNoObject clears
     void toggle(ObjectId id);           // shift-click
+    void select_add(ObjectId id);       // adds (when not selected) and makes it active
     void clear_selection();
     int selected_count() const { return sel_count_; }
     ObjectId selected(int i) const { return selection_[i]; }

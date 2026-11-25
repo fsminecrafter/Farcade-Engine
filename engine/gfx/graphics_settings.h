@@ -46,6 +46,9 @@ enum class AOMode : uint8_t { SSAO, GTAO };
 enum class GiMode : uint8_t { Hemisphere, Probes };
 enum class GiDensity : uint8_t { Coarse, Normal, Fine };
 enum class GiUpdate : uint8_t { Slow, Normal, Fast };
+// Volumetric clouds (the Clouds object, gfx/clouds.h): the highest quality a game draws them at (the object
+// asks for its own; the lower one wins). Off hides them.
+enum class CloudSetting : uint8_t { Off, Low, Medium, Ultra };
 
 struct GraphicsSettings {
     GraphicsPreset preset = GraphicsPreset::High;
@@ -62,6 +65,10 @@ struct GraphicsSettings {
     float target_frame_ms = 33.3f;
     float min_render_scale = 0.5f;
     SSAAMode ssaa = SSAAMode::Off;          // supersampling (any tier), see SSAAMode
+    // Occlusion culling (any tier): items hidden behind big nearby ones (terrain, walls) are not drawn. A
+    // small CPU depth buffer is drawn each frame (culling.h). Frustum culling is always on.
+    bool occlusion_culling = true;
+    CloudSetting clouds = CloudSetting::Medium;     // the cap on cloud quality (any tier)
     // ---- presenting (the player; the editor viewport draws only when something changed)
     VsyncMode vsync = VsyncMode::Double;
     int refresh_hz = 60;                    // the display's refresh rate for vsync (30..240)
@@ -119,6 +126,7 @@ struct GraphicsSettings {
 //   preset            low | medium | high | ultra | custom   (setting it applies the preset; custom is only read)
 //   feature_level     auto | fl0 | fl1 | gpu
 //   render_scale      0.25 .. 1        dynamic_resolution  bool    target_frame_ms 8..100    min_render_scale 0.25..1
+//   occlusion_culling bool     clouds off | low | medium | ultra
 //   shadows           off | single | cascades      shadow_cascades 2..3 (with cascades)
 //   shadow_resolution 512 | 1024 | 2048 | 4096     shadow_distance 1..2000 (m)
 //   soft_shadows      bool             cascade_cache       bool
@@ -191,6 +199,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             local_shadows = false; bloom_mode = BloomMode::Simple; shadow_cascades = 1;
             gi_mode = GiMode::Hemisphere; aa_mode = AAMode::FXAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 0.4f; fx_depth_test = false; fx_reverb = false;
+            clouds = CloudSetting::Low;
             break;
         case GraphicsPreset::Medium:
             shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30; shadow_cascades = 2;
@@ -198,6 +207,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             local_shadows = false; bloom_mode = BloomMode::Simple;
             gi_mode = GiMode::Hemisphere; aa_mode = AAMode::FXAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 0.7f; fx_depth_test = true; fx_reverb = true;
+            clouds = CloudSetting::Medium;
             break;
         case GraphicsPreset::High:
             shadows = true; shadow_resolution = 2048; soft_shadows = true; shadow_distance = 40; shadow_cascades = 3;
@@ -206,6 +216,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Normal;
             aa_mode = AAMode::SMAA; ao_mode = AOMode::SSAO; ssr = false;
             fx_particle_density = 1.0f; fx_depth_test = true; fx_reverb = true;
+            clouds = CloudSetting::Medium;
             break;
         case GraphicsPreset::Ultra:
             shadows = true; shadow_resolution = 4096; soft_shadows = true; shadow_distance = 80; shadow_cascades = 3;
@@ -214,6 +225,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Fast;
             aa_mode = AAMode::TAA; ao_mode = AOMode::GTAO; ssr = true;
             fx_particle_density = 1.0f; fx_depth_test = true; fx_reverb = true;
+            clouds = CloudSetting::Ultra;
             break;
         case GraphicsPreset::Custom:
             break;

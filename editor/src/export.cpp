@@ -108,8 +108,14 @@ void collect_object(Ctx& c, const Object& o, const char* scene_name) {
         if (!o.modules.has((ModuleKind)k)) continue;
         const ModuleInfo& mi = module_info((ModuleKind)k);
         const uint8_t* data = (const uint8_t*)o.modules.data((ModuleKind)k);
-        for (int f = 0; f < mi.field_count; f++)
-            if (mi.fields[f].type == FieldType::Path) add_file(c, (const char*)data + mi.fields[f].offset, mi.fields[f].name, who);
+        for (int f = 0; f < mi.field_count; f++) {
+            const char* fp = (const char*)data + mi.fields[f].offset;
+            if (mi.fields[f].type == FieldType::Path) add_file(c, fp, mi.fields[f].name, who);
+            else if (mi.fields[f].type == FieldType::PathList) {
+                char one[kPathMax];
+                for (const char* at = path_list_next(fp, one, kPathMax); at; at = path_list_next(at, one, kPathMax)) add_file(c, one, mi.fields[f].name, who);
+            }
+        }
     }
     // An Animator without a file of its own plays <model>.fanim next to the model, if there is one.
     if (o.modules.has(ModuleKind::Animator) && !o.modules.animator.source[0] && o.model_path[0]) {

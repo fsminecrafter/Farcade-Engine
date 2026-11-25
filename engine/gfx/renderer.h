@@ -58,6 +58,10 @@ struct DrawItem {
     bool cast_shadows = true;           // GPU tier
     bool occluder = true;               // may hide other items from the camera (occlusion culling)
     bool foliage = false;               // grass and the like: never an occluder, left out of the probe GI
+    // Leaf cards and the like: pixels where the texture's alpha is below alpha_cut are not drawn (also in
+    // shadow maps and depth); 0 = opaque. double_sided: no back face culling, back faces lit from their side.
+    float alpha_cut = 0.0f;
+    bool double_sided = false;
 };
 
 // A light in world space (filled from a Light module and its object).

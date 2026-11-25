@@ -205,6 +205,8 @@ struct FoliagePart {
     uint32_t per = 0;                       // vertices per instance
     char texture[320] = {};
     Vec3 color = Vec3(1, 1, 1);
+    float alpha_cut = 0.0f;                 // the model part's material (leaf cards)
+    bool double_sided = false;
 };
 
 // One model's instances in a block, and the geometry of a prefix of them.
@@ -603,6 +605,8 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                                     fp.per = pv;
                                     snprintf(fp.texture, sizeof fp.texture, "%s", mp.texture);
                                     fp.color = mp.color;
+                                    fp.alpha_cut = mp.alpha_cut;
+                                    fp.double_sided = mp.double_sided;
                                     for (int i = 0; i < target; i++) {
                                         const FoliageInstance& fi = gr.inst[i];
                                         // Frame: up along fi.up, turned by yaw around it, scaled.
@@ -654,6 +658,8 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                             it->texture_path = fp.texture[0] ? fp.texture : nullptr;
                             it->shader_path = fl.shader[0] ? fl.shader : nullptr;    // a sway shader (u_time)
                             it->color = fp.color;
+                            it->alpha_cut = fp.alpha_cut;
+                            it->double_sided = fp.double_sided;
                             it->roughness = 0.8f;
                             it->cast_shadows = fl.cast_shadows;
                             it->occluder = false;

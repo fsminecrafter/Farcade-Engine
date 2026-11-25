@@ -111,6 +111,11 @@ bool build(Model* m, const uint8_t* data, size_t size) {
                 p.color = Vec3(to_srgb8(mat.base_color[0]) / 255.0f, to_srgb8(mat.base_color[1]) / 255.0f, to_srgb8(mat.base_color[2]) / 255.0f);
                 uint32_t t = mat.tex[MOF_SLOT_BASE_COLOR].texture;
                 if (t != MOF_NONE && t < f.texture_count && uv) snprintf(p.texture, sizeof p.texture, "mof:%s#%u", m->path, (unsigned)t);
+                // Leaf cards: an alpha mask (blending is drawn as a mask too: there is no sorting).
+                uint32_t am = (mat.flags & MOF_MATERIAL_ALPHA_MASK) >> MOF_MATERIAL_ALPHA_SHIFT;
+                if (p.texture[0] && am == MOF_ALPHA_MASK) p.alpha_cut = mat.alpha_cutoff > 0.0f ? mat.alpha_cutoff : 0.5f;
+                else if (p.texture[0] && am == MOF_ALPHA_BLEND) p.alpha_cut = 0.5f;
+                p.double_sided = (mat.flags & MOF_MATERIAL_DOUBLE_SIDED) != 0;
             }
             total += count;
         }

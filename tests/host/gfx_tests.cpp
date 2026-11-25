@@ -1801,7 +1801,16 @@ const char kDownNormal[] =
     "vec3 displace(vec3 p, vec3 n, vec2 uv) { return p; }\n"
     "vec3 displace_normal(vec3 p, vec3 n, vec2 uv) { return vec3(0.0, -1.0, 0.0); }\n";
 
+// A 2 x 1 RGBA PNG: the left texel is transparent, the right one opaque white.
+const uint8_t kHalfTga[73] = { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0, 244, 34, 127, 138, 0, 0, 0, 16, 73, 68, 65, 84, 120, 156, 99, 248, 255, 255, 63, 3, 16, 255, 7, 0, 30, 234, 6, 250, 57, 43, 101, 106, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+
 void* read_hook_asset(const char* path, size_t* size, void* u) {
+    if (!strcmp(path, "half.png")) {
+        *size = sizeof kHalfTga;
+        void* m = malloc(*size);
+        if (m) memcpy(m, kHalfTga, *size);
+        return m;
+    }
     const char* src = nullptr;
     if (!strcmp(path, "shear.fshader")) src = kShearHook;
     else if (!strcmp(path, "down.fshader")) src = kDownNormal;
@@ -2053,8 +2062,96 @@ void check_foliage_shadow_density() {
     CHECKF(dark[1] > dark[0] + 200 && dark[2] > dark[1] + 200, "foliage shadow darkness by density 0 / 0.5 / 1: %ld / %ld / %ld", dark[0], dark[1], dark[2]);
 }
 
+// A card (two triangles, its own UVs), centred at the origin in the plane given by axes a and b.
+struct Card {
+    Vec3 p[6], n[6];
+    float uv[12];
+    Card(Vec3 a, Vec3 b) {
+        Vec3 c[4] = { a * -1.0f + b * -1.0f, a + b * -1.0f, a + b, a * -1.0f + b };
+        float t[8] = { 0, 1, 1, 1, 1, 0, 0, 0 };
+        const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+        Vec3 nn = normalize(cross(a, b));
+        for (int i = 0; i < 6; i++) { p[i] = c[idx[i]]; n[i] = nn; uv[i * 2] = t[idx[i] * 2]; uv[i * 2 + 1] = t[idx[i] * 2 + 1]; }
+    }
+};
+
+// Alpha cut-out: the transparent half of a card shows what is behind it, in both tiers, and casts no
+// shadow; double_sided draws (and lights) its back.
+void check_cutout(bool tier) {
+    const char* tn = tier ? "GPU tier" : "base tier";
+    TestScene t;
+    t.scene.read_asset = read_hook_asset;
+    t.lights[0] = dir_light(Vec3(0.2f, -1, -0.3f));
+    t.scene.light_count = 1;
+    t.scene.sky_light.intensity = 0.3f;
+    t.scene.sky_light.sky_color = Vec3(1, 1, 1);
+    t.scene.sky_light.ground_color = Vec3(1, 1, 1);
+    // a card facing the camera (+z), 2 m wide, standing on the ground at z = 0
+    Card card(Vec3(1, 0, 0), Vec3(0, 0.75f, 0));
+    t.items[0].mesh = RenderMesh{ card.p, card.n, 6, 21 };
+    t.items[0].mesh.uvs = card.uv;
+    t.items[0].model = Mat4::translation(Vec3(0, 1.0f, 0));
+    t.items[0].color = Vec3(0.9f, 0.2f, 0.2f);
+    t.items[0].texture_path = "half.png";
+    t.items[0].alpha_cut = 0.5f;
+    t.camera(Vec3(0, 1.0f, 4.0f), Vec3(0, 1.0f, 0));
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    if (tier) g.pbr = true; else g.allow_gpu_effects_on_cpu = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px left = t.at(r, Vec3(-0.5f, 1.0f, 0)), right = t.at(r, Vec3(0.5f, 1.0f, 0));
+    CHECKF(right.r > 60 && right.r > right.g * 2, "%s: the opaque half is drawn (%d %d %d)", tn, right.r, right.g, right.b);
+    CHECKF(abs(left.r - left.g) < 12, "%s: the transparent half shows the sky behind (%d %d %d)", tn, left.r, left.g, left.b);
+    t.items[0].alpha_cut = 0.0f;
+    CHECK(render_ok(r, t.scene));
+    left = t.at(r, Vec3(-0.5f, 1.0f, 0));
+    CHECKF(left.r > left.g + 30, "%s: without the cut-out the whole card is drawn (%d %d %d)", tn, left.r, left.g, left.b);
+    // the back of the card: culled unless double_sided, which also lights it from its side
+    t.items[0].alpha_cut = 0.5f;
+    t.camera(Vec3(0, 1.0f, -4.0f), Vec3(0, 1.0f, 0));
+    CHECK(render_ok(r, t.scene));
+    Px back = t.at(r, Vec3(0.5f, 1.0f, 0));        // the opaque half, seen from behind
+    CHECKF(abs(back.r - back.g) < 12, "%s: one-sided: the back is culled (%d %d %d)", tn, back.r, back.g, back.b);
+    t.items[0].double_sided = true;
+    CHECK(render_ok(r, t.scene));
+    back = t.at(r, Vec3(0.5f, 1.0f, 0));
+    Px hole = t.at(r, Vec3(-0.5f, 1.0f, 0));
+    CHECKF(back.r > 50 && back.r > back.g * 2, "%s: two-sided: the back is drawn (%d %d %d)", tn, back.r, back.g, back.b);
+    CHECKF(abs(hole.r - hole.g) < 12, "%s: and keeps its cut-out (%d %d %d)", tn, hole.r, hole.g, hole.b);
+    t.items[0].double_sided = false;
+    if (!tier) return;
+    // Shadows: a flat card above the ground casts only its opaque half.
+    Card flat(Vec3(1, 0, 0), Vec3(0, 0, -1));
+    t.items[0].mesh = RenderMesh{ flat.p, flat.n, 6, 22 };
+    t.items[0].mesh.uvs = flat.uv;
+    t.items[0].model = Mat4::translation(Vec3(0, 1.0f, 0));
+    t.items[0].double_sided = true;
+    t.scene.item_count = 2;
+    // The sun leans towards -x by 45 degrees: the hole's shadow would land at x -2..-1 (open ground), the
+    // opaque half's at x -1..0 (seen through the hole).
+    t.lights[0] = dir_light(Vec3(-1, -1, 0));
+    t.camera(Vec3(0, 6.0f, 3.0f), Vec3(-0.5f, 0, 0));
+    g.shadows = true;
+    g.shadow_cascades = 1;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene));
+    int beside = lum_at(t, r, Vec3(-1.5f, 0, 0)), through = lum_at(t, r, Vec3(-0.5f, 0, 0)), open = lum_at(t, r, Vec3(-1.5f, 0, 2.0f));
+    CHECKF(abs(beside - open) < 20, "the cut-out half casts no shadow (%d, open ground %d)", beside, open);
+    CHECKF(through < open * 0.7f, "the opaque half does, seen through the hole (%d, open ground %d)", through, open);
+    t.items[0].alpha_cut = 0.0f;
+    CHECK(render_ok(r, t.scene));
+    beside = lum_at(t, r, Vec3(-1.5f, 0, 0));
+    CHECKF(beside < open * 0.7f, "without the cut-out the whole card casts (%d, open ground %d)", beside, open);
+    t.items[0].alpha_cut = 0.5f;
+    t.items[0].double_sided = false;
+}
+
 void test_shader_hooks() {
     test_shader_sections();
+    check_cutout(true);
+    check_cutout(false);
     check_displace_matches(true);
     check_displace_matches(false);
     check_displaced_normals(true);

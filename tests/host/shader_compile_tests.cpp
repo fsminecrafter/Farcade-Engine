@@ -31,7 +31,13 @@ void check(const char* what, size_t cap) {
     }
     // FE_DUMP_DIR=<dir>: every program as <dir>/NNNN.vs and .fs (Minimal-OS's nv_sass_tests runs them
     // through the NVIDIA shader compiler and its simulator: NV_SASS_SHADER_DIR=<dir>).
-    if (const char* dir = getenv("FE_DUMP_DIR")) {
+    // FE_DUMP_MATCH=<text>: only programs whose name contains it; FE_DUMP_EVERY=<n>: one in n of those.
+    static int g_matched = 0;
+    const char* match = getenv("FE_DUMP_MATCH");
+    const char* every = getenv("FE_DUMP_EVERY");
+    bool dump = !match || strstr(what, match);
+    if (dump && every && atoi(every) > 1) dump = (g_matched++ % atoi(every)) == 0;
+    if (const char* dir = getenv("FE_DUMP_DIR"); dir && dump) {
         char path[512];
         const char* parts[2] = { g_vs, g_fs };
         for (int k = 0; k < 2; k++) {
@@ -64,9 +70,10 @@ const char* const kSurface =
     "}\n";
 
 // Splices hooks into g_vs / g_fs: displace (the sway), surface, texture. False: it does not fit.
-bool splice(size_t cap, bool displace, bool surface, bool tex, bool wave = false) {
-    return fe::gfx::hook_vertex(g_vs, cap, wave ? kWave : (displace ? g_sway : nullptr), tex || surface) &&
-           fe::gfx::hook_fragment(g_fs, cap, surface ? kSurface : nullptr, tex);
+bool splice(size_t cap, bool displace, bool surface, bool tex, bool wave = false, bool cut = false, bool two = false) {
+    return fe::gfx::hook_vertex(g_vs, cap, wave ? kWave : (displace ? g_sway : nullptr), tex || surface || cut) &&
+           fe::gfx::hook_fragment(g_fs, cap, surface ? kSurface : nullptr, tex) &&
+           fe::gfx::hook_material(g_fs, cap, cut, two);
 }
 
 void fail_splice(const char* what) {
@@ -121,6 +128,10 @@ void cpu_tier(const PostKey* posts, int np) {
                 lit_fragment(g_fs, kSourceBytes, 2, 2, 2, posts[pi], gi != 0);
                 snprintf(what, sizeof what, "lit 2/2/2%s%s%s, %s", gi ? " gi" : "", d ? " +displace" : "", sf ? " +surface" : "", pn);
                 if (splice(kSourceBytes, d, sf, false)) check(what, kSourceBytes); else fail_splice(what);
+                lit_vertex(g_vs, kSourceBytes);
+                lit_fragment(g_fs, kSourceBytes, 2, 2, 2, posts[pi], gi != 0);
+                snprintf(what, sizeof what, "lit 2/2/2%s%s%s +cutout +two-sided, %s", gi ? " gi" : "", d ? " +displace" : "", sf ? " +surface" : "", pn);
+                if (splice(kSourceBytes, d, sf, false, false, true, true)) check(what, kSourceBytes); else fail_splice(what);
             }
             unlit_vertex(g_vs, kSourceBytes);
             unlit_fragment(g_fs, kSourceBytes, posts[pi]);
@@ -195,6 +206,11 @@ void gpu_tier_lit(const PostKey* posts, int np) {
                             char w3[448];
                             snprintf(w3, sizeof w3, "%s +displace (normals worked out) +texture", what);
                             if (splice(kHqSourceBytes, true, false, true, true)) check(w3, kHqSourceBytes); else fail_splice(w3);
+                            // leaf cards: cut-out, two-sided, the sway and the texture together
+                            hq_lit_vertex(g_vs, kHqSourceBytes, c);
+                            hq_lit_fragment(g_fs, kHqSourceBytes, k);
+                            snprintf(w3, sizeof w3, "%s +displace +texture +cutout +two-sided", what);
+                            if (splice(kHqSourceBytes, true, false, true, false, true, true)) check(w3, kHqSourceBytes); else fail_splice(w3);
                         }
                     }
                 }
@@ -219,6 +235,13 @@ void gpu_tier_rest(const PostKey* posts, int np) {
             fg[i](g_fs, kHqSourceBytes);
             snprintf(what, sizeof what, "hq %s +displace (normals worked out)", names[i]);
             if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, kWave, false)) check(what, kHqSourceBytes); else fail_splice(what);
+            for (int m = 1; m < 4; m++) {
+                vg[i](g_vs, kHqSourceBytes);
+                fg[i](g_fs, kHqSourceBytes);
+                snprintf(what, sizeof what, "hq %s +cutout%s%s", names[i], (m & 1) ? " +displace" : "", (m & 2) ? " +two-sided" : "");
+                if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, (m & 1) ? g_sway : nullptr, true) &&
+                    fe::gfx::hook_material(g_fs, kHqSourceBytes, true, (m & 2) != 0)) check(what, kHqSourceBytes); else fail_splice(what);
+            }
         }
         hq_shadow_vertex(g_vs, kHqSourceBytes);
         hq_shadow_over_fragment(g_fs, kHqSourceBytes);

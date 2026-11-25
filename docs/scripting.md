@@ -164,7 +164,8 @@ using a handle as a table key work.
 | `obj:destroy()` | a request: the object and its children are destroyed when the outermost callback returns. The handle reads `alive == false` from then on, and every other access raises "the object no longer exists" |
 | `obj.alive` | false once destroyed |
 | `obj.material` | the look of a mesh object, or nil for objects without a mesh (see below) |
-| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
+| `obj.streaming`, `obj.loaded` | the object's Streaming mode (`"dynamic"`, `"always"`, `"unloaded"`) and whether it is loaded; `obj.loaded = true` loads an Unloaded object (docs/terrain.md) |
+| `obj.<module>` | `rigidbody3d`, `collider3d`, `character_controller3d`, `listener`, `audio_stream`, `audio_sampler`, `light`, `particles`, `joint3d`, `animator`, `force_field`, `spawner`, `reverb_zone`, `billboard`, `text3d`, `camera`, `skylight`, `sky`, `post_process`, `terrain` (see modules.md; methods such as `obj.particles:emit(10)`, `obj.animator:play("walk", 0.3)`, `obj.spawner:spawn()`, `obj.joint3d:snap()` — `break` is a Lua keyword): the module, or nil if the object has none |
 
 A module's fields read and write through the ECS (`World::get_field` /
 `set_field`): numbers are clamped to the field's range, enums are their name
@@ -228,6 +229,7 @@ give `{x=, y=, z=}` or `{1, 2, 3}`.
 | `fe.current(module)` | the current camera/sky/skylight/post_process/listener object, or nil |
 | `fe.broadcast(event, ...)` | `on_<event>` and `on_event` on every script instance |
 | `fe.time()` | seconds since the runtime started |
+| `fe.terrain_height(x, z)` | the ground's world height and normal there (`local h, n = fe.terrain_height(x, z)`), nil off the terrains and over holes (docs/terrain.md) |
 | `fe.status(text [, progress])` | shows a line (and a bar when `progress`, 0..1, is given; without it the bar moves on its own) over the game, in the player and in Play; `fe.status()` hides it. For loading screens and "waiting for ..." messages; it is drawn together with FarcadeGL's "Compiling shaders" bar |
 | `fe.dt` | the dt of the frame being run |
 | `fe.log(...)`, `print(...)` | to the console (Info), arguments as text separated by tabs |

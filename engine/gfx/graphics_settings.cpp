@@ -55,6 +55,7 @@ const Prop kProps[] = {
     BP("dynamic_resolution", "Move the render scale to hold target_frame_ms", dynamic_resolution),
     FP("target_frame_ms", 8.0f, 100.0f, "Frame time dynamic resolution aims for", target_frame_ms),
     FP("min_render_scale", 0.25f, 1.0f, "Lowest scale dynamic resolution may use", min_render_scale),
+    BP("occlusion_culling", "Skip items hidden behind big nearby ones (a small CPU depth buffer)", occlusion_culling),
     IP("shadows", GraphicsPropKind::Choice, 0, 0, kShadowModes, "Sun shadows: off, one map, or cascades (GPU tier)",
        [](const GS& s) { return !s.shadows ? 0 : (s.shadow_cascades <= 1 ? 1 : 2); },
        [](GS& s, int v) { s.shadows = v != 0; if (v == 1) s.shadow_cascades = 1; else if (v == 2 && s.shadow_cascades < 2) s.shadow_cascades = 3; }),

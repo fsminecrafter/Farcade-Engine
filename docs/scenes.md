@@ -67,6 +67,12 @@ end
   exactly.
 - **Paths** inside the project are stored relative to it. This covers
   textures, models, scripts and audio.
+- **Terrains** (`kind terrain`) keep their heights, holes and foliage in their
+  own `.fterrain` file, which the `terrain` module's `data` field names and
+  which is saved with the scene. `revision` ties the file to the editor's undo
+  history (docs/terrain.md).
+- **Streaming** is written as `streaming always` or `streaming unloaded`.
+  Dynamic, the default, is not written.
 
 ## Reading rules
 

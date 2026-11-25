@@ -439,8 +439,16 @@ struct GpuTier::Impl {
 
     // ---- bounds
 
+    // Every item that may cast a shadow (the camera's items are only what survived culling).
+    static const DrawItem* casters(const RenderScene& s, int* n) {
+        if (s.shadow_items) { *n = s.shadow_item_count; return s.shadow_items; }
+        *n = s.item_count;
+        return s.items;
+    }
+
     Bounds mesh_bounds(const RenderMesh& m) {
         Bounds b;
+        if (m.has_bounds) { b.add(m.bounds_min); b.add(m.bounds_max); return b; }
         uint32_t vc = m.vertex_count / 3 * 3;
         if (!m.positions || !vc) return b;
         if (m.key) {
@@ -605,9 +613,10 @@ struct GpuTier::Impl {
     uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int* count) {
         uint64_t hash = 1469598103934665603ull;
         bool cacheable = true;
-        int n = 0;
-        for (int i = 0; i < s.item_count; i++) {
-            const DrawItem& it = s.items[i];
+        int n = 0, nc = 0;
+        const DrawItem* cast_items = casters(s, &nc);
+        for (int i = 0; i < nc; i++) {
+            const DrawItem& it = cast_items[i];
             if (!it.cast_shadows || !in_cascade(item_bounds(it), f)) continue;
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
@@ -634,8 +643,10 @@ struct GpuTier::Impl {
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         fglUseShader(gl, shadow_p);
         bool failed = false;
-        for (int i = 0; i < s.item_count && !failed; i++) {
-            const DrawItem& it = s.items[i];
+        int nc = 0;
+        const DrawItem* cast_items = casters(s, &nc);
+        for (int i = 0; i < nc && !failed; i++) {
+            const DrawItem& it = cast_items[i];
             if (!it.cast_shadows || !in_cascade(item_bounds(it), fit)) continue;
             host.draw_mesh(host.user, it, false, &failed);
         }
@@ -801,8 +812,10 @@ struct GpuTier::Impl {
             hash = fnv(hash, &o.f, sizeof o.f);
             hash = fnv(hash, &o.tn, sizeof o.tn);
         }
-        for (int i = 0; i < s.item_count; i++) {
-            const DrawItem& it = s.items[i];
+        int ncast = 0;
+        const DrawItem* cast_items = casters(s, &ncast);
+        for (int i = 0; i < ncast; i++) {
+            const DrawItem& it = cast_items[i];
             if (!it.cast_shadows) continue;
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
@@ -842,8 +855,8 @@ struct GpuTier::Impl {
                 int t = o.tile + face;
                 host.set_viewport(host.user, (t % kAtlasTiles) * T, (t / kAtlasTiles) * T, T, T);
                 fglSetView(gl, to_fgl(view));
-                for (int i = 0; i < s.item_count && !failed; i++) {
-                    const DrawItem& it = s.items[i];
+                for (int i = 0; i < ncast && !failed; i++) {
+                    const DrawItem& it = cast_items[i];
                     if (!it.cast_shadows) continue;
                     // only casters that reach into the light's range
                     Bounds b = item_bounds(it);
@@ -1480,12 +1493,11 @@ struct GpuTier::Impl {
                         fabsf_(c[0] - col.x) + fabsf_(c[1] - col.y) + fabsf_(c[2] - col.z) < 1e-3f) {
                         shadow_light = i;
                         Bounds recv, cast;
-                        for (int j = 0; j < s.item_count; j++) {
-                            const DrawItem& it = s.items[j];
-                            Bounds b = item_bounds(it);
-                            recv.add(b);
-                            if (it.cast_shadows) cast.add(b);
-                        }
+                        for (int j = 0; j < s.item_count; j++) recv.add(item_bounds(s.items[j]));
+                        int ncast = 0;
+                        const DrawItem* cast_items = casters(s, &ncast);
+                        for (int j = 0; j < ncast; j++)
+                            if (cast_items[j].cast_shadows) cast.add(item_bounds(cast_items[j]));
                         if (!cascades_pass(s, host, gs, plan.hw, recv, cast, best->direction, &cs)) return false;
                         break;
                     }
@@ -1593,13 +1605,14 @@ GpuPlan GpuTier::plan(const RenderScene& scene, const GraphicsFeatures& f) {
         const RenderLight& l = scene.lights[i];
         if (l.type == LightType::Directional && l.shadows && l.intensity * luma(l.color) > 0.0f) sun = true;
     }
-    p.shadows = f.shadows && sun && scene.item_count > 0;
+    int ncast = scene.shadow_items ? scene.shadow_item_count : scene.item_count;
+    p.shadows = f.shadows && sun && ncast > 0;
     bool local = false;
     for (int i = 0; i < scene.light_count; i++) {
         const RenderLight& l = scene.lights[i];
         if (l.type != LightType::Directional && l.shadows && l.intensity * luma(l.color) > 0.0f) local = true;
     }
-    p.local_shadows = f.local_shadows && local && scene.item_count > 0;
+    p.local_shadows = f.local_shadows && local && ncast > 0;
     p.ao = f.ambient_occlusion && scene.item_count > 0;
     p.bloom = f.bloom && scene.post.bloom > 0.0f;
     p.aa = f.antialiasing;

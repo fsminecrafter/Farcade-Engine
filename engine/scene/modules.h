@@ -7,7 +7,7 @@
 //   AudioStream, AudioSampler, Light, ParticleEmitter, Joint3D, Animator,
 //   ForceField, Spawner, ReverbZone, Billboard, Text3D.
 // - Special objects are object kinds with their own settings: Camera,
-//   SkyLight, Sky, PostProcess (ObjectKind).
+//   SkyLight, Sky, PostProcess, Terrain (ObjectKind).
 // - Some kinds have a "current" flag: only one object (or module) of that
 //   kind is current in a scene at a time - the camera the game renders
 //   with, the active sky, the listener that hears. Setting one current
@@ -32,20 +32,25 @@ namespace fe {
 // What an object is. Mesh objects draw a mesh (Object::mesh); Empty is a
 // plain transform (a group, a spawn point, a holder for modules); the others
 // carry the settings struct of the same name.
-enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProcess, Count };
+enum class ObjectKind : uint8_t { Mesh, Empty, Camera, SkyLight, Sky, PostProcess, Terrain, Count };
 
 // Modules, and the settings of special objects, share one numbering so one
 // reflection table covers both.
 enum class ModuleKind : uint8_t {
     RigidBody3D, Collider3D, CharacterController3D, AudioListener, AudioStream, AudioSampler, Light, // modules
     ParticleEmitter, Joint3D, Animator, ForceField, Spawner, ReverbZone, Billboard, Text3D,         // more modules
-    Camera, SkyLight, Sky, PostProcess,                                          // special objects
+    Camera, SkyLight, Sky, PostProcess, Terrain,                                 // special objects
     Count
 };
 constexpr int kModuleKindCount = (int)ModuleKind::Count;
 constexpr int kFirstObjectSettings = (int)ModuleKind::Camera;
 
 constexpr int kPathMax = 256;
+
+// How an object is loaded at run time (the Object's Streaming property; scene/terrain.h).
+// Dynamic: loaded while the terrain chunk under it is (always, when it is over no terrain).
+// AlwaysLoaded: never unloaded. Unloaded: not loaded until a script sets obj.loaded = true.
+enum class StreamMode : uint8_t { Dynamic, AlwaysLoaded, Unloaded };
 
 // ---------------------------------------------------------------- modules
 
@@ -399,6 +404,45 @@ struct PostProcess {
     float auto_exposure_max = 3.0f;
 };
 
+// ---------------------------------------------------------------- terrain
+
+constexpr int kFoliageLayers = 4;
+
+// One kind of foliage on a terrain: a .mof model scattered where the layer is
+// painted, turned randomly around its up axis (never tipped into the ground),
+// thinned out with distance and drawn in batches per chunk (scene/terrain.h).
+struct FoliageLayer {
+    char model[kPathMax] = {};          // the .mof; empty = the layer is off
+    float density = 2.0f;               // instances per square meter where painted at full strength
+    float scale_min = 0.8f;
+    float scale_max = 1.2f;
+    float distance = 60.0f;             // meters: drawn up to here, thinning out over the last 60%
+    float max_slope = 40.0f;            // degrees: steeper ground gets none
+    bool align_to_slope = false;        // stand along the ground's normal (else straight up)
+    bool cast_shadows = false;
+};
+
+// A heightfield split into square chunks. Heights, holes and the painted
+// foliage live in the `data` file (.fterrain, scene/terrain.h); the terrain
+// sits at its object's position (rotation and scale are not used). Chunks
+// farther than load_distance from the camera are unloaded at run time, with
+// the Dynamic objects standing on them.
+struct Terrain {
+    char data[kPathMax] = {};           // the .fterrain file (made by Generate)
+    float load_distance = 250.0f;       // meters from the camera to a chunk's edge
+    bool stream_in_editor = false;      // the editor view unloads chunks (and objects) too
+    float lod_distance = 64.0f;         // full detail up to here; half the detail per further step
+    char texture[kPathMax] = {};
+    Vec3 color = Vec3(0.34f, 0.46f, 0.24f);
+    float roughness = 0.9f;
+    float uv_scale = 4.0f;              // meters per texture repeat
+    bool cast_shadows = true;
+    float friction = 0.8f;
+    uint32_t layer = 1;                 // collision layer bits
+    int revision = 0;                   // the data's edit revision (undo / redo; set by the editor)
+    FoliageLayer foliage[kFoliageLayers];
+};
+
 // ---------------------------------------------------------------- reflection
 
 // Object: a link to another object (an ObjectLink, 32 bits, 0 = none).
@@ -474,6 +518,7 @@ struct ModuleSet {
     SkyLight sky_light;
     Sky sky;
     PostProcess post_process;
+    Terrain terrain;
 
     bool has(ModuleKind k) const { return (present >> (int)k) & 1u; }
     void add(ModuleKind k) { present |= 1u << (int)k; }

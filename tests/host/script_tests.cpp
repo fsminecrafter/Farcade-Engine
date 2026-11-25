@@ -113,6 +113,51 @@ static void check_status() {
     SCRIPT_CHECK(!E.flag(id, "bad"));                                                // a table is no text: an error
 }
 
+// ---- terrain and streaming through the host (fe.terrain_height, obj.loaded, obj.streaming)
+static int g_mode = 2;
+static bool g_loaded = false;
+static void check_terrain_and_streaming() {
+    fe::World w;
+    SCRIPT_CHECK(w.init());
+    fe::ScriptRuntime rt;
+    fe::ScriptHost h;
+    h.terrain_height = [](float x, float z, float* hgt, fe::Vec3* n, void*) {
+        if (x < 0) return false;
+        *hgt = 2.0f + x * 0.5f;
+        *n = fe::Vec3(0, 1, 0);
+        (void)z;
+        return true;
+    };
+    h.stream_get = [](fe::Entity, int* mode, bool* loaded, void*) { *mode = g_mode; *loaded = g_loaded; return true; };
+    h.stream_set = [](fe::Entity, int mode, int loaded, void*) { if (mode >= 0) g_mode = mode; if (loaded >= 0) g_loaded = loaded != 0; };
+    SCRIPT_CHECK(rt.init(&w, h));
+    fe::Entity e = w.create("obj");
+    const char* src =
+        "function on_start(self)\n"
+        "  self.h = fe.terrain_height(4, 1)\n"
+        "  self.none = fe.terrain_height(-1, 0) == nil\n"
+        "  self.mode = self.object.streaming\n"
+        "  self.before = self.object.loaded\n"
+        "  self.object.loaded = true\n"
+        "  self.after = self.object.loaded\n"
+        "  self.object.streaming = 'always'\n"
+        "  self.bad = not pcall(function() self.object.streaming = 'sometimes' end)\n"
+        "end\n";
+    int id = rt.add_instance(e, "scripts/t.lua", src, (uint32_t)strlen(src), nullptr, 0, nullptr);
+    SCRIPT_CHECK(id > 0);
+    w.progress(0.016f);
+    double hv = 0;
+    bool b = false;
+    char buf[32];
+    SCRIPT_CHECK(rt.get_number(id, "h", &hv) && hv > 3.99 && hv < 4.01);
+    SCRIPT_CHECK(rt.get_bool(id, "none", &b) && b);
+    SCRIPT_CHECK(rt.get_string(id, "mode", buf, sizeof buf) && !strcmp(buf, "unloaded"));
+    SCRIPT_CHECK(rt.get_bool(id, "before", &b) && !b);
+    SCRIPT_CHECK(rt.get_bool(id, "after", &b) && b && g_loaded);
+    SCRIPT_CHECK(g_mode == 1);
+    SCRIPT_CHECK(rt.get_bool(id, "bad", &b) && b);
+}
+
 int main() {
     run("load errors", check_load_errors);
     run("inputs", check_inputs);
@@ -126,6 +171,7 @@ int main() {
     run("coroutines", check_coroutines_and_limits);
     run("find", check_find);
     run("physics events", check_physics_events);
+    run("terrain and streaming", check_terrain_and_streaming);
     run("errors", check_errors);
     run("sandbox", check_sandbox);
     run("destroy", check_destroy);

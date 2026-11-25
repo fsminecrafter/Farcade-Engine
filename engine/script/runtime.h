@@ -38,6 +38,14 @@ struct ScriptHost {
     // Where print() and errors go (the editor's console).
     void (*log)(ScriptLogLevel level, const char* text, void* user) = nullptr;
     void* user = nullptr;
+    // fe.terrain_height(x, z): the ground's world height (and normal) at x, z; false when no terrain is
+    // under it. Null: fe.terrain_height returns nil.
+    bool (*terrain_height)(float x, float z, float* height, Vec3* normal, void* user) = nullptr;
+    // obj.streaming / obj.loaded (the object's Streaming property, StreamMode in scene/modules.h, and the
+    // flag that loads an Unloaded object). get returns false for objects it does not know. set: -1 keeps
+    // a value. Null: both read as "always" / true and cannot be set.
+    bool (*stream_get)(Entity e, int* mode, bool* loaded, void* user) = nullptr;
+    void (*stream_set)(Entity e, int mode, int loaded, void* user) = nullptr;
 };
 
 // What a game shows about itself while it loads or works (fe.status): the

@@ -62,6 +62,9 @@ struct GraphicsSettings {
     float target_frame_ms = 33.3f;
     float min_render_scale = 0.5f;
     SSAAMode ssaa = SSAAMode::Off;          // supersampling (any tier), see SSAAMode
+    // Occlusion culling (any tier): items hidden behind big nearby ones (terrain, walls) are not drawn. A
+    // small CPU depth buffer is drawn each frame (culling.h). Frustum culling is always on.
+    bool occlusion_culling = true;
     // ---- presenting (the player; the editor viewport draws only when something changed)
     VsyncMode vsync = VsyncMode::Double;
     int refresh_hz = 60;                    // the display's refresh rate for vsync (30..240)
@@ -119,6 +122,7 @@ struct GraphicsSettings {
 //   preset            low | medium | high | ultra | custom   (setting it applies the preset; custom is only read)
 //   feature_level     auto | fl0 | fl1 | gpu
 //   render_scale      0.25 .. 1        dynamic_resolution  bool    target_frame_ms 8..100    min_render_scale 0.25..1
+//   occlusion_culling bool
 //   shadows           off | single | cascades      shadow_cascades 2..3 (with cascades)
 //   shadow_resolution 512 | 1024 | 2048 | 4096     shadow_distance 1..2000 (m)
 //   soft_shadows      bool             cascade_cache       bool

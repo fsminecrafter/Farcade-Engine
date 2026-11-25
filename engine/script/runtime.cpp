@@ -615,6 +615,13 @@ int obj_index(lua_State* L) {
     } else if (strcmp(k, "parent") == 0) {
         Entity p = w->parent(e);
         if (p) push_object(L, p); else lua_pushnil(L);
+    } else if (strcmp(k, "streaming") == 0 || strcmp(k, "loaded") == 0) {
+        static const char* const modes[] = { "dynamic", "always", "unloaded" };
+        int mode = 1;
+        bool loaded = true;
+        if (I->host.stream_get) I->host.stream_get(e, &mode, &loaded, I->host.user);
+        if (k[0] == 's') lua_pushstring(L, modes[mode >= 0 && mode < 3 ? mode : 1]);
+        else lua_pushboolean(L, loaded);
     } else if (strcmp(k, "material") == 0) {
         // Only objects that draw a mesh have one.
         if (w->renderable(e)) {
@@ -654,10 +661,18 @@ int obj_newindex(lua_State* L) {
         } else {
             w->transform(e)->scale = check_vec3(L, 3);
         }
+    } else if (strcmp(k, "loaded") == 0) {
+        if (lua_type(L, 3) != LUA_TBOOLEAN) return luaL_error(L, "obj.loaded expects true or false, got %s", luaL_typename(L, 3));
+        if (I->host.stream_set) I->host.stream_set(e, -1, lua_toboolean(L, 3) ? 1 : 0, I->host.user);
+    } else if (strcmp(k, "streaming") == 0) {
+        const char* v = luaL_checkstring(L, 3);
+        int mode = !strcmp(v, "dynamic") ? 0 : !strcmp(v, "always") ? 1 : !strcmp(v, "unloaded") ? 2 : -1;
+        if (mode < 0) return luaL_error(L, "obj.streaming is \"dynamic\", \"always\" or \"unloaded\", not '%s'", v);
+        if (I->host.stream_set) I->host.stream_set(e, mode, -1, I->host.user);
     } else if (strcmp(k, "world_position") == 0 || strcmp(k, "parent") == 0 || strcmp(k, "alive") == 0 || strcmp(k, "material") == 0) {
         return luaL_error(L, "'%s' is read only", k);
     } else {
-        return luaL_error(L, "cannot set '%s' on an object (settable: name, position, rotation, scale; modules are read with obj.<module>)", k);
+        return luaL_error(L, "cannot set '%s' on an object (settable: name, position, rotation, scale, loaded, streaming; modules are read with obj.<module>)", k);
     }
     return 0;
 }
@@ -987,6 +1002,18 @@ int f_status(lua_State* L) {
     return 0;
 }
 
+// fe.terrain_height(x, z) -> height, normal (or nil when no terrain is under x, z)
+int f_terrain_height(lua_State* L) {
+    Impl* I = impl_of(L);
+    float x = (float)luaL_checknumber(L, 1), z = (float)luaL_checknumber(L, 2);
+    float h = 0;
+    Vec3 n(0, 1, 0);
+    if (!I->host.terrain_height || !I->host.terrain_height(x, z, &h, &n, I->host.user)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, h);
+    push_vec3(L, n);
+    return 2;
+}
+
 int f_time(lua_State* L) {
     Impl* I = impl_of(L);
     lua_pushnumber(L, now_seconds() - I->t0);
@@ -1138,7 +1165,7 @@ bool ScriptRuntime::init(World* world, const ScriptHost& host) {
         { "broadcast", f_broadcast }, { "time", f_time }, { "status", f_status },
         { "key_down", f_key_down }, { "key_pressed", f_key_pressed }, { "key_released", f_key_released },
         { "mouse_x", f_mouse_x }, { "mouse_y", f_mouse_y }, { "mouse_wheel", f_mouse_wheel },
-        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { nullptr, nullptr } };
+        { "mouse_down", f_mouse_down }, { "mouse_pressed", f_mouse_pressed }, { "terrain_height", f_terrain_height }, { nullptr, nullptr } };
     luaL_setfuncs(L, fe_funcs, 0);
     set_funcs_with_upvalue(L, "log", f_print, (int)ScriptLogLevel::Info);
     set_funcs_with_upvalue(L, "warn", f_print, (int)ScriptLogLevel::Warning);

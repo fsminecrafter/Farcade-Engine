@@ -18,8 +18,9 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
     scene.camera.near_plane = near_plane;
     scene.camera.far_plane = far_plane;
     int n = sc.count();
+    terrain.update(sc, eye, playing);
     // A model object is one draw item per part (material).
-    int need = n;
+    int need = n + terrain.item_count();
     for (int i = 0; i < n; i++)
         if (const Model* mod = Scene::model_for(sc.at(i))) need += mod->part_count;
     if (item_cap < need || light_cap < n) {
@@ -29,9 +30,11 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
         item_cap = light_cap = cap;
     }
     int ni = 0, nl = 0;
+    unloaded = 0;
     for (int i = 0; i < n; i++) {
         Object& o = sc.at(i);
         if (!sc.visible_in_tree(o)) continue;
+        if (!terrain.loaded(sc, o)) { unloaded++; continue; }
         Mat4 m = sc.world_matrix(o);
         if (const Model* mod = Scene::model_for(o)) {
             // The object's color tints the material colors (the default grey 0.8 is neutral).
@@ -86,6 +89,7 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
             r.shadows = l.shadows;
         }
     }
+    for (int i = 0; i < terrain.item_count(); i++) items[ni++] = terrain.items()[i];
     scene.items = items;
     scene.item_count = ni;
     scene.lights = lights;

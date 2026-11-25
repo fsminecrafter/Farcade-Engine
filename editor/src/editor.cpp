@@ -12,6 +12,7 @@
 #include "scene_io.h"
 #include "model_cache.h"
 #include "model_import.h"
+#include "terrain_bridge.h"
 #include "core/vfs.h"
 
 #include "imgui/imgui.h"
@@ -438,6 +439,14 @@ ObjectId Editor::duplicate_one(ObjectId src_id, ObjectId parent, bool offset, Ob
     memcpy(o->name, name, sizeof(name));
     o->parent = parent;
     if (offset) o->position = src->position + Vec3(0.5f, 0, 0.5f);
+    if (o->kind == ObjectKind::Terrain && o->modules.terrain.data[0]) {
+        // A terrain copy gets its own data file (else both would edit one).
+        char from_path[kPathMax];
+        snprintf(from_path, sizeof from_path, "%s", o->modules.terrain.data);
+        unique_terrain_path(*o, o->modules.terrain.data, sizeof o->modules.terrain.data);
+        if (!terrain_copy_data(from_path, o->modules.terrain.data)) o->modules.terrain.data[0] = 0;
+        else if (TerrainData* td = terrain_data(*o)) { o->modules.terrain.revision = td->revision; terrain_mark_dirty(td); }
+    }
     // Only one object per kind is current: the copy is not.
     for (int k = 0; k < kModuleKindCount; k++)
         if (o->modules.has((ModuleKind)k)) set_current_flag(module_info((ModuleKind)k), o->modules.data((ModuleKind)k), false);
@@ -547,6 +556,11 @@ ObjectId Editor::create_kind(const char* name, ObjectKind kind, const Vec3& at, 
             // Looking at the middle of the scene from where the view is.
             o->rotation = Quat::euler_deg(Vec3(-15, 0, 0));
         }
+        if (kind == ObjectKind::Terrain) {
+            // A flat map centred on where it was made: 256 x 256 m in chunks of 32 m with 1 m cells.
+            o->position = Vec3(at.x, at.y, at.z);
+            generate_terrain(o, at.y, 256.0f, 256.0f, 32.0f, 32, true);
+        }
         ModuleKind k = settings_of(kind);
         if (k != ModuleKind::Count && module_info(k).has_current)
             log(LogLevel::Info, "%s created%s", o->name, scene.is_current(id, k) ? " (current)" : "");
@@ -593,6 +607,63 @@ void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     if (menu_item("Sky", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Sky Light", nullptr, false, true, FE_ICON_SUN)) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Post Processing", nullptr, false, true, FE_ICON_WAND)) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+    ImGui::Separator();
+    if (menu_item("Terrain", nullptr, false, true, FE_ICON_PLANE)) {
+        ObjectId id = create_kind("Terrain", ObjectKind::Terrain, Vec3(0, 0, 0), kNoObject);
+        scene.select_only(id);
+    }
+}
+
+// terrain/<name>_<id>.fterrain, or with _2, _3 ... when a file (or a loaded terrain) has that name.
+void Editor::unique_terrain_path(const Object& o, char* out, size_t cap) {
+    char base[kPathMax];
+    terrain_default_path(o, base, sizeof base);
+    size_t n = strlen(base) - strlen(".fterrain");
+    for (int k = 1; k < 1000; k++) {
+        if (k == 1) snprintf(out, cap, "%s", base);
+        else snprintf(out, cap, "%.*s_%d.fterrain", (int)n, base, k);
+        char full[512];
+        project_path(out, full, sizeof full);
+        bool used = platform::file_exists(full);
+        for (int i = 0; i < scene.count() && !used; i++) {
+            const Object& other = scene.at(i);
+            used = other.id != o.id && other.kind == ObjectKind::Terrain && !strcmp(other.modules.terrain.data, out);
+        }
+        if (!used) return;
+    }
+}
+
+bool Editor::generate_terrain(Object* o, float level, float size_x, float size_z, float chunk_size, int cells, bool keep_center) {
+    if (!o || o->kind != ObjectKind::Terrain) return false;
+    Terrain& ts = o->modules.terrain;
+    TerrainData* td = nullptr;
+    if (!ts.data[0]) {
+        // A new terrain: a data file of its own (never one that is already there).
+        unique_terrain_path(*o, ts.data, sizeof ts.data);
+        td = terrain_new_data(ts.data);
+    } else {
+        td = terrain_data(*o);
+        if (!td) td = terrain_new_data(ts.data);
+    }
+    if (!td) { log(LogLevel::Error, "Terrain: out of memory"); return false; }
+    float old_x = td->valid() ? td->size_x() : 0.0f, old_z = td->valid() ? td->size_z() : 0.0f;
+    if (!(chunk_size > 0.5f)) chunk_size = 32.0f;
+    int cx = (int)(size_x / chunk_size + 0.999f), cz = (int)(size_z / chunk_size + 0.999f);
+    if (cx < 1) cx = 1;
+    if (cz < 1) cz = 1;
+    Vec3 origin = terrain_origin(scene, *o);
+    if (!td->generate(cx, cz, cells, chunk_size, level - origin.y)) { log(LogLevel::Error, "Terrain: out of memory for %d x %d chunks", cx, cz); return false; }
+    if (keep_center) {
+        // Centre the new map where the old one was (or on the object when it had none).
+        float ox = old_x > 0 ? old_x * 0.5f : 0.0f, oz = old_z > 0 ? old_z * 0.5f : 0.0f;
+        o->position.x += ox - td->size_x() * 0.5f;
+        o->position.z += oz - td->size_z() * 0.5f;
+    }
+    ts.revision = td->revision;
+    terrain_mark_dirty(td);
+    log(LogLevel::Info, "%s: %d x %d chunks of %.0f m (%d x %d cells), at y %.2f", o->name, td->chunks_x, td->chunks_z, (double)td->chunk_size,
+        td->side_x(), td->side_z(), (double)level);
+    return true;
 }
 
 void Editor::frame_selection() {
@@ -601,6 +672,12 @@ void Editor::frame_selection() {
     for (int i = 0; i < scene.selected_count(); i++) {
         Object* o = scene.get(scene.selected(i));
         if (!o) continue;
+        if (TerrainData* td = o->kind == ObjectKind::Terrain ? terrain_data(*o) : nullptr) {
+            Vec3 org = terrain_origin(scene, *o);
+            lo = vmin(lo, org);
+            hi = vmax(hi, org + Vec3(td->size_x(), 0, td->size_z()));
+            continue;
+        }
         const MeshData& m = Scene::mesh_for(*o);
         Mat4 mm = scene.world_matrix(*o);
         for (int c = 0; c < 8; c++) {
@@ -718,6 +795,23 @@ bool Editor::save_scene(const char* path) {
         if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
     }
     Scene& src = playing() ? *play_backup_ : scene;
+    // The terrains' data files (terrain/*.fterrain) first: the scene names them.
+    struct TerrainWrite {
+        static bool write(const char* path, const void* data, size_t size, void* user) {
+            Editor* ed = (Editor*)user;
+            char tf[512];
+            ed->project_path(path, tf, sizeof tf);
+            if (const char* sl = strrchr(tf, '/')) {
+                char dir[512];
+                snprintf(dir, sizeof dir, "%.*s", (int)(sl - tf), tf);
+                if (dir[0] && !platform::file_exists(dir)) platform::make_dir(dir);
+            }
+            bool ok = platform::write_file(tf, data, size);
+            if (!ok) ed->log(LogLevel::Error, "Could not write %s", tf);
+            return ok;
+        }
+    };
+    if (!terrain_store_save(src, &TerrainWrite::write, this)) log(LogLevel::Warning, "Save: a terrain's data could not be written");
     size_t size = 0;
     char* text = save_scene_text(src, project_dir, &size);
     if (!text) { log(LogLevel::Error, "Save: out of memory"); return false; }
@@ -883,6 +977,7 @@ bool Editor::open_scene(const char* path) {
     free(text);
     if (!ok) { log(LogLevel::Error, "%s: %s", path_filename(full), rep.error); return false; }
     stop();
+    terrain_store_clear();              // the scene's terrains load from their files
     ObjectId next = scene.next_id();
     scene.copy_from(loaded);
     scene.keep_ids_above(next);         // ids are never handed out twice in a session
@@ -900,6 +995,7 @@ bool Editor::open_scene(const char* path) {
 void Editor::new_scene() {
     stop();
     scene.clear();
+    terrain_store_clear();
     edit_collider = false;
     scene_path[0] = 0;
     history_reset();

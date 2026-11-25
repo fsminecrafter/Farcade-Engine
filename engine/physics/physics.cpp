@@ -299,6 +299,13 @@ void PhysicsWorld::set_mesh(Entity e, const Vec3* points, int count) {
     mesh_count_++;
 }
 
+void PhysicsWorld::set_terrains(const PhysicsTerrain* terrains, int count) {
+    if (count < 0) count = 0;
+    if (count > kMaxPhysicsTerrains) count = kMaxPhysicsTerrains;
+    for (int i = 0; i < count; i++) terrains_[i] = terrains[i];
+    terrain_count_ = count;
+}
+
 void PhysicsWorld::system(World& w, float dt, void* user) {
     PhysicsWorld* p = (PhysicsWorld*)user;
     if (dt <= 0) return;
@@ -337,7 +344,7 @@ void PhysicsWorld::step(float dt) {
         Mat4 fm;
         if (f->affect_bodies && pose_of(world_, fe_, &fm) && field_volume(*f, fm, &fields[nfields])) nfields++;
     }
-    int cap = count_ ? count_ : 1;
+    int cap = count_ + terrain_count_ + 1;
     Item* items = (Item*)malloc(sizeof(Item) * cap);
     int* order = (int*)malloc(sizeof(int) * cap);
     float* keys = (float*)malloc(sizeof(float) * cap);
@@ -598,6 +605,18 @@ void PhysicsWorld::step(float dt) {
     }
     stats_.joints = njr;
 
+    // Terrains: static solver bodies after the others (not in the 0..ns loops).
+    for (int t = 0; t < terrain_count_; t++) {
+        Item* tp = new (&items[ns + t]) Item();
+        tp->e = terrains_[t].entity;
+        tp->ax[0] = Vec3(1, 0, 0); tp->ax[1] = Vec3(0, 1, 0); tp->ax[2] = Vec3(0, 0, 1);
+        tp->com = terrains_[t].origin;
+        tp->mat = Mat4::translation(terrains_[t].origin);
+        tp->friction = terrains_[t].friction;
+        tp->bounce = terrains_[t].bounciness;
+        tp->layer = terrains_[t].layer;
+    }
+
     // ---- broadphase: sweep and prune on x
     for (int i = 0; i < ns; i++) { order[i] = i; keys[i] = items[i].shape ? items[i].cv.lo.x : 1e30f; }
     shell_sort(order, keys, ns);
@@ -630,6 +649,7 @@ void PhysicsWorld::step(float dt) {
     Manifold* cur = nullptr;
     int cur_count = 0, cur_cap = 0;
     stats_.contacts = 0;
+    stats_.terrain_contacts = 0;
     // Entities whose first contact is reported (collected, sent after the step).
     uint64_t* hits = nullptr;
     int hit_count = 0, hit_cap = 0;
@@ -704,6 +724,144 @@ void PhysicsWorld::step(float dt) {
                     pa->controller->grounded = true;
                 if (pb->controller && mf->n.y >= fcos(radians(pb->controller->slope_limit)))
                     pb->controller->grounded = true;
+            }
+        }
+    }
+    // ---- terrain contacts: the lowest points of each moving shape against the heightfields
+    for (int ti = 0; ti < terrain_count_; ti++) {
+        const PhysicsTerrain& T = terrains_[ti];
+        if (!T.height) continue;
+        const int ib = ns + ti;
+        for (int i = 0; i < ns; i++) {
+            Item& a = items[i];
+            if (!a.shape || a.trigger || !(a.layer & T.layer)) continue;
+            if (!a.dynamic && !a.controller) continue;          // only what falls or walks rests on the ground
+            Vec3 lo = a.cv.lo - T.origin, hi = a.cv.hi - T.origin;
+            if (hi.x < 0 || hi.z < 0 || lo.x > T.size_x || lo.z > T.size_z) continue;
+            // The ground under the shape's centre gives the direction of its lowest points.
+            bool cin = false;
+            Vec3 cn(0, 1, 0);
+            Vec3 cl = a.cv.c - T.origin;
+            T.height(T.user, cl.x, cl.z, &cin, &cn);
+            if (!(cn.y > 0.01f)) cn = Vec3(0, 1, 0);
+            Vec3 pts[264];
+            int np = 0;
+            const Convex& cv = a.cv;
+            switch (cv.kind) {
+            case ShapeKind::Sphere: pts[np++] = cv.c - cn * cv.r; break;
+            case ShapeKind::Capsule: {
+                Vec3 e = cv.ax[1] * cv.he.y;
+                pts[np++] = cv.c + e - cn * cv.r;
+                pts[np++] = cv.c - e - cn * cv.r;
+                pts[np++] = cv.c - cn * cv.r;
+                break;
+            }
+            case ShapeKind::Box:
+                for (int k = 0; k < 8; k++)
+                    pts[np++] = cv.c + cv.ax[0] * ((k & 1) ? cv.he.x : -cv.he.x) + cv.ax[1] * ((k & 2) ? cv.he.y : -cv.he.y) +
+                                cv.ax[2] * ((k & 4) ? cv.he.z : -cv.he.z);
+                break;
+            case ShapeKind::Cylinder:
+                for (int k = 0; k < 16; k++) {
+                    float ang = (float)(k % 8) * (kPi / 4.0f);
+                    pts[np++] = cv.c + cv.ax[1] * (k < 8 ? -cv.he.y : cv.he.y) + (cv.ax[0] * fcos(ang) + cv.ax[2] * fsin(ang)) * cv.he.x;
+                }
+                break;
+            case ShapeKind::Hull:
+                if (cv.hull) {
+                    int step = cv.hull->nv > 256 ? (cv.hull->nv + 255) / 256 : 1;
+                    for (int k = 0; k < cv.hull->nv && np < 256; k += step) {
+                        const Vec3& v = cv.hull->v[k];
+                        pts[np++] = cv.c + cv.ax[0] * (v.x * cv.scale.x) + cv.ax[1] * (v.y * cv.scale.y) + cv.ax[2] * (v.z * cv.scale.z);
+                    }
+                }
+                break;
+            default: break;
+            }
+            // Points below (or just above) the ground there.
+            struct Hit { Vec3 pos; Vec3 n; float sep; };
+            Hit hit[264];
+            int nh = 0;
+            for (int k = 0; k < np; k++) {
+                Vec3 lp = pts[k] - T.origin;
+                bool inside = false;
+                Vec3 n(0, 1, 0);
+                float h = T.height(T.user, lp.x, lp.z, &inside, &n);
+                if (!inside) continue;
+                float sep = (lp.y - h) * n.y;
+                if (sep > kMargin) continue;
+                hit[nh].pos = pts[k] - n * (sep * 0.5f);
+                hit[nh].n = n;
+                hit[nh].sep = sep;
+                nh++;
+            }
+            if (!nh) continue;
+            // Up to four: the deepest, then each time the point furthest from those taken.
+            int pick[4];
+            int npk = 0;
+            int deepest = 0;
+            for (int k = 1; k < nh; k++) if (hit[k].sep < hit[deepest].sep) deepest = k;
+            pick[npk++] = deepest;
+            while (npk < 4 && npk < nh) {
+                int best = -1;
+                float bd = -1.0f;
+                for (int k = 0; k < nh; k++) {
+                    float dmin = 1e30f;
+                    for (int q = 0; q < npk; q++) {
+                        Vec3 d = hit[k].pos - hit[pick[q]].pos;
+                        float dd = dot(d, d);
+                        if (dd < dmin) dmin = dd;
+                    }
+                    if (dmin > bd) { bd = dmin; best = k; }
+                }
+                if (best < 0 || bd < 1e-6f) break;
+                pick[npk++] = best;
+            }
+            Vec3 gn(0, 0, 0);
+            for (int q = 0; q < npk; q++) gn += hit[pick[q]].n;
+            gn = normalize(gn);
+            if (!(gn.y > 0.0f)) gn = Vec3(0, 1, 0);
+            if (cur_count == cur_cap) {
+                int nc = cur_cap ? cur_cap * 2 : 128;
+                Manifold* nm = (Manifold*)realloc(cur, sizeof(Manifold) * nc);
+                if (!nm) continue;
+                cur = nm;
+                cur_cap = nc;
+            }
+            Manifold* mf = new (&cur[cur_count++]) Manifold();
+            mf->ea = a.e;
+            mf->eb = T.entity ? T.entity : (Entity)(0xFFFFFFFF00000000ull | (uint64_t)ti);
+            mf->ia = i;
+            mf->ib = ib;
+            mf->n = gn * -1.0f;                                 // from the body (A) into the ground (B)
+            mf->count = npk;
+            mf->mu = fsqrt(a.friction * T.friction);
+            mf->e = maxf(a.bounce, T.bounciness);
+            const Manifold* prev = find_prev(mf->ea, mf->eb);
+            float minsep = 1e30f;
+            for (int q = 0; q < npk; q++) {
+                ManifoldPt& pt = mf->p[q];
+                pt.pos = hit[pick[q]].pos;
+                pt.sep = hit[pick[q]].sep;
+                if (pt.sep < minsep) minsep = pt.sep;
+                Vec3 d = pt.pos - a.com;
+                pt.la = Vec3(dot(d, a.ax[0]), dot(d, a.ax[1]), dot(d, a.ax[2]));
+                if (prev) {
+                    float bdist = kMatchDist * kMatchDist;
+                    for (int r = 0; r < prev->count; r++) {
+                        Vec3 e = prev->p[r].la - pt.la;
+                        float dd = dot(e, e);
+                        if (dd < bdist) { bdist = dd; pt.ln = prev->p[r].ln; pt.lt = prev->p[r].lt; }
+                    }
+                }
+            }
+            bool was = prev && prev->touching;
+            mf->touching = minsep < (was ? kTouchKeep : kTouch);
+            if (mf->touching) {
+                stats_.contacts++;
+                stats_.terrain_contacts++;
+                if (!was && T.entity) pair_add(&hits, &hit_count, &hit_cap, mf->ea, mf->eb);
+                if (a.controller && gn.y >= fcos(radians(a.controller->slope_limit))) a.controller->grounded = true;
             }
         }
     }

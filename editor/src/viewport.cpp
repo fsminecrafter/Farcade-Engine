@@ -6,6 +6,7 @@
 // gizmos stay.
 #include "editor.h"
 #include "render_bridge.h"
+#include "terrain_bridge.h"
 #include "model_cache.h"
 #include "script/runtime.h"
 #include "icons.h"
@@ -122,7 +123,13 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.modules.post_process, sizeof(o.modules.post_process));
         mix(&o.visible, sizeof(o.visible));
         mix(&o.parent, sizeof(o.parent));
+        mix(&o.streaming, sizeof(o.streaming));
+        if (o.kind == ObjectKind::Terrain) mix(&o.modules.terrain, sizeof(o.modules.terrain));
     }
+    // Terrain edits (each brush application) and foliage batches still being built.
+    uint64_t tc = terrain_store_change();
+    mix(&tc, sizeof(tc));
+    if (terrain_pending_) { int f = ImGui::GetFrameCount(); mix(&f, sizeof(f)); }
     for (int i = 0; i < sc.selected_count(); i++) { ObjectId id = sc.selected(i); mix(&id, sizeof(id)); }
     ObjectId act = sc.active();
     mix(&act, sizeof(act));
@@ -219,9 +226,37 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
         view3d.select(sel_ids, wire ? 0 : nsel, wire ? 0 : (uint16_t)scene.active());
     }
     int wire_tris = 0;
+    // Terrains (chunks and foliage) and streaming, from the view's eye.
+    static TerrainView cpu_terrain;
+    {
+        Mat4 inv;
+        Vec3 eye = invert(v.view, &inv) ? Vec3(inv.m[12], inv.m[13], inv.m[14]) : camera.eye();
+        cpu_terrain.update(scene, eye, playing());
+        terrain_pending_ = cpu_terrain.pending();
+        terrain_stats_ = cpu_terrain.stats();
+        for (int i = 0; i < cpu_terrain.item_count(); i++) {
+            const gfx::DrawItem& it = cpu_terrain.items()[i];
+            uint32_t count = it.mesh.draw_count ? it.mesh.draw_count : it.mesh.vertex_count;
+            if (!wire) {
+                view3d.mesh(it.mesh.positions, it.mesh.normals, count, it.model, it.color, (uint16_t)cpu_terrain.item_objects()[i],
+                            view_mode == ViewMode::Unlit);
+                continue;
+            }
+            if (it.foliage) continue;
+            uint32_t wc = settings.dark_theme ? 0x8FA07A : 0x4C5A3A;
+            for (uint32_t t = 0; t + 2 < count; t += 3) {
+                Vec3 a = transform_point(it.model, it.mesh.positions[t]);
+                Vec3 b = transform_point(it.model, it.mesh.positions[t + 1]);
+                Vec3 c = transform_point(it.model, it.mesh.positions[t + 2]);
+                wire_tris++;
+                view3d.line(a, b, wc, 150);
+                view3d.line(b, c, wc, 150);
+            }
+        }
+    }
     for (int i = 0; i < scene.count(); i++) {
         Object& o = scene.at(i);
-        if (!scene.visible_in_tree(o)) continue;
+        if (!scene.visible_in_tree(o) || !cpu_terrain.loaded(scene, o)) continue;
         Mat4 model = scene.world_matrix(o);
         draw_object_shape(view3d, o, model);
         if (o.kind != ObjectKind::Mesh) continue;
@@ -246,7 +281,7 @@ void Editor::render_view(View3D& view3d, const void* view_ptr) {
     if (view_shadows_now() && !wire && view_mode != ViewMode::Unlit) {
         for (int i = 0; i < scene.count(); i++) {
             Object& o = scene.at(i);
-            if (!scene.visible_in_tree(o) || o.kind != ObjectKind::Mesh || o.mesh == MeshKind::Plane) continue;
+            if (!scene.visible_in_tree(o) || o.kind != ObjectKind::Mesh || o.mesh == MeshKind::Plane || !cpu_terrain.loaded(scene, o)) continue;
             const MeshData& mesh = Scene::mesh_for(o);
             view3d.shadow(mesh.positions, mesh.vertex_count, scene.world_matrix(o));
         }
@@ -416,6 +451,7 @@ void Editor::panel_viewport() {
         bool ok = disp && ((fgl.width() == full_w && fgl.height() == full_h) || fgl.resize(full_w, full_h));
         int y = band_y + band_rows > full_h ? full_h - band_rows : band_y;
         if (ok) {
+            bridge.playing = playing();
             bridge.build(scene, v.view, v.proj, eye, znear, zfar);
             static ModelAssetReader assets{ read_render_asset, this };
             bridge.scene.read_asset = model_asset_reader;
@@ -463,7 +499,11 @@ void Editor::panel_viewport() {
             }
             if (ok) {
                 fgl.set_settings(settings.graphics);
+                bridge.playing = playing();
                 bridge.build(scene, v.view, v.proj, eye, znear, zfar);
+                terrain_pending_ = bridge.terrain.pending();
+                terrain_stats_ = bridge.terrain.stats();
+                terrain_stats_.objects_unloaded = bridge.unloaded;
                 static ModelAssetReader assets{ read_render_asset, this };
                 bridge.scene.read_asset = model_asset_reader;
                 bridge.scene.asset_user = &assets;
@@ -574,7 +614,8 @@ compiling:
     // The collider's shape and its handles come first: a handle under the
     // mouse wins over the gizmo.
     if (!looking_through_camera && collider_overlay(v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y)) gizmo_active = true;
-    if (act && tool != Tool::Select && !gizmo_active) {
+    bool terrain_tool_on = act && act->kind == ObjectKind::Terrain && terrain_tool != TerrainTool::None && !playing();
+    if (act && tool != Tool::Select && !gizmo_active && !terrain_tool_on) {
         ImGuizmo::SetDrawlist(dl);
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetRect(v.pos.x, v.pos.y, v.size.x, v.size.y);
@@ -651,17 +692,22 @@ compiling:
     else ImGui::InvisibleButton("##view", v.size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
                                                       ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = !gizmo_active && ImGui::IsItemHovered();
+    bool brushing = terrain_tool_on && terrain_brush_input(v.view, v.proj, v.pos.x, v.pos.y, v.size.x, v.size.y, hovered);
 
     // Files dropped on the viewport: onto an object, or a model onto the ground.
     if (!gizmo_active && ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("FE_FILE")) {
             const char* path = (const char*)p->Data;
             Ray r = mouse_ray(v, io.MousePos);
-            ObjectId hit = scene.pick(r);
-            if (hit != kNoObject) apply_file_to_object(path, hit);
+            float hd = 1e30f, td = 1e30f;
+            ObjectId hit = scene.pick(r, &hd);
+            Vec3 thit;
+            ObjectId ter = pick_terrain(r, &td, &thit);
+            if (hit != kNoObject && hd <= td) apply_file_to_object(path, hit);
             else if (path_is_model(path)) {
                 Vec3 at;
-                if (!ray_ground(r, &at)) at = camera.target;
+                if (ter != kNoObject) at = thit - Vec3(0, 0.5f, 0);
+                else if (!ray_ground(r, &at)) at = camera.target;
                 ObjectId id = create_object(path_filename(path), MeshKind::Model, at + Vec3(0, 0.5f, 0));
                 apply_file_to_object(path, id);
             } else {
@@ -695,10 +741,15 @@ compiling:
     }
 
     // Click (without dragging) selects; shift-click adds or removes.
-    if (hovered && !gizmo_active && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+    if (hovered && !gizmo_active && !brushing && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
         ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).x * ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).x +
                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).y * ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).y < 16.0f) {
-        ObjectId hit = scene.pick(mouse_ray(v, io.MousePos));
+        Ray pr = mouse_ray(v, io.MousePos);
+        float hd = 1e30f, td = 1e30f;
+        ObjectId hit = scene.pick(pr, &hd);
+        Vec3 thit;
+        ObjectId ter = pick_terrain(pr, &td, &thit);
+        if (ter != kNoObject && (hit == kNoObject || td < hd)) hit = ter;
         if (io.KeyShift) { if (hit != kNoObject) scene.toggle(hit); }
         else scene.select_only(hit);
     }
@@ -767,6 +818,110 @@ compiling:
     // Floating toolbars and the orientation gizmo, on top of the view.
     viewport_overlays(v.pos.x, v.pos.y, v.size.x, v.size.y);
     ImGui::End();
+}
+
+// ---------------------------------------------------------------- terrain brush
+
+ObjectId Editor::pick_terrain(const Ray& r, float* distance, Vec3* hit) {
+    ObjectId best = kNoObject;
+    float bd = 1e30f;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        if (o.kind != ObjectKind::Terrain || !scene.visible_in_tree(o)) continue;
+        TerrainData* td = terrain_data(o);
+        if (!td) continue;
+        Vec3 org = terrain_origin(scene, o);
+        Ray lr{ r.origin - org, r.dir };
+        float t = 0;
+        if (td->raycast(lr, 100000.0f, &t) && t < bd) {
+            bd = t;
+            best = o.id;
+            if (hit) *hit = r.origin + r.dir * t;
+        }
+    }
+    if (distance) *distance = bd;
+    return best;
+}
+
+bool Editor::terrain_brush_input(const Mat4& view, const Mat4& proj, float x, float y, float w, float h, bool hovered) {
+    Object* o = scene.get(scene.active());
+    TerrainData* td = o ? terrain_data(*o) : nullptr;
+    ImGuiIO& io = ImGui::GetIO();
+    auto finish = [&]() {
+        if (!terrain_stroke_) return;
+        terrain_stroke_ = false;
+        Object* so = scene.get(terrain_stroke_obj_);
+        TerrainData* sd = so ? terrain_data(*so) : nullptr;
+        if (sd && sd->end_stroke()) {
+            so->modules.terrain.revision = sd->revision;
+            terrain_mark_dirty(sd);
+        }
+    };
+    if (!td || !io.MouseDown[0]) finish();
+    if (!td) return false;
+    View v;
+    v.pos = ImVec2(x, y);
+    v.size = ImVec2(w, h);
+    v.view = view;
+    v.proj = proj;
+    v.viewproj = proj * view;
+    Vec3 org = terrain_origin(scene, *o);
+    Ray r = mouse_ray(v, io.MousePos);
+    Ray lr{ r.origin - org, r.dir };
+    float t = 0;
+    bool over = hovered && td->raycast(lr, 100000.0f, &t);
+    Vec3 p = lr.origin + lr.dir * t;            // terrain local
+    if (over) {
+        // The brush: a circle on the ground, and an inner one where it is at full strength.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImU32 col = io.KeyShift ? IM_COL32(255, 120, 90, 230) : IM_COL32(255, 210, 90, 230);
+        for (int ring = 0; ring < 2; ring++) {
+            float rr = terrain_radius * (ring == 0 ? 1.0f : fmaxf_(terrain_hardness, 0.05f));
+            if (ring == 1 && terrain_hardness >= 0.98f) break;
+            Vec3 prev;
+            for (int i = 0; i <= 48; i++) {
+                float a = 2.0f * kPi * (float)i / 48.0f;
+                float px = p.x + fcos(a) * rr, pz = p.z + fsin(a) * rr;
+                Vec3 q = org + Vec3(px, td->height_at(px, pz) + 0.05f, pz);
+                if (i) line3(dl, v, prev, q, ring == 0 ? col : (col & 0x80FFFFFF), ring == 0 ? 2.0f : 1.0f);
+                prev = q;
+            }
+        }
+    }
+    if (!hovered && !terrain_stroke_) return false;
+    if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && io.KeyCtrl && terrain_tool == TerrainTool::Level) {
+        terrain_level = org.y + p.y;                // take the height under the mouse
+        return true;
+    }
+    if (over && io.MouseDown[0] && !io.KeyCtrl) {
+        if (!terrain_stroke_) {
+            td->begin_stroke();
+            terrain_stroke_ = true;
+            terrain_stroke_obj_ = o->id;
+        }
+        float dt = fclamp(io.DeltaTime, 0.001f, 0.05f);
+        TerrainBrushOp op;
+        op.x = p.x;
+        op.z = p.z;
+        op.radius = terrain_radius;
+        op.hardness = terrain_hardness;
+        bool inv = io.KeyShift;
+        float s = terrain_strength;
+        switch (terrain_tool) {
+            case TerrainTool::Raise: op.brush = inv ? TerrainBrush::Lower : TerrainBrush::Raise; break;
+            case TerrainTool::Lower: op.brush = inv ? TerrainBrush::Raise : TerrainBrush::Lower; break;
+            case TerrainTool::Smooth: op.brush = TerrainBrush::Smooth; break;
+            case TerrainTool::Level: op.brush = TerrainBrush::Level; op.level = terrain_level - org.y; break;
+            case TerrainTool::Delete: op.brush = inv ? TerrainBrush::Restore : TerrainBrush::Delete; break;
+            case TerrainTool::Foliage: op.brush = inv ? TerrainBrush::Erase : TerrainBrush::Paint; op.layer = terrain_layer; op.target = terrain_density; break;
+            default: return false;
+        }
+        // Up to radius / 2 meters a second at full strength; the others move s * 8 of the way a second.
+        op.amount = s * fmaxf_(terrain_radius, 1.0f) * 0.5f * dt;
+        op.rate = fclamp(s * 8.0f * dt, 0.0f, 1.0f);
+        if (td->apply(op)) terrain_store_touch();
+    }
+    return over || terrain_stroke_;
 }
 
 // ---------------------------------------------------------------- overlays

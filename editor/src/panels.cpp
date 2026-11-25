@@ -1,5 +1,6 @@
 // Hierarchy, Inspector, Files, Console and Settings.
 #include "editor.h"
+#include "terrain_bridge.h"
 #include "icon_glyphs.h"
 #include "icons.h"
 #include "model_import.h"
@@ -25,6 +26,7 @@ Icon object_icon(const Object& o) {
         case ObjectKind::Sky: return Icon::Cloud;
         case ObjectKind::SkyLight: return Icon::Sun;
         case ObjectKind::PostProcess: return Icon::Wand;
+        case ObjectKind::Terrain: return Icon::Plane;
         case ObjectKind::Empty:
             if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
             if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
@@ -62,6 +64,7 @@ Icon module_icon(ModuleKind k) {
         case ModuleKind::SkyLight: return Icon::Sun;
         case ModuleKind::Sky: return Icon::Cloud;
         case ModuleKind::PostProcess: return Icon::Wand;
+        case ModuleKind::Terrain: return Icon::Plane;
         default: return Icon::File;
     }
 }
@@ -479,6 +482,9 @@ static bool field_relevant(ModuleKind kind, const void* data, const FieldInfo& f
             if (sk.mode == SkyMode::Color) return strcmp(n, "horizon") && strcmp(n, "ground") && strcmp(n, "sun_size");
             return true;
         }
+        case ModuleKind::Terrain:
+            // The data file, its revision and the foliage layers have their own sections (terrain_section).
+            return strcmp(n, "data") && strcmp(n, "revision") && strncmp(n, "foliage", 7);
         case ModuleKind::AudioStream:
         case ModuleKind::AudioSampler: {
             bool spatial = kind == ModuleKind::AudioStream ? ((const AudioStream*)data)->spatial : ((const AudioSampler*)data)->spatial;
@@ -1088,6 +1094,11 @@ void Editor::settings_graphics() {
         prop_label("Dynamic resolution");
         toggle_switch("##dynres", &g.dynamic_resolution);
         track("gfx:dynres");
+        prop_label("Occlusion culling");
+        toggle_switch("##occl", &g.occlusion_culling);
+        track("gfx:occlusion");
+        faint("Items hidden behind terrain and other big nearby objects are not drawn (a small CPU depth "
+              "buffer each frame). Items outside the view are always left out. The Profiler shows what was culled.");
         if (g.dynamic_resolution) {
             prop_label("  Target");
             ImGui::SliderFloat("##dynms", &g.target_frame_ms, 8.0f, 100.0f, "%.0f ms");
@@ -1335,12 +1346,24 @@ void Editor::panel_inspector() {
                 if (Object* s = scene.get(sid)) s->position += d;
             }
         }
-        if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
-        if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
+        if (o->kind != ObjectKind::Terrain) {
+            if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
+            if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
+            // Streaming: when the object is loaded at run time (terrain chunks, scripts).
+            static const char* modes[] = { "Dynamic (with its terrain chunk)", "Always loaded", "Unloaded (a script loads it)" };
+            int sm = (int)o->streaming;
+            prop_label("Streaming");
+            if (ImGui::Combo("##streaming", &sm, modes, 3)) {
+                for (int i = 0; i < n; i++)
+                    if (Object* so = scene.get(scene.selected(i))) so->streaming = (StreamMode)sm;
+            }
+            track("inspector:streaming");
+        }
         ImGui::Dummy(ImVec2(0, 4));
     }
     // A special object's own settings (Camera, Sky, ...) come right after
     // the transform.
+    if (o->kind == ObjectKind::Terrain) terrain_section(o);
     if (settings_of(o->kind) != ModuleKind::Count) module_section(o, settings_of(o->kind));
     if (o->kind == ObjectKind::Mesh && section_header("Mesh", Icon::Cube)) {
         static const char* kinds[] = { "Cube", "Plane", "Sphere", "Cylinder", "Model (.mof)" };
@@ -1390,6 +1413,162 @@ void Editor::panel_inspector() {
         ImGui::PopStyleColor();
     }
     ImGui::End();
+}
+
+// ---------------------------------------------------------------- terrain
+
+void Editor::terrain_section(Object* o) {
+    const Palette& pal = ui_palette();
+    auto faint = [&](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    Terrain& ts = o->modules.terrain;
+    TerrainData* td = terrain_data(*o);
+    if (section_header("Terrain tools", Icon::Plane)) {
+        if (td) {
+            char info[160];
+            snprintf(info, sizeof info, "%d x %d chunks of %.0f m, %d x %d cells of %.2f m, %.1f MB", td->chunks_x, td->chunks_z,
+                     (double)td->chunk_size, td->side_x(), td->side_z(), (double)td->cell(), (double)td->memory() / (1024.0 * 1024.0));
+            faint(info);
+        } else {
+            faint(ts.data[0] ? "The terrain's data file could not be read. Generate makes a new one." : "No data yet: Generate makes the map.");
+        }
+        struct ToolDef { TerrainTool tool; const char* label; const char* tip; };
+        static const ToolDef tools[] = {
+            { TerrainTool::Raise, "Add", "Raises the ground under the brush (Shift: lowers)" },
+            { TerrainTool::Lower, "Remove", "Lowers the ground under the brush (Shift: raises)" },
+            { TerrainTool::Smooth, "Smooth", "Evens out bumps under the brush" },
+            { TerrainTool::Level, "Level", "Flattens to the level height (Ctrl-click: take the height under the mouse)" },
+            { TerrainTool::Delete, "Delete", "Cuts holes into the terrain (Shift: fills them back in)" },
+            { TerrainTool::Foliage, "Foliage", "Paints the chosen foliage layer (Shift: erases it)" },
+        };
+        ImGui::BeginDisabled(!td || playing());
+        float avail = ImGui::GetContentRegionAvail().x;
+        float bw = (avail - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+        for (int i = 0; i < 6; i++) {
+            bool on = terrain_tool == tools[i].tool;
+            if (i % 3) ImGui::SameLine();
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(pal.accent));
+            if (ImGui::Button(tools[i].label, ImVec2(bw, 0))) terrain_tool = on ? TerrainTool::None : tools[i].tool;
+            if (on) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tools[i].tip);
+            char key[48];
+            snprintf(key, sizeof key, "terrain:tool:%s", tools[i].label);
+            track(key);
+        }
+        ImGui::EndDisabled();
+        if (terrain_tool != TerrainTool::None && td) {
+            prop_label("Radius");
+            ImGui::SliderFloat("##tr", &terrain_radius, 0.5f, 100.0f, "%.1f m", ImGuiSliderFlags_Logarithmic);
+            prop_label("Strength");
+            ImGui::SliderFloat("##ts", &terrain_strength, 0.01f, 1.0f, "%.2f");
+            prop_label("Hardness");
+            ImGui::SliderFloat("##th", &terrain_hardness, 0.0f, 1.0f, "%.2f");
+            if (terrain_tool == TerrainTool::Level) {
+                prop_label("Level height");
+                ImGui::DragFloat("##tl", &terrain_level, 0.05f, 0, 0, "%.2f m");
+            }
+            if (terrain_tool == TerrainTool::Foliage) {
+                char names[kFoliageLayers][96];
+                const char* ptrs[kFoliageLayers];
+                for (int l = 0; l < kFoliageLayers; l++) {
+                    const char* m = ts.foliage[l].model;
+                    const char* fn = strrchr(m, '/');
+                    snprintf(names[l], sizeof names[l], "Layer %d: %s", l + 1, m[0] ? (fn ? fn + 1 : m) : "(no model yet)");
+                    ptrs[l] = names[l];
+                }
+                prop_label("Layer");
+                ImGui::Combo("##tfl", &terrain_layer, ptrs, kFoliageLayers);
+                prop_label("Density");
+                ImGui::SliderFloat("##tfd", &terrain_density, 0.05f, 1.0f, "%.2f");
+                if (!ts.foliage[terrain_layer].model[0]) faint("Choose a .mof model for this layer under Foliage below.");
+            }
+            faint("Left mouse in the viewport paints; right and middle mouse still move the view. Ctrl+Z undoes a stroke.");
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Generate", Icon::Refresh)) {
+        static const float chunk_sizes[] = { 16.0f, 32.0f, 64.0f };
+        static const int cell_counts[] = { 16, 32, 64 };
+        static const char* chunk_names[] = { "16 m", "32 m", "64 m" };
+        static const char* cell_names[] = { "16 cells", "32 cells", "64 cells" };
+        prop_label("Y level");
+        ImGui::DragFloat("##gy", &terrain_gen_level, 0.1f, -10000.0f, 10000.0f, "%.2f m");
+        prop_label("Map size");
+        ImGui::DragFloat2("##gs", terrain_gen_size, 1.0f, 16.0f, 16384.0f, "%.0f m");
+        prop_label("Chunk size");
+        ImGui::Combo("##gc", &terrain_gen_chunk, chunk_names, 3);
+        prop_label("Chunk detail");
+        ImGui::Combo("##gd", &terrain_gen_cells, cell_names, 3);
+        float cs = chunk_sizes[terrain_gen_chunk];
+        int cells = cell_counts[terrain_gen_cells];
+        int ncx = (int)(terrain_gen_size[0] / cs + 0.999f), ncz = (int)(terrain_gen_size[1] / cs + 0.999f);
+        int maxc = kTerrainMaxCells / cells;
+        if (ncx > maxc) ncx = maxc;
+        if (ncz > maxc) ncz = maxc;
+        char info[160];
+        snprintf(info, sizeof info, "%d x %d chunks (%.0f x %.0f m), cells of %.2f m, %.1f MB of heights", ncx, ncz, (double)(ncx * cs),
+                 (double)(ncz * cs), (double)(cs / (float)cells), (double)((ncx * cells + 1) * (ncz * cells + 1) * 4) / (1024.0 * 1024.0));
+        faint(info);
+        prop_label("");
+        ImGui::BeginDisabled(playing());
+        if (ImGui::Button("Generate")) {
+            if (td) ImGui::OpenPopup("Replace terrain?");
+            else generate_terrain(o, terrain_gen_level, ncx * cs, ncz * cs, cs, cells, true);
+        }
+        ImGui::EndDisabled();
+        track("terrain:generate");
+        if (ImGui::BeginPopupModal("Replace terrain?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Generate replaces the heights, holes and foliage with a flat map.");
+            ImGui::TextUnformatted("Undo (Ctrl+Z) brings the old one back.");
+            if (ImGui::Button("Generate")) {
+                generate_terrain(o, terrain_gen_level, ncx * cs, ncz * cs, cs, cells, true);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+    if (section_header("Foliage", Icon::Sparks)) {
+        for (int l = 0; l < kFoliageLayers; l++) {
+            FoliageLayer& fl = ts.foliage[l];
+            ImGui::PushID(l);
+            const char* fn = strrchr(fl.model, '/');
+            char title[128];
+            snprintf(title, sizeof title, "Layer %d: %s###layer", l + 1, fl.model[0] ? (fn ? fn + 1 : fl.model) : "empty");
+            if (ImGui::TreeNodeEx(title, l == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+                slot_field("Model", fl.model, sizeof fl.model, this, path_is_model, Icon::Model);
+                prop_label("Density");
+                ImGui::DragFloat("##d", &fl.density, 0.05f, 0.0f, 50.0f, "%.2f / m2");
+                track("terrain:fdensity");
+                prop_label("Scale");
+                float sc[2] = { fl.scale_min, fl.scale_max };
+                if (ImGui::DragFloat2("##s", sc, 0.01f, 0.01f, 100.0f, "%.2f")) { fl.scale_min = sc[0]; fl.scale_max = sc[1] < sc[0] ? sc[0] : sc[1]; }
+                track("terrain:fscale");
+                prop_label("Distance");
+                ImGui::DragFloat("##r", &fl.distance, 0.5f, 1.0f, 2000.0f, "%.0f m");
+                track("terrain:fdist");
+                prop_label("Max slope");
+                ImGui::SliderFloat("##sl", &fl.max_slope, 0.0f, 90.0f, "%.0f deg");
+                track("terrain:fslope");
+                prop_label("Align to slope");
+                toggle_switch("##al", &fl.align_to_slope);
+                track("terrain:falign");
+                prop_label("Shadows");
+                toggle_switch("##sh", &fl.cast_shadows);
+                track("terrain:fshadow");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        faint("Each instance is turned at random around its up axis and stands on the ground. Paint where a layer "
+              "grows with the Foliage tool; it thins out towards its distance and is drawn in batches per chunk.");
+        ImGui::Dummy(ImVec2(0, 4));
+    }
 }
 
 // ---------------------------------------------------------------- Files
@@ -1775,6 +1954,17 @@ void Editor::panel_profiler() {
                 prof_count);
     ImGui::Text("%d x %d, %d draws, %d passes%s", st.internal_width, st.internal_height, st.draws, t.passes,
                 view_settling ? "  |  settling (TAA / AO converge over the next frames)" : "");
+    // Culling, and what the terrains drew.
+    ImGui::Text("Culling: %d items, %d outside the view, %d hidden by %d occluders (%d triangles), %.2f ms%s", st.items_in,
+                st.culled_frustum, st.culled_occlusion, st.occluders, st.occluder_triangles, st.cull_ms,
+                settings.graphics.occlusion_culling ? "" : "  (occlusion culling off)");
+    if (terrain_stats_.terrains > 0) {
+        const TerrainViewStats& ts = terrain_stats_;
+        ImGui::Text("Terrain: %d of %d chunks drawn (detail %d / %d / %d / %d), %d unloaded, %d objects unloaded", ts.chunks_drawn, ts.chunks,
+                    ts.lod_chunks[0], ts.lod_chunks[1], ts.lod_chunks[2], ts.lod_chunks[3], ts.chunks_unloaded, ts.objects_unloaded);
+        ImGui::Text("Foliage: %ld instances in %d batches, %d built this frame%s, %.1f MB", ts.foliage_instances, ts.foliage_batches,
+                    ts.foliage_built, ts.pending ? " (more waiting)" : "", (double)ts.memory / (1024.0 * 1024.0));
+    }
     if (prof_count > 1) {
         float top = mx > 33.4f ? mx * 1.1f : 33.4f;
         char overlay[48];

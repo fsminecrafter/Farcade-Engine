@@ -1412,6 +1412,79 @@ void test_no_recompile() {
     r.shutdown();
 }
 
+// ---------------------------------------------------------------- culling
+
+void test_culling() {
+    // A wall in front of the camera hides a cube behind it; another cube is behind the camera; one stands
+    // to the side in view. Culling leaves out the hidden two and the picture stays the same.
+    Renderer r;
+    GraphicsSettings g;
+    g.apply_preset(GraphicsPreset::Low);
+    g.allow_gpu_effects_on_cpu = false;
+    CHECK(g.occlusion_culling);
+    r.set_settings(g);
+    CHECK(r.init(200, 150));
+    Vec3 cp[kCubeVertices], cn[kCubeVertices];
+    make_cube(cp, cn, 0.5f);
+    DrawItem it[4];
+    for (int i = 0; i < 4; i++) { it[i].mesh = RenderMesh{ cp, cn, kCubeVertices, 31 }; it[i].color = Vec3(0.6f, 0.5f, 0.4f); }
+    it[0].model = Mat4::trs(Vec3(0, 0, 0), Quat(), Vec3(6, 6, 0.3f));         // the wall
+    it[1].model = Mat4::translation(Vec3(0.3f, 0.2f, -3.0f));                 // hidden behind it
+    it[2].model = Mat4::translation(Vec3(0, 0, 12.0f));                        // behind the camera
+    it[3].model = Mat4::translation(Vec3(2.2f, 1.2f, 2.0f));                   // in view, in front of the wall
+    FlatScene f(Vec3(0.2f, 0.3f, 0.4f));
+    f.scene.camera.proj = Mat4::perspective(radians(60.0f), 200.0f / 150.0f, 0.1f, 100.0f);
+    f.scene.camera.view = Mat4::look_at(Vec3(0, 0, 6), Vec3(0, 0, 0), Vec3(0, 1, 0));
+    f.scene.camera.position = Vec3(0, 0, 6);
+    f.scene.items = it;
+    f.scene.item_count = 4;
+    CHECK(render_ok(r, f.scene));
+    const RendererStats& st = r.stats();
+    printf("culling: %d items, %d outside the view, %d occluded, %d occluders, %d draws, %.3f ms\n", st.items_in, st.culled_frustum,
+           st.culled_occlusion, st.occluders, st.draws, st.cull_ms);
+    CHECK_MSG(st.items_in == 4 && st.culled_frustum == 1, "the cube behind the camera is outside the frustum");
+    CHECK_MSG(st.culled_occlusion == 1 && st.occluders >= 1, "the cube behind the wall is occluded");
+    CHECK_MSG(st.draws == 2, "two draws");
+    uint32_t* on = (uint32_t*)malloc(200 * 150 * 4);
+    memcpy(on, r.pixels(), 200 * 150 * 4);
+    g.occlusion_culling = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0 && r.stats().draws == 3, "off: the hidden cube is drawn");
+    CHECK_MSG(memcmp(on, r.pixels(), 200 * 150 * 4) == 0, "the same picture with and without occlusion culling");
+    // The hidden cube peeks out past the wall's edge: it is drawn again.
+    g.occlusion_culling = true;
+    r.set_settings(g);
+    it[1].model = Mat4::translation(Vec3(4.5f, 0.2f, -3.0f));
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "a cube that sticks out is not culled");
+    // An occluder mesh that is given replaces the item's own triangles; a tiny one hides nothing.
+    Vec3 tiny[3] = { Vec3(0, 0, 0), Vec3(0.01f, 0, 0), Vec3(0, 0.01f, 0) };
+    it[0].mesh.occluder_positions = tiny;
+    it[0].mesh.occluder_count = 3;
+    it[1].model = Mat4::translation(Vec3(0.3f, 0.2f, -3.0f));
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "the occluder mesh is what occludes");
+    it[0].mesh.occluder_positions = nullptr;
+    it[0].mesh.occluder_count = 0;
+    it[0].occluder = false;
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_occlusion == 0, "occluder = false");
+    it[0].occluder = true;
+    // draw_count: only the first triangles of a mesh.
+    it[3].mesh.draw_count = 6;
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().triangles == 12 + 2, "draw_count limits the triangles");
+    it[3].mesh.draw_count = 0;
+    // Bounds that are given are used: a box far away puts the item out of view.
+    it[3].mesh.has_bounds = true;
+    it[3].mesh.bounds_min = Vec3(100, 100, 100);
+    it[3].mesh.bounds_max = Vec3(101, 101, 101);
+    CHECK(render_ok(r, f.scene));
+    CHECK_MSG(r.stats().culled_frustum == 2, "has_bounds is trusted");
+    free(on);
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1433,5 +1506,6 @@ int main() {
     test_ssaa_and_vsync();
     test_screen_shaders();
     test_no_recompile();
+    test_culling();
     return finish_tests("gfx_stack_tests");
 }

@@ -5,6 +5,7 @@
 
 #include "gfx/renderer.h"
 #include "scene.h"
+#include "terrain_bridge.h"
 
 namespace fe {
 
@@ -15,6 +16,10 @@ struct RenderBridge {
     gfx::RenderLight* lights = nullptr;
     int light_cap = 0;
     gfx::RenderScene scene;
+    // Terrains (chunks, foliage) and streaming, updated by build() from the eye.
+    TerrainView terrain;
+    bool playing = false;               // streaming applies to every terrain, Unloaded objects stay out
+    int unloaded = 0;                   // objects left out by streaming in the last build()
 
     ~RenderBridge();
     // The view: from the given matrices (the editor's own camera).

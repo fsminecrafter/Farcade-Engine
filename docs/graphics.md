@@ -158,6 +158,16 @@ It uses the measured frame time (render, readback and upscale). Bands (`render_r
 full size. Screenshots: `gfx-agx.png`, `gfx-graded.png`, `gfx-autoexposure.png`, `gfx-post-high.png`
 (`fe-gfx-shot --tonemap agx --grade warm --auto-exposure --scale 0.5 ...`).
 
+## Culling
+
+Every frame starts with culling (`engine/gfx/culling.{h,cpp}`). Items whose world box is outside the view
+frustum are left out of the camera passes. With `occlusion_culling` on (the default, Settings > Graphics),
+big nearby items are drawn into a 256 pixel wide CPU depth buffer and items hidden behind them at every pixel
+are left out too. Shadow maps and the probe GI still see every item (`RenderScene::shadow_items`). Terrain
+chunks occlude with a coarse mesh that never rises above the ground, and foliage never occludes. The
+Profiler shows what was culled. See docs/terrain.md for the mesh fields (`has_bounds`,
+`occluder_positions`, `draw_count`) and the foliage batches that use them.
+
 ## Graphics settings in games
 
 The graphics settings are part of the game, not only of the editor. `fe::gfx::GraphicsSettings`

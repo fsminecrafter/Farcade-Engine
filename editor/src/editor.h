@@ -5,6 +5,7 @@
 #include "fx/particles.h"
 
 #include "scene.h"
+#include "terrain_bridge.h"
 #include "play_session.h"
 #include "project.h"
 #include "widgets.h"
@@ -193,6 +194,35 @@ public:
     void open_project(const char* dir);
     void request_open_project(const char* dir);
     ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
+
+    // ---- terrain (terrain_bridge.h). Generate replaces a Terrain object's data with a flat map at `level`
+    // (world y) of size_x x size_z meters in chunks of chunk_size meters with `cells` grid cells a side;
+    // with keep_center the object moves so the map's middle stays where it was. A history step (undo).
+    bool generate_terrain(Object* o, float level, float size_x, float size_z, float chunk_size, int cells, bool keep_center);
+    void unique_terrain_path(const Object& o, char* out, size_t cap);
+    // The brushes of the Inspector's terrain tools, applied in the viewport with the left mouse button
+    // (Shift: the opposite - Lower, Restore, Erase; Ctrl-click with Level: take the height under the mouse).
+    enum class TerrainTool : uint8_t { None, Raise, Lower, Smooth, Level, Delete, Foliage };
+    TerrainTool terrain_tool = TerrainTool::None;
+    float terrain_radius = 6.0f;            // meters
+    float terrain_strength = 0.5f;          // 0..1
+    float terrain_hardness = 0.3f;          // 0..1
+    float terrain_level = 0.0f;             // Level: world y
+    int terrain_layer = 0;                  // Foliage: the layer painted
+    float terrain_density = 1.0f;           // Foliage: the density painted, 0..1
+    float terrain_gen_level = 0.0f;         // the Generate fields
+    float terrain_gen_size[2] = { 256.0f, 256.0f };
+    int terrain_gen_chunk = 1;              // 16 / 32 / 64 m
+    int terrain_gen_cells = 1;              // 16 / 32 / 64 cells a chunk
+    void terrain_section(Object* o);
+    // The brush in the viewport: true while it owns the mouse (no picking, no gizmo).
+    bool terrain_brush_input(const Mat4& view, const Mat4& proj, float x, float y, float w, float h, bool hovered);
+    // The terrain under a ray (world), the nearest hit; kNoObject when none.
+    ObjectId pick_terrain(const Ray& r, float* distance, Vec3* hit);
+    bool terrain_stroke_ = false;
+    ObjectId terrain_stroke_obj_ = kNoObject;
+    bool terrain_pending_ = false;              // foliage batches still being built: the view keeps redrawing
+    TerrainViewStats terrain_stats_;            // the last view's (Profiler)
     ObjectId create_light(LightType type, const Vec3& at, ObjectId parent = kNoObject);
     // The items of every "add object" menu (Create, the Hierarchy's + and
     // right-click menus): meshes, empty, lights, camera, sky ...

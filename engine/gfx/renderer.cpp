@@ -25,6 +25,7 @@
 #include "gfx/gi.h"
 #include "gfx/passes.h"
 #include "gfx/shader_file.h"
+#include "gfx/culling.h"
 #include "stb/stb_image.h"
 
 #if defined(FE_HOST)
@@ -199,6 +200,14 @@ struct Renderer::Impl {
     DeviceCaps caps;                        // from fglGetDeviceInfo (feature_level.h)
     char backend[40] = "";
     GpuTier tier;
+    // Culling (culling.h): the camera's items of the frame.
+    struct VisList {
+        int* idx = nullptr;
+        DrawItem* items = nullptr;
+        int cap = 0;
+        ~VisList() { free(idx); free(items); }
+    } vis;
+    Culler culler;
     // Probe GI (gi.h): updated once a frame on the CPU, uploaded as a texture both tiers sample.
     GiSystem gi;
     FGLTexture gi_tex = 0;
@@ -222,8 +231,9 @@ struct Renderer::Impl {
         int m = 0;
         for (int i = 0; i < n && occluders && m < occluder_cap; i++) {
             const DrawItem& it = scene.items[i];
+            if (it.foliage) continue;                       // grass does not hide particles
             occluders[m].positions = it.mesh.positions;
-            occluders[m].vertex_count = it.mesh.vertex_count;
+            occluders[m].vertex_count = it.mesh.draw_count ? it.mesh.draw_count : it.mesh.vertex_count;
             occluders[m].model = it.model;
             m++;
         }
@@ -1007,9 +1017,12 @@ struct Renderer::Impl {
         else fglEnable(gl, FGL_CULL_FACE);
         fglSetModel(gl, to_fgl(it.model));
         uint32_t first = 0;
-        for (uint32_t c = 0; c < e->chunks; c++) {
-            fglDraw(gl, e->buffer[c], 0, e->chunk_vertices[c]);
-            first += e->chunk_vertices[c];
+        uint32_t limit = it.mesh.draw_count ? it.mesh.draw_count / 3 * 3 : e->vertex_count;
+        for (uint32_t c = 0; c < e->chunks && first < limit; c++) {
+            uint32_t k = e->chunk_vertices[c];
+            if (k > limit - first) k = limit - first;
+            if (k) fglDraw(gl, e->buffer[c], 0, k);
+            first += k;
         }
         if (count) {
             stats.draws++;
@@ -1043,8 +1056,8 @@ struct Renderer::Impl {
     bool update_gi(const RenderScene& scene, float dt) {
         double t0 = now_ms();
         GiInput in;
-        in.items = scene.items;
-        in.item_count = scene.item_count;
+        in.items = scene.shadow_items ? scene.shadow_items : scene.items;
+        in.item_count = scene.shadow_items ? scene.shadow_item_count : scene.item_count;
         in.lights = scene.lights;
         in.light_count = scene.light_count;
         const SkyLight& sl = scene.sky_light;
@@ -1077,13 +1090,44 @@ struct Renderer::Impl {
     // rows == 0: the whole image into `pixels` (as RGBA); else rows
     // [y0, y0 + rows) into dst (XRGB, width * rows words). Bands are not
     // available while the GPU tier or fog is on (render_rows fails then).
-    bool render(const RenderScene& scene, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
+    // The camera passes draw `out->items`: the items of `in` the camera can see. Shadows and GI keep
+    // every item (out->shadow_items).
+    void cull(const RenderScene& in, RenderScene* out) {
+        *out = in;
+        out->shadow_items = in.items;
+        out->shadow_item_count = in.item_count;
+        stats.items_in = in.item_count;
+        if (in.item_count <= 0) return;
+        if (vis.cap < in.item_count) {
+            int nc = in.item_count * 2;
+            int* ni = (int*)realloc(vis.idx, sizeof(int) * (size_t)nc);
+            if (ni) vis.idx = ni;
+            DrawItem* nit = (DrawItem*)realloc((void*)vis.items, sizeof(DrawItem) * (size_t)nc);
+            if (nit) vis.items = nit;
+            if (!ni || !nit) return;
+            vis.cap = nc;
+        }
+        CullStats cs;
+        int n = culler.run(in, settings.occlusion_culling, vis.idx, &cs);
+        for (int i = 0; i < n; i++) vis.items[i] = in.items[vis.idx[i]];
+        out->items = vis.items;
+        out->item_count = n;
+        stats.culled_frustum = cs.frustum_culled;
+        stats.culled_occlusion = cs.occlusion_culled;
+        stats.occluders = cs.occluders;
+        stats.occluder_triangles = cs.occluder_triangles;
+        stats.cull_ms = cs.ms;
+    }
+
+    bool render(const RenderScene& scene_in, int y0 = 0, int rows = 0, uint32_t* dst = nullptr) {
         double t0 = now_ms();
         stats = RendererStats();
         in_render = true;
         error[0] = 0;
         banding = rows > 0;
         band_y0 = y0;
+        RenderScene scene;
+        cull(scene_in, &scene);
 
         // Internal resolution (post_stack.h): the passes draw at iw x ih and the image is upscaled
         // when read back. Bands are always drawn at full size (the editor has its own adaptive resolution).

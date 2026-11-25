@@ -51,6 +51,11 @@ struct Object {
     bool unlit = false;
     bool cast_shadows = true;
     bool visible = true;
+    // Streaming (terrain_bridge.h): Dynamic objects load with the terrain chunk under them, AlwaysLoaded ones
+    // never unload, Unloaded ones wait for a script (obj.loaded = true) while playing. stream_loaded is
+    // that live flag (not saved).
+    StreamMode streaming = StreamMode::Dynamic;
+    bool stream_loaded = false;
 
     Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
     void set_matrix(const Mat4& m) { decompose(m, &position, &rotation, &scale); }

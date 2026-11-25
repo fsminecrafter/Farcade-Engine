@@ -281,8 +281,10 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
     ecs_world_t* w = I->w;
     const ModuleInfo& mi = module_info(k);
     MemberDef m[ECS_MEMBER_DESC_CACHE_SIZE];
-    if (mi.field_count > ECS_MEMBER_DESC_CACHE_SIZE) return reg_fail(__LINE__);
-    for (int i = 0; i < mi.field_count; i++) {
+    // flecs describes at most 32 members of a struct. The meta data is only reflection (field access goes
+    // through FieldInfo), so a longer table (Terrain with its foliage layers) lists its first 32 fields.
+    int count = mi.field_count < ECS_MEMBER_DESC_CACHE_SIZE ? mi.field_count : ECS_MEMBER_DESC_CACHE_SIZE;
+    for (int i = 0; i < count; i++) {
         const FieldInfo& f = mi.fields[i];
         m[i].name = f.name;
         m[i].count = 0;
@@ -306,7 +308,7 @@ bool register_module_meta(WorldImpl* I, ModuleKind k) {
         }
         }
     }
-    return make_struct(w, I->c_module[(int)k], m, mi.field_count, mi.size);
+    return make_struct(w, I->c_module[(int)k], m, count, mi.size);
 }
 
 bool register_all(WorldImpl* I) {

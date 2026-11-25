@@ -129,6 +129,7 @@ struct GiSystem::Impl {
         uint64_t h = 1469598103934665603ull;
         for (int i = 0; i < in.item_count; i++) {
             const DrawItem& it = in.items[i];
+            if (it.foliage) continue;
             h = fnv(h, it.model.m, sizeof it.model.m);
             h = fnv(h, &it.mesh.key, sizeof it.mesh.key);
             h = fnv(h, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
@@ -144,7 +145,7 @@ struct GiSystem::Impl {
         memset(vox, 0, sizeof(Voxel) * (size_t)D * D * D);
         for (int i = 0; i < in.item_count; i++) {
             const DrawItem& it = in.items[i];
-            if (!it.mesh.positions) continue;
+            if (!it.mesh.positions || it.foliage) continue;
             float alb[3] = { srgb_to_lin(it.color.x), srgb_to_lin(it.color.y), srgb_to_lin(it.color.z) };
             uint32_t vc = it.mesh.vertex_count / 3 * 3;
             for (uint32_t t = 0; t < vc; t += 3) {

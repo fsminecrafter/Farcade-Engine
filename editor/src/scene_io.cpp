@@ -219,6 +219,7 @@ char* save_scene_text(Scene& scene, const char* project_dir, size_t* size, unsig
         o.f("  scale"); o.vec(ob.scale); o.raw("\n", 1);
         if (!ob.visible) o.f("  visible false\n");
         if (ob.streaming != StreamMode::Dynamic) o.f("  streaming %s\n", kStreamModes[(int)ob.streaming]);
+        if (ob.groups[0]) { o.raw("  groups ", 9); o.str(ob.groups); o.raw("\n", 1); }
         if (ob.kind == ObjectKind::Mesh) {
             o.f("  mesh %s\n", kMeshKinds[(int)ob.mesh]);
             if (ob.model_path[0]) { o.raw("  model ", 8); o.str(relative(ob.model_path, project_dir)); o.raw("\n", 1); }
@@ -358,6 +359,7 @@ bool load_scene_text(Scene& scene, const char* text, size_t size, SceneLoadRepor
                 if (ok) ob->parent = (ObjectId)v;
             } else if (strcmp(key, "expanded") == 0 && l.n >= 2) ok = parse_bool(l.tok[1], &ob->expanded);
             else if (strcmp(key, "visible") == 0 && l.n >= 2) ok = parse_bool(l.tok[1], &ob->visible);
+            else if (strcmp(key, "groups") == 0 && l.n >= 2) copy_str(ob->groups, sizeof ob->groups, l.tok[1]);
             else if (strcmp(key, "streaming") == 0 && l.n >= 2) {
                 int k = index_of(kStreamModes, 3, l.tok[1]);
                 if (k >= 0) ob->streaming = (StreamMode)k; else ok = false;

@@ -116,7 +116,7 @@ void Editor::panel_hierarchy() {
     ImGui::Begin(FE_ICON_HIERARCHY "  Hierarchy###Hierarchy");
     const float bs = ImGui::GetFrameHeight();
     static char filter[64];
-    search_field("##filter", "Filter objects", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
+    search_field("##filter", "Filter by name or group", filter, sizeof(filter), ImGui::GetContentRegionAvail().x - bs - 4);
     track("hier:filter");
     ImGui::SameLine(0, 4);
     if (icon_button(Icon::Plus, "Add an object", false, bs)) ImGui::OpenPopup("##add");
@@ -177,7 +177,8 @@ void Editor::panel_hierarchy() {
     int nrows = 0;
     if (filter[0]) {
         for (int i = 0; i < scene.count(); i++)
-            if (ImStristr(scene.at(i).name, nullptr, filter, nullptr)) rows[nrows++] = { scene.at(i).id, 0 };
+            if (ImStristr(scene.at(i).name, nullptr, filter, nullptr) || ImStristr(scene.at(i).groups, nullptr, filter, nullptr))
+                rows[nrows++] = { scene.at(i).id, 0 };
     } else {
         // Depth-first with an explicit stack; children keep the scene's order.
         struct Frame { ObjectId parent; int next; int depth; };
@@ -1389,6 +1390,7 @@ void Editor::panel_inspector() {
                 track("inspector:streaming");
             }
         }
+        groups_field(o);
         ImGui::Dummy(ImVec2(0, 4));
     }
     // A special object's own settings (Camera, Sky, ...) come right after
@@ -1449,6 +1451,68 @@ void Editor::panel_inspector() {
 }
 
 // ---------------------------------------------------------------- terrain
+
+// ---- an object's groups: chips (click selects the group, x removes it) and a field that adds one
+void Editor::groups_field(Object* o) {
+    const Palette& pal = ui_palette();
+    prop_label("Groups");
+    ImGui::BeginGroup();
+    float right = ImGui::GetContentRegionAvail().x;
+    float used = 0;
+    char name[kPathMax];
+    char remove[kPathMax] = {};
+    int i = 0;
+    for (const char* p = path_list_next(o->groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax), i++) {
+        ImGui::PushID(i);
+        float w = ImGui::CalcTextSize(name).x + ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetFrameHeight();
+        if (used > 0 && used + w <= right) ImGui::SameLine(0, 4);
+        else used = 0;
+        used += w + 4;
+        ImGui::PushStyleColor(ImGuiCol_Button, pal.accent_soft);
+        if (ImGui::Button(name)) select_group(name, ImGui::GetIO().KeyShift);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: select every object in \"%s\" (Shift: add them)\nScripts: fe.find_group(\"%s\")", name, name);
+        ImGui::SameLine(0, 0);
+        if (icon_button(Icon::Close, "Remove from the group", false, ImGui::GetFrameHeight())) snprintf(remove, sizeof remove, "%s", name);
+        ImGui::PopID();
+    }
+    if (remove[0]) name_list_remove(o->groups, (int)sizeof o->groups, remove);
+    static char add[64];
+    ImGui::SetNextItemWidth(right - ImGui::GetFrameHeight() - 4);
+    bool enter = ImGui::InputTextWithHint("##addgroup", "Add a group (Enter)", add, sizeof add, ImGuiInputTextFlags_EnterReturnsTrue);
+    track("inspector:groups");
+    ImGui::SameLine(0, 4);
+    if (icon_button(Icon::Plus, "Groups used in the scene", false, ImGui::GetFrameHeight())) ImGui::OpenPopup("##groups");
+    if (enter && add[0]) {
+        // Trim and refuse ';'.
+        char* a = add;
+        while (*a == ' ') a++;
+        size_t n = strlen(a);
+        while (n && a[n - 1] == ' ') a[--n] = 0;
+        if (!name_list_valid(a)) log(LogLevel::Warning, "A group name is 1 to 63 characters without ';'");
+        else if (!name_list_add(o->groups, (int)sizeof o->groups, a)) log(LogLevel::Warning, "%s has too many groups", o->name);
+        add[0] = 0;
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+    if (ImGui::BeginPopup("##groups")) {
+        // Every group some object in the scene has, to add with one click.
+        char seen[2048] = {};
+        int shown = 0;
+        for (int k = 0; k < scene.count(); k++) {
+            const Object& so = scene.at(k);
+            for (const char* p = path_list_next(so.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax)) {
+                if (name_list_has(seen, name)) continue;
+                name_list_add(seen, (int)sizeof seen, name);
+                bool has = name_list_has(o->groups, name);
+                if (ImGui::MenuItem(name, nullptr, has) && !has) name_list_add(o->groups, (int)sizeof o->groups, name);
+                shown++;
+            }
+        }
+        if (!shown) ImGui::TextDisabled("No groups yet: type a name and press Enter");
+        ImGui::EndPopup();
+    }
+    ImGui::EndGroup();
+}
 
 // ---- a foliage layer's model list ("a.mof;b.mof")
 
@@ -1593,7 +1657,8 @@ void Editor::terrain_section(Object* o) {
                     char first[kPathMax];
                     path_list_next(ts.foliage[l].model, first, kPathMax);
                     const char* fn = strrchr(first, '/');
-                    if (nm > 1) snprintf(names[l], sizeof names[l], "Layer %d: %d models", l + 1, nm);
+                    if (ts.foliage[l].name[0]) snprintf(names[l], sizeof names[l], "Layer %d: %.60s", l + 1, ts.foliage[l].name);
+                    else if (nm > 1) snprintf(names[l], sizeof names[l], "Layer %d: %d models", l + 1, nm);
                     else snprintf(names[l], sizeof names[l], "Layer %d: %s", l + 1, nm ? (fn ? fn + 1 : first) : "(no model yet)");
                     ptrs[l] = names[l];
                 }
@@ -1659,10 +1724,15 @@ void Editor::terrain_section(Object* o) {
             char first[kPathMax];
             path_list_next(fl.model, first, kPathMax);
             const char* fn = strrchr(first, '/');
-            char title[128];
-            if (nmodels > 1) snprintf(title, sizeof title, "Layer %d: %d models###layer", l + 1, nmodels);
+            char title[384];
+            if (fl.name[0]) snprintf(title, sizeof title, "Layer %d: %s (%d model%s)###layer", l + 1, fl.name, nmodels, nmodels == 1 ? "" : "s");
+            else if (nmodels > 1) snprintf(title, sizeof title, "Layer %d: %d models###layer", l + 1, nmodels);
             else snprintf(title, sizeof title, "Layer %d: %s###layer", l + 1, nmodels ? (fn ? fn + 1 : first) : "empty");
             if (ImGui::TreeNodeEx(title, l == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+                // The name scripts find the layer by: fe.find_foliage("grass").
+                prop_label("Name");
+                ImGui::InputTextWithHint("##fname", "for scripts: fe.find_foliage(name)", fl.name, sizeof fl.name);
+                track("terrain:fname");
                 // The models: each instance picks one at random. Drop .mof files or folders here, or add them.
                 ImGui::BeginGroup();
                 ImGui::TextDisabled("Models (each instance takes one at random)");
@@ -1740,6 +1810,9 @@ void Editor::terrain_section(Object* o) {
                 prop_label("Shadows");
                 toggle_switch("##sh", &fl.cast_shadows);
                 track("terrain:fshadow");
+                // A custom material for every instance (a wind sway): it gets u_time.
+                slot_field("Shader", fl.shader, sizeof fl.shader, this, path_is_shader, Icon::Wand);
+                if (fl.shader[0]) faint("A custom shader draws this layer on the base FarcadeGL path (no shadows, AO or fog that frame).");
                 ImGui::TreePop();
             }
             ImGui::PopID();

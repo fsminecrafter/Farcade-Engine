@@ -83,6 +83,7 @@ make os        # Minimal-OS programs (needs x86_64-elf-gcc/g++, see the SDK)
 - **Modules and scene objects**: `docs/modules.md`: besides Rigidbody, Collider, Light and the audio modules there are Particle Emitter, Joint 3D, Animator (`docs/animation.md`), Force Field, Spawner, Audio Reverb Zone, Billboard and Text 3D (`engine/fx`).
 - **Scene files** (`.fscene`, `editor/src/scene_io.h`, `docs/scenes.md`): File > Save scene (Ctrl+S), Save scene as, and double-click a scene in Files to open it. Readable text; every value is stored by name, so newer fields read back as defaults from older files. New scene, Open and Quit ask before unsaved changes are lost.
 - **Undo and redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z): every edit in the editor, a drag counts as one step (`docs/scenes.md`).
+- **Selecting many, groups** (`docs/scenes.md`): Shift + double-click selects every similar object (same model, shape or kind), and Inspector edits then apply to all of them. Groups on objects let scripts find several at once (`fe.find_group("lamps")`), and named foliage layers take a shader from a script (`fe.assign_shader_to_foliage("grass", "shaders/sway.fshader")`, with a sway sample in `assets/samples/foliage`).
 
 ```sh
 build/host/bin/fe-gfx-shot out.png            # the renderer alone, a demo scene

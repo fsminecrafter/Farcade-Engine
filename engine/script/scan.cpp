@@ -33,4 +33,23 @@ Entity script_find_by_name(World& w, const char* name) {
     return best;
 }
 
+int script_find_with_module(World& w, ModuleKind k, Entity* out, int max) {
+    int n = 0;
+    ecs_iter_t it = ecs_each_id(w.raw(), w.component(k));
+    while (ecs_each_next(&it))
+        for (int i = 0; i < it.count; i++) {
+            if (n < max) out[n] = it.entities[i];
+            n++;
+        }
+    // Creation order (ids grow), so the result does not depend on the table layout.
+    int m = n < max ? n : max;
+    for (int i = 1; i < m; i++) {
+        Entity v = out[i];
+        int j = i - 1;
+        while (j >= 0 && (uint32_t)out[j] > (uint32_t)v) { out[j + 1] = out[j]; j--; }
+        out[j + 1] = v;
+    }
+    return n;
+}
+
 }  // namespace fe

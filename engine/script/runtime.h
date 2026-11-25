@@ -46,6 +46,14 @@ struct ScriptHost {
     // a value. Null: both read as "always" / true and cannot be set.
     bool (*stream_get)(Entity e, int* mode, bool* loaded, void* user) = nullptr;
     void (*stream_set)(Entity e, int mode, int loaded, void* user) = nullptr;
+    // Groups: an object's names separated by ';' (name_list_* in scene/modules.h; names compare without regard
+    // to case). groups_get copies the object's list (false for objects the host does not know), groups_set
+    // replaces it, find_group writes the entities in a group in scene order and returns how many there are
+    // (more than max: it is called again with room for all). Null: objects have no groups (obj.groups is
+    // empty, fe.find_group returns an empty table, add_group raises an error).
+    bool (*groups_get)(Entity e, char* out, int cap, void* user) = nullptr;
+    void (*groups_set)(Entity e, const char* groups, void* user) = nullptr;
+    int (*find_group)(const char* name, Entity* out, int max, void* user) = nullptr;
 };
 
 // What a game shows about itself while it loads or works (fe.status): the

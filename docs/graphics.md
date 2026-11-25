@@ -32,8 +32,11 @@ void main() {
 `u_texture` is bound to the material image; without one it is a white texture.
 Built-in meshes currently get generated planar UVs, and texture alpha is not
 blended by the XRGB material path.
-The renderer also supplies the usual FarcadeGL matrix uniforms and `u_mat`
-(material color and roughness). A custom shader replaces the built-in material
+The renderer also supplies the usual FarcadeGL matrix uniforms, `u_mat`
+(material color and roughness) and `u_time` (x: seconds rendered, y: the
+frame's delta, z: the frame number) for animated materials such as wind sway
+(`assets/samples/foliage/sway.fshader`, docs/terrain.md). The editor draws
+only when something changes, so `u_time` moves in Play and in the player. A custom shader replaces the built-in material
 shading. When a visible mesh has a texture or custom shader, the renderer uses
 its base FarcadeGL path for that frame, so advanced GPU-tier effects (such as
 shadows, SSAO and fog) are not applied.

@@ -115,6 +115,18 @@ static const Editor::UiRect* ui(const char* key) { return E->find_rect(key); }
 static bool click_ui(const char* key, int b = 0) {
     const Editor::UiRect* r = ui(key);
     if (!r) return false;
+    // Below the panels (a long Inspector; the status bar takes the bottom): scroll the panel up to it first.
+    const float win_h = 800.0f;
+    for (int tries = 0; r && r->y + r->h > win_h - 36 && tries < 40; tries++) {
+        ev_move(r->x + r->w * 0.5f, win_h - 60);
+        platform::Event wheel;
+        wheel.type = platform::EventType::MouseWheel;
+        wheel.wheel_y = E->settings.invert_scrolling ? 1.0f : -1.0f;
+        platform::headless_push(wheel);
+        frames(1);
+        r = ui(key);
+    }
+    if (!r) return false;
     click(r->x + r->w * 0.5f, r->y + r->h * 0.5f, b);
     return true;
 }
@@ -1875,6 +1887,77 @@ int main() {
         CHECK(click_ui("inspector:unlit"), "the Unlit switch");
         frames(2);
         CHECK(ed.scene.get(c1)->unlit != was && ed.scene.get(c2)->unlit != was && ed.scene.get(sp)->unlit != was, "the Inspector edits all three");
+        ed.new_scene();
+        frames(2);
+    }
+
+    // ---- groups: the name list, the scene file, multi-edit, select by group, the Inspector, scripts in Play
+    {
+        ed.stop();
+        ed.new_scene();
+        char gl[256] = {};
+        CHECK(name_list_add(gl, sizeof gl, "grass") && name_list_add(gl, sizeof gl, "Sway") && name_list_add(gl, sizeof gl, "SWAY") &&
+              !strcmp(gl, "grass;Sway"), "add skips a name already there whatever its case (%s)", gl);
+        CHECK(!name_list_add(gl, sizeof gl, "a;b") && !name_list_add(gl, sizeof gl, "") && !name_list_add(gl, sizeof gl, " x"), "bad names");
+        CHECK(name_list_has(gl, "GRASS") && name_list_remove(gl, sizeof gl, "grass") && !strcmp(gl, "Sway") && !name_list_remove(gl, sizeof gl, "x"),
+              "has / remove");
+        char tiny[8] = {};
+        CHECK(name_list_add(tiny, sizeof tiny, "abc") && !name_list_add(tiny, sizeof tiny, "defg") && !strcmp(tiny, "abc"), "a full list");
+        ObjectId g1 = ed.create_object("G1", MeshKind::Cube, Vec3(0, 0.5f, 0));
+        ObjectId g2 = ed.create_object("G2", MeshKind::Cube, Vec3(2, 0.5f, 0));
+        ObjectId g3 = ed.create_object("G3", MeshKind::Sphere, Vec3(-2, 0.5f, 0));
+        snprintf(ed.scene.get(g1)->groups, 256, "%s", "grass;sway");
+        snprintf(ed.scene.get(g2)->groups, 256, "%s", "grass");
+        snprintf(ed.scene.get(g3)->groups, 256, "%s", "rock");
+        size_t n = 0;
+        char* text = save_scene_text(ed.scene, ed.project_dir, &n);
+        CHECK(text && strstr(text, "  groups \"grass;sway\"\n"), "the scene file writes groups");
+        Scene back;
+        SceneLoadReport rep;
+        CHECK(text && load_scene_text(back, text, n, &rep) && rep.skipped == 0 && back.get(g1) && !strcmp(back.get(g1)->groups, "grass;sway") &&
+              !strcmp(back.get(g3)->groups, "rock"), "and reads them back");
+        free(text);
+        CHECK(ed.select_group("GRASS") == 2 && ed.scene.is_selected(g1) && ed.scene.is_selected(g2) && !ed.scene.is_selected(g3), "select a group");
+        CHECK(ed.select_group("rock", true) == 1 && ed.scene.selected_count() == 3, "Shift adds a group to the selection");
+        // Multi-edit: groups added and removed on the active one go to the others, their other groups stay.
+        ed.scene.clear_selection();
+        ed.scene.select_add(g3);
+        ed.scene.select_add(g2);
+        ed.scene.select_add(g1);
+        Object before = *ed.scene.get(g1);
+        Object* a = ed.scene.get(g1);
+        name_list_add(a->groups, sizeof a->groups, "tall");
+        name_list_remove(a->groups, sizeof a->groups, "grass");
+        ed.apply_edit_to_selection(before, *a);
+        CHECK(!strcmp(ed.scene.get(g2)->groups, "tall") && !strcmp(ed.scene.get(g3)->groups, "rock;tall"),
+              "multi-edit adds and removes the changed groups only (%s / %s)", ed.scene.get(g2)->groups, ed.scene.get(g3)->groups);
+        // The Inspector's Groups field adds a group to all three.
+        frames(2);
+        const Editor::UiRect* gr = ui("inspector:groups");
+        CHECK(gr != nullptr, "the Inspector has a Groups field");
+        if (gr) {
+            click(gr->x + 10, gr->y + gr->h * 0.5f);
+            frames(1);
+            type_text("bush");
+            frames(1);
+            ev_key(platform::KEY_ENTER, true, 0); frames(1);
+            ev_key(platform::KEY_ENTER, false, 0); frames(2);
+            CHECK(name_list_has(ed.scene.get(g1)->groups, "bush") && name_list_has(ed.scene.get(g2)->groups, "bush") &&
+                  name_list_has(ed.scene.get(g3)->groups, "bush"), "typed into the Inspector, it goes to every selected object (%s)",
+                  ed.scene.get(g2)->groups);
+        }
+        // Scripts while playing.
+        ed.scene.clear_selection();
+        ed.play();
+        ScriptRuntime* rt = ed.play_scripts();
+        CHECK(rt && rt->run("_G.ng = #fe.find_group('tall'); fe.find('G3'):add_group('found'); _G.first = fe.find_group('tall')[1].name"),
+              "fe.find_group runs in Play");
+        if (rt) {
+            CHECK(rt->run("assert(ng == 3 and first == 'G1')"), "it finds the three, in Hierarchy order");
+            CHECK(name_list_has(ed.scene.get(g3)->groups, "found"), "obj:add_group changes the object");
+        }
+        ed.stop();
+        CHECK(!name_list_has(ed.scene.get(g3)->groups, "found"), "Stop puts the groups back");
         ed.new_scene();
         frames(2);
     }

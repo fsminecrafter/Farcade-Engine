@@ -1382,6 +1382,53 @@ void test_screen_shaders() {
     r.shutdown();
 }
 
+// A custom item shader gets u_time (seconds rendered): the foliage sway sample moves the cube between frames
+// and stays put while no time passes.
+void* read_sway_src(const char* path, size_t* size, void*) {
+    if (strcmp(path, "sway.fshader")) return nullptr;
+    FILE* f = fopen("assets/samples/foliage/sway.fshader", "rb");
+    if (!f) return nullptr;
+    char* m = (char*)malloc(8192);
+    *size = m ? fread(m, 1, 8191, f) : 0;
+    fclose(f);
+    if (m) m[*size] = 0;
+    return m;
+}
+
+void test_item_shader_time() {
+    Renderer r;
+    CHECK(r.init(kSmokeWidth, kSmokeHeight));
+    GraphicsSettings s;
+    s.apply_preset(GraphicsPreset::Low);
+    r.set_settings(s);
+    static SmokeScene smoke;
+    smoke.build();
+    RenderScene sc = smoke.scene;
+    sc.read_asset = read_sway_src;
+    smoke.items[1].shader_path = "sway.fshader";
+    smoke.items[1].foliage = true;
+    sc.delta_time = 0.4f;
+    CHECK(render_ok(r, sc));
+    const char* err = r.error();
+    CHECK(!err || !err[0]);
+    const int n = kSmokeWidth * kSmokeHeight;
+    uint32_t* a = (uint32_t*)malloc((size_t)n * 4);
+    memcpy(a, r.pixels(), (size_t)n * 4);
+    sc.delta_time = 0.0f;
+    CHECK(render_ok(r, sc));
+    long same = 0, moved = 0;
+    for (int i = 0; i < n; i++) same += a[i] != r.pixels()[i];
+    sc.delta_time = 0.9f;
+    CHECK(render_ok(r, sc));
+    for (int i = 0; i < n; i++) moved += a[i] != r.pixels()[i];
+    CHECK(same == 0);
+    CHECK(moved > 20);
+    free(a);
+    smoke.items[1].shader_path = nullptr;
+    smoke.items[1].foliage = false;
+    r.shutdown();
+}
+
 // The editor on Minimal-OS: draft frames while the camera moves, full ones when it stops, now and then another
 // size (adaptive resolution). After the first round nothing may compile again.
 void test_no_recompile() {
@@ -1584,6 +1631,7 @@ int main() {
     test_new_modes_everything();
     test_ssaa_and_vsync();
     test_screen_shaders();
+    test_item_shader_time();
     test_no_recompile();
     test_culling();
     test_clouds();

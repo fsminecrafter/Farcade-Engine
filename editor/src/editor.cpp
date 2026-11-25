@@ -1600,6 +1600,18 @@ int Editor::select_similar(ObjectId id) {
     return added + 1;
 }
 
+int Editor::select_group(const char* name, bool add) {
+    if (!add) scene.clear_selection();
+    int n = 0;
+    ObjectId keep = scene.active();
+    for (int i = 0; i < scene.count(); i++)
+        if (name_list_has(scene.at(i).groups, name)) { scene.select_add(scene.at(i).id); n++; }
+    // The object whose Inspector was used stays active (when it is in the group).
+    if (keep && name_list_has(scene.get(keep) ? scene.get(keep)->groups : "", name)) scene.select_add(keep);
+    log(LogLevel::Info, "Group \"%s\": %d object%s", name, n, n == 1 ? "" : "s");
+    return n;
+}
+
 namespace {
 template <typename T> bool differs(const T& a, const T& b) { return memcmp(&a, &b, sizeof(T)) != 0; }
 }  // namespace
@@ -1616,6 +1628,14 @@ void Editor::apply_edit_to_selection(const Object& before, const Object& after) 
             if ((&before.scale.x)[k] != (&after.scale.x)[k]) (&t->scale.x)[k] = (&after.scale.x)[k];
         if (before.parent != after.parent && !scene.is_ancestor(t->id, after.parent) && t->id != after.parent) scene.set_parent(t->id, after.parent);
         if (before.streaming != after.streaming) t->streaming = after.streaming;
+        // Groups: the names added or removed (each object keeps its other groups).
+        if (strcmp(before.groups, after.groups)) {
+            char name[kPathMax];
+            for (const char* p = path_list_next(after.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax))
+                if (!name_list_has(before.groups, name)) name_list_add(t->groups, (int)sizeof t->groups, name);
+            for (const char* p = path_list_next(before.groups, name, kPathMax); p; p = path_list_next(p, name, kPathMax))
+                if (!name_list_has(after.groups, name)) name_list_remove(t->groups, (int)sizeof t->groups, name);
+        }
         if (before.visible != after.visible) t->visible = after.visible;
         // Look and mesh (mesh objects).
         if (after.kind == ObjectKind::Mesh && t->kind == ObjectKind::Mesh) {

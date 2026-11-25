@@ -271,6 +271,30 @@ int main(int argc, char** argv) {
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
     }
+    // Groups and a selection of two: the Inspector's Groups row, edits applying to both.
+    {
+        ObjectId ball = kNoObject, pil = kNoObject;
+        for (int i = 0; i < ed.scene.count(); i++) {
+            if (!strcmp(ed.scene.at(i).name, "Ball")) ball = ed.scene.at(i).id;
+            if (!strcmp(ed.scene.at(i).name, "Pillar")) pil = ed.scene.at(i).id;
+        }
+        char saved_b[256] = {}, saved_p[256] = {};
+        if (ball && pil) {
+            memcpy(saved_b, ed.scene.get(ball)->groups, sizeof saved_b);
+            memcpy(saved_p, ed.scene.get(pil)->groups, sizeof saved_p);
+            snprintf(ed.scene.get(ball)->groups, 256, "%s", "props;round;pickup");
+            snprintf(ed.scene.get(pil)->groups, 256, "%s", "props");
+            ed.scene.select_only(pil);
+            ed.scene.select_add(ball);
+            ImGuiWindow* iw = ImGui::FindWindowByName("###Inspector");
+            for (int i = 0; i < 3; i++) { if (iw) ImGui::SetScrollY(iw, 0); ed.frame(); }
+            snprintf(path, sizeof(path), "%s/editor-groups.png", out);
+            if (!platform::headless_save_png(path)) return 1;
+            printf("wrote %s\n", path);
+            memcpy(ed.scene.get(ball)->groups, saved_b, sizeof saved_b);
+            memcpy(ed.scene.get(pil)->groups, saved_p, sizeof saved_p);
+        }
+    }
     // Shaping a collider: the pillar's cylinder collider with its handles.
     {
         ObjectId pil = kNoObject;

@@ -73,6 +73,8 @@ end
   history (docs/terrain.md).
 - **Streaming** is written as `streaming always` or `streaming unloaded`.
   Dynamic, the default, is not written.
+- **Groups** are written as `groups "grass;sway"` (names separated by `;`),
+  and only when the object has some.
 
 ## Reading rules
 
@@ -101,6 +103,32 @@ end
 | File > Save scene as... | Asks for a name and saves to `scenes/<name>.fscene`. |
 | Double-click a `.fscene` in Files | Opens it. |
 | File > New scene | Empties the scene. |
+
+## Selecting and editing several objects
+
+| Action | Effect |
+|---|---|
+| Shift-click (viewport or Hierarchy) | Adds an object to the selection, or takes it out |
+| Shift + double-click an object | Selects every object like it: meshes with the same model (or the same primitive shape), empties with the same modules (lights also of the same type), special objects of the same kind. Hidden objects are skipped, and the one clicked stays active |
+| Click a group chip (Inspector, Groups) | Selects every object in that group; Shift-click adds them |
+| Hierarchy filter | Matches names and groups |
+
+With several objects selected, the Inspector shows the active one (the last
+picked) with "+N more: edits apply to all". A change made there goes to every
+selected object that has the same thing: only the fields that changed are
+copied, so the other values stay each object's own.
+
+- Transform: rotation, each axis of the scale separately, the parent,
+  Streaming and Visible. Moving the gizmo moves them all.
+- Look and Mesh: to the other mesh objects.
+- Modules: an added or removed module, and each changed field (a vector
+  per component). A special object's settings (Camera, Sky ...) go only to
+  objects of the same kind. The Current flag and a terrain's data file stay
+  each object's own.
+- Script inputs: to objects with the same script.
+- Groups: the groups added or removed; each object keeps its others.
+
+One edit is one undo step for all of them.
 
 - **Saving during Play** writes the scene as it was before Play.
 - **Opening a scene** stops Play first.

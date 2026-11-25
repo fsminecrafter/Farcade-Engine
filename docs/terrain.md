@@ -109,6 +109,7 @@ grows a `.mof` model wherever you paint it with the Foliage tool.
 
 | Field | Meaning |
 | --- | --- |
+| Name | What scripts find the layer by: `fe.find_foliage("grass")`, `fe.assign_shader_to_foliage("grass", path)` (docs/scripting.md). Several layers, on one terrain or many, can share a name |
 | Models | One or more `.mof` models (a tuft of grass, flowers, small plants). Each instance takes one of them at random. Add them with **Add models...** (Ctrl-click or Shift-click several in the picker, Ctrl+A for all), **Add folder...** (every `.mof` in it), or drop files or folders from Files on the list. Their textures and material colours are used |
 | Density | Instances per square meter where the layer is painted at full strength |
 | Scale | The smallest and largest random scale |
@@ -116,6 +117,7 @@ grows a `.mof` model wherever you paint it with the Foliage tool.
 | Max slope | Ground steeper than this gets none |
 | Align to slope | The model stands along the ground's normal (else straight up) |
 | Shadows | The layer casts shadows (off by default: it is expensive) |
+| Shader | A custom `.fshader` for every instance, such as a wind sway (see below). Empty: the models' own textures and colours |
 
 In the scene file and in Lua (`obj.terrain.foliage1_model`) the models are one
 string of paths separated by `;` (at most 1023 characters, enough for about 20
@@ -127,6 +129,30 @@ axis. It is never tipped over, so nothing ends up in the ground.
 Instances are not stored. They are placed again from the painted density
 with a fixed hash, so the same paint always gives the same grass, and the
 `.fterrain` file only holds one byte per cell per layer.
+
+### A shader for a layer (wind sway)
+
+A layer's **Shader** replaces the models' shading with a custom `.fshader`
+(docs/graphics.md), like a mesh's Shader slot. Custom item shaders get
+`u_time` (x: seconds rendered, y: the frame's delta, z: the frame number), so
+a vertex shader can move the instances. `assets/samples/foliage/sway.fshader`
+is a ready sway: copy it into the project and put it in the Shader slot, or
+from a script:
+
+```lua
+fe.assign_shader_to_foliage("grass", "shaders/sway.fshader")
+```
+
+The sample bends each instance more towards its tip, using the texture's v
+coordinate as the height (v = 1 at the base, v = 0 at the tip; its comments say
+how to flip it). Instances are merged into one mesh per block, so the shader
+sees terrain space positions; the sample uses them to give neighbours
+different phases.
+
+While any custom shader is visible, the frame is drawn on FarcadeGL's base
+path: the GPU tier's shadows, AO and fog are off for that frame. Use a sway on
+small or nearby layers, or turn it on only where the look matters more than
+those effects.
 
 ### How millions of instances are drawn
 
@@ -205,6 +231,7 @@ object, so scripts get it in `on_collision`.
 | `obj.streaming` | `"dynamic"`, `"always"` or `"unloaded"`, read and write |
 | `obj.loaded` | Read: whether the object is loaded (an Unloaded object only after a script loaded it). Write `true` / `false` to load or unload an Unloaded object |
 | `obj.terrain` | The terrain's settings (the table above) |
+| `fe.find_foliage(name)`, `fe.assign_shader_to_foliage(name, path)` | Foliage layers by name (docs/scripting.md) |
 
 ## The `.fterrain` file
 

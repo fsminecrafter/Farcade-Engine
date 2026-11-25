@@ -71,6 +71,7 @@ struct Locs {
     int fwd = -1, rx = -1, ry = -1, zen = -1, hor = -1, grd = -1, sun = -1, suncol = -1, texture = -1;
     int lift = -1, gamma = -1, gain = -1, grain = -1;
     int gi = -1, gi0 = -1, gi1 = -1;
+    int time = -1;                          // custom item shaders: u_time (seconds, delta, frame, 0)
 };
 
 struct Shader {
@@ -176,6 +177,8 @@ struct Renderer::Impl {
     uint32_t* screen_buf = nullptr;         // XRGB: the image uploaded, then the pass read back
     size_t screen_cap = 0;
     double screen_time = 0;
+    double item_time = 0;                   // u_time of custom item shaders (a wind sway): seconds rendered
+    float item_dt = 0;
     uint32_t* pixels = nullptr;
     char error[200] = "";
     char warning[256] = "";             // take_warning()
@@ -341,6 +344,7 @@ struct Renderer::Impl {
         l->gi = fglUniformLocation(sh, "u_gi");
         l->gi0 = fglUniformLocation(sh, "u_gi0");
         l->gi1 = fglUniformLocation(sh, "u_gi1");
+        l->time = fglUniformLocation(sh, "u_time");
     }
 
     CompileGate gate;
@@ -1055,6 +1059,7 @@ struct Renderer::Impl {
         fglUseShader(gl, s.sh);
         fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
         fglUniformTexture(gl, s.sh, s.loc.texture, texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        if (s.loc.time >= 0) fglUniform4f(s.sh, s.loc.time, (float)item_time, item_dt, (float)frame, 0.0f);
         return draw_mesh(it, true, failed);
     }
 
@@ -1198,7 +1203,7 @@ struct Renderer::Impl {
         // from the previous frame). Bands of one image share the values of the image.
         float dt = scene.delta_time;
         if (dt < 0) dt = last_render_end_ms > 0 ? fclamp((float)((t0 - last_render_end_ms) * 0.001), 0.0f, 0.25f) : 1.0f / 60.0f;
-        if (!banding) post_frames++;
+        if (!banding) { post_frames++; item_time += dt; item_dt = dt; }
         pf = PostFrame::make(scene.post, scene.post.auto_exposure ? ae.ev : 0.0f, post_frames, scene.draft, false);
         stats.exposure_ev = pf.exposure_ev;
 

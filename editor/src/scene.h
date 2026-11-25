@@ -56,6 +56,10 @@ struct Object {
     // that live flag (not saved).
     StreamMode streaming = StreamMode::Dynamic;
     bool stream_loaded = false;
+    // Groups: names separated by ';' ("grass;sway"), for scripts to find several objects at once
+    // (fe.find_group("grass"), obj:in_group, obj:add_group). Names compare without regard to case
+    // (name_list_* in scene/modules.h).
+    char groups[kPathMax] = {};
 
     Mat4 matrix() const { return Mat4::trs(position, rotation, scale); }   // local (relative to the parent)
     void set_matrix(const Mat4& m) { decompose(m, &position, &rotation, &scale); }

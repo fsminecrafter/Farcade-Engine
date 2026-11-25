@@ -125,6 +125,33 @@ bool PlaySession::start(Scene& scene, const PlayHost& host, AudioDevice* audio_d
         if (mode >= 0 && mode < 3) o->streaming = (StreamMode)mode;
         if (loaded >= 0) o->stream_loaded = loaded != 0;
     };
+    sh.groups_get = [](Entity e, char* out, int cap, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (!o) return false;
+        snprintf(out, (size_t)cap, "%s", o->groups);
+        return true;
+    };
+    sh.groups_set = [](Entity e, const char* groups, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        Object* o = self->scene_ ? self->scene_->get(self->object_of(e)) : nullptr;
+        if (o) snprintf(o->groups, sizeof o->groups, "%s", groups);
+    };
+    sh.find_group = [](const char* name, Entity* out, int max, void* u) {
+        PlaySession* self = (PlaySession*)u;
+        int n = 0;
+        if (!self->scene_) return 0;
+        // Scene order (the Hierarchy's; copies made while playing come last).
+        for (int i = 0; i < self->scene_->count(); i++) {
+            const Object& o = self->scene_->at(i);
+            if (!name_list_has(o.groups, name)) continue;
+            Entity e = self->entity_of(o.id);
+            if (!e) continue;
+            if (n < max) out[n] = e;
+            n++;
+        }
+        return n;
+    };
     sh.log = [](ScriptLogLevel level, const char* text, void* u) {
         PlaySession* self = (PlaySession*)u;
         if (self->host_.log)

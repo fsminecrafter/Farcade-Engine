@@ -212,6 +212,9 @@ public:
     // type). Returns how many are now selected of them.
     bool objects_similar(const Object& a, const Object& b) const;
     int select_similar(ObjectId id);
+    // Selects every object in a group (add: keeps the selection). Returns how many.
+    int select_group(const char* name, bool add = false);
+    void groups_field(Object* o);           // the Inspector's Groups row
     // Editing several objects: the Inspector edits the active one; whatever changed is copied to the other
     // selected objects that have it (fields of the same modules, a special object's settings to the same
     // kind, script inputs of the same script). Names, ids, links' data files and "current" stay their own.

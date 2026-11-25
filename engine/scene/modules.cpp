@@ -287,6 +287,7 @@ const FieldInfo kPost[] = {
 };
 
 #define FE_FOLIAGE(n) \
+    { "foliage" #n "_name", "Foliage " #n " name", FieldType::Text, (uint16_t)offsetof(Terrain, foliage[n - 1].name), 0, 0, nullptr }, \
     { "foliage" #n "_model", "Foliage " #n " models", FieldType::PathList, (uint16_t)offsetof(Terrain, foliage[n - 1].model), 0, 0, nullptr }, \
     { "foliage" #n "_density", "Foliage " #n " density", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].density), 0, 50, nullptr }, \
     { "foliage" #n "_scale_min", "Foliage " #n " min scale", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].scale_min), 0.01f, 100, nullptr }, \
@@ -294,7 +295,8 @@ const FieldInfo kPost[] = {
     { "foliage" #n "_distance", "Foliage " #n " distance", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].distance), 1, 2000, nullptr }, \
     { "foliage" #n "_max_slope", "Foliage " #n " max slope", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].max_slope), 0, 90, nullptr }, \
     { "foliage" #n "_align", "Foliage " #n " align to slope", FieldType::Bool, (uint16_t)offsetof(Terrain, foliage[n - 1].align_to_slope), 0, 0, nullptr }, \
-    { "foliage" #n "_shadows", "Foliage " #n " shadows", FieldType::Bool, (uint16_t)offsetof(Terrain, foliage[n - 1].cast_shadows), 0, 0, nullptr }
+    { "foliage" #n "_shadows", "Foliage " #n " shadows", FieldType::Bool, (uint16_t)offsetof(Terrain, foliage[n - 1].cast_shadows), 0, 0, nullptr }, \
+    { "foliage" #n "_shader", "Foliage " #n " shader", FieldType::Path, (uint16_t)offsetof(Terrain, foliage[n - 1].shader), 0, 0, nullptr }
 
 const FieldInfo kTerrain[] = {
     FE_F(Terrain, data, "Data", Path, 0, 0, nullptr),

@@ -651,6 +651,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                             it->mesh.bounds_max = gr.hi;
                             it->model = model;
                             it->texture_path = fp.texture[0] ? fp.texture : nullptr;
+                            it->shader_path = fl.shader[0] ? fl.shader : nullptr;    // a sway shader (u_time)
                             it->color = fp.color;
                             it->roughness = 0.8f;
                             it->cast_shadows = fl.cast_shadows;

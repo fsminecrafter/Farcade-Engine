@@ -413,6 +413,8 @@ constexpr int kFoliageLayers = 4;
 // painted, turned randomly around its up axis (never tipped into the ground),
 // thinned out with distance and drawn in batches per chunk (scene/terrain.h).
 struct FoliageLayer {
+    // A name scripts find the layer by (fe.find_foliage("grass")); names match without regard to case.
+    char name[kPathMax] = {};
     // The .mof models, separated by ';' ("grass_a.mof;grass_b.mof;flower.mof"): each instance takes one of
     // them at random. Empty = the layer is off.
     char model[kPathListMax] = {};
@@ -423,6 +425,9 @@ struct FoliageLayer {
     float max_slope = 40.0f;            // degrees: steeper ground gets none
     bool align_to_slope = false;        // stand along the ground's normal (else straight up)
     bool cast_shadows = false;
+    // A custom .fshader material for every instance (a wind sway): it replaces the models' own look and gets
+    // u_time like screen shaders do. Empty = the models' textures and colours.
+    char shader[kPathMax] = {};
 };
 
 // A heightfield split into square chunks. Heights, holes and the painted
@@ -508,6 +513,64 @@ inline const char* path_list_next(const char* list, char* out, int cap) {
     }
     if (cap > 0) out[0] = 0;
     return nullptr;
+}
+
+// Name lists: names separated by ';' (an object's groups). Names compare without regard to case; spaces around
+// a name are ignored. name_list_has: whether `name` is in the list.
+inline bool name_eq_nocase(const char* a, const char* b) {
+    for (;; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return false;
+        if (!x) return true;
+    }
+}
+inline bool name_list_has(const char* list, const char* name) {
+    char item[kPathMax];
+    for (const char* p = path_list_next(list, item, (int)sizeof item); p; p = path_list_next(p, item, (int)sizeof item))
+        if (name_eq_nocase(item, name)) return true;
+    return false;
+}
+// Whether a name may go into a list: not empty, at most 63 characters, no ';' and no spaces at its ends.
+inline bool name_list_valid(const char* name) {
+    int n = 0;
+    while (name[n]) { if (name[n] == ';') return false; n++; }
+    return n > 0 && n < 64 && name[0] != ' ' && name[n - 1] != ' ';
+}
+// Adds a name (when valid and not there yet). False when it is invalid or the list (cap bytes) is full.
+inline bool name_list_add(char* list, int cap, const char* name) {
+    if (!name_list_valid(name)) return false;
+    if (name_list_has(list, name)) return true;
+    int len = 0, n = 0;
+    while (list[len]) len++;
+    while (name[n]) n++;
+    int need = len + (len ? 1 : 0) + n;
+    if (need >= cap) return false;
+    if (len) list[len++] = ';';
+    for (int i = 0; i <= n; i++) list[len + i] = name[i];
+    return true;
+}
+// Removes a name; returns whether it was there. The list is rewritten without empty entries.
+inline bool name_list_remove(char* list, int cap, const char* name) {
+    char out[kPathListMax];
+    char item[kPathMax];
+    int len = 0;
+    bool found = false;
+    out[0] = 0;
+    for (const char* p = path_list_next(list, item, (int)sizeof item); p; p = path_list_next(p, item, (int)sizeof item)) {
+        if (name_eq_nocase(item, name)) { found = true; continue; }
+        int n = 0;
+        while (item[n]) n++;
+        if (len + (len ? 1 : 0) + n >= (int)sizeof out) break;
+        if (len) out[len++] = ';';
+        for (int i = 0; i <= n; i++) out[len + i] = item[i];
+        len += n;
+    }
+    if (len >= cap) len = cap - 1;
+    for (int i = 0; i < len; i++) list[i] = out[i];
+    list[len] = 0;
+    return found;
 }
 
 struct FieldInfo {

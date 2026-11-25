@@ -31,7 +31,13 @@ void check(const char* what, size_t cap) {
     }
     // FE_DUMP_DIR=<dir>: every program as <dir>/NNNN.vs and .fs (Minimal-OS's nv_sass_tests runs them
     // through the NVIDIA shader compiler and its simulator: NV_SASS_SHADER_DIR=<dir>).
-    if (const char* dir = getenv("FE_DUMP_DIR")) {
+    // FE_DUMP_MATCH=<text>: only programs whose name contains it; FE_DUMP_EVERY=<n>: one in n of those.
+    static int g_matched = 0;
+    const char* match = getenv("FE_DUMP_MATCH");
+    const char* every = getenv("FE_DUMP_EVERY");
+    bool dump = !match || strstr(what, match);
+    if (dump && every && atoi(every) > 1) dump = (g_matched++ % atoi(every)) == 0;
+    if (const char* dir = getenv("FE_DUMP_DIR"); dir && dump) {
         char path[512];
         const char* parts[2] = { g_vs, g_fs };
         for (int k = 0; k < 2; k++) {

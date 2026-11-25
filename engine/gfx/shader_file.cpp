@@ -352,13 +352,21 @@ bool hook_material(char* src, size_t cap, bool cutout, bool two_sided) {
         if (!strstr(src, "varying vec2 v_uv;")) b.add("varying vec2 v_uv;\n");
         b.add("uniform vec4 u_cut;\n");
     }
+    // Two-sided: the normal is turned towards the viewer. (Not gl_FrontFacing: the NVIDIA shader compiler
+    // cannot encode it yet, and a draw it cannot compile runs on the CPU.) Lit shaders know the camera
+    // (u_cam) and the surface point (v_pos); the normal pass works in view space, where the viewer is +z.
+    const bool lit_face = two_sided && strstr(src, "uniform vec4 u_cam;") && strstr(src, "varying vec3 v_pos;");
+    if (lit_face)
+        b.add("vec3 fe_face(vec3 n) {\n"
+              "    return dot(n, u_cam.xyz - v_pos) < 0.0 ? -n : n;\n"
+              "}\n");
     b.add(kMainLine);
     if (cutout) b.add("    if (texture2D(u_texture, v_uv).a < u_cut.x) discard;\n");
     if (two_sided) {
         Buf t1(cap), t2(cap);
-        add_replaced(t1, body, "normalize(v_nrm)", "(normalize(v_nrm) * (gl_FrontFacing * 2.0 - 1.0))");
+        add_replaced(t1, body, "normalize(v_nrm)", lit_face ? "fe_face(normalize(v_nrm))" : "normalize(v_nrm)");
         if (!t1.ok) return false;
-        add_replaced(t2, t1.p, "normalize(v_n)", "(normalize(v_n) * (gl_FrontFacing * 2.0 - 1.0))");
+        add_replaced(t2, t1.p, "normalize(v_n)", "(normalize(v_n) * (v_n.z < 0.0 ? -1.0 : 1.0))");
         if (!t2.ok) return false;
         b.add(t2.p, t2.n);
     } else {

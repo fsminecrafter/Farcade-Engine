@@ -54,7 +54,8 @@ bool hook_vertex(char* src, size_t cap, const char* displace, bool uv);
 bool hook_fragment(char* src, size_t cap, const char* surface, bool tex);
 // Material features of a fragment shader: `cutout` discards where u_texture's alpha is below u_cut.x (leaf
 // cards; the vertex shader needs v_uv: hook_vertex(..., uv = true)); `two_sided` turns the normal it reads
-// (normalize(v_nrm), the normal pass's normalize(v_n)) towards the viewer on back faces.
+// towards the viewer (normalize(v_nrm) in shaders with u_cam and v_pos, the normal pass's view space
+// normalize(v_n)), so back faces are lit from their side.
 bool hook_material(char* src, size_t cap, bool cutout, bool two_sided);
 // For a full custom fragment shader drawn into an HDR target: its gl_FragColor (a display colour) is kept
 // in a local and written HDR encoded (sqrt(linear / 8)) at the end of main.

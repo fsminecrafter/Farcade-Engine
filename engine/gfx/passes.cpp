@@ -395,7 +395,7 @@ struct GpuTier::Impl {
         gl->color = color;
         gl->depth = depth;
         fgl__bind(gl);
-        for (uint32_t u = 0; u < FGPU_MAX_TEXTURE_UNITS; u++) gl->textures[u] = 0;   // nothing bound from the last pass
+        for (uint32_t u = 0; u < FGPU_TEXTURE_UNITS; u++) gl->textures[u] = 0;       // nothing bound from the last pass (all units: a stale one would make a draw sample its own target)
         gl->textures_dirty = 1;
         stats.passes++;
     }

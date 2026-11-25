@@ -22,6 +22,7 @@ const char* const kFieldModes[] = { "Directional", "Radial", "Vortex", nullptr }
 const char* const kFalloffs[] = { "None", "Linear", "Quadratic", nullptr };
 const char* const kBillboardModes[] = { "Full", "Vertical", nullptr };
 const char* const kAligns[] = { "Left", "Center", "Right", nullptr };
+const char* const kCloudQualities[] = { "Low", "Medium", "Ultra", nullptr };
 
 #define FE_F(T, f, label, type, lo, hi, enums) { #f, label, FieldType::type, (uint16_t)offsetof(T, f), lo, hi, enums }
 
@@ -286,7 +287,7 @@ const FieldInfo kPost[] = {
 };
 
 #define FE_FOLIAGE(n) \
-    { "foliage" #n "_model", "Foliage " #n " model", FieldType::Path, (uint16_t)offsetof(Terrain, foliage[n - 1].model), 0, 0, nullptr }, \
+    { "foliage" #n "_model", "Foliage " #n " models", FieldType::PathList, (uint16_t)offsetof(Terrain, foliage[n - 1].model), 0, 0, nullptr }, \
     { "foliage" #n "_density", "Foliage " #n " density", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].density), 0, 50, nullptr }, \
     { "foliage" #n "_scale_min", "Foliage " #n " min scale", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].scale_min), 0.01f, 100, nullptr }, \
     { "foliage" #n "_scale_max", "Foliage " #n " max scale", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].scale_max), 0.01f, 100, nullptr }, \
@@ -311,6 +312,23 @@ const FieldInfo kTerrain[] = {
     FE_FOLIAGE(1), FE_FOLIAGE(2), FE_FOLIAGE(3), FE_FOLIAGE(4),
 };
 static_assert(kFoliageLayers == 4, "kTerrain lists four foliage layers");
+
+const FieldInfo kClouds[] = {
+    FE_F(Clouds, current, "Current", Bool, 0, 0, nullptr),
+    FE_F(Clouds, quality, "Quality", Enum, 0, 0, kCloudQualities),
+    FE_F(Clouds, height, "Height", Float, -10000, 100000, nullptr),
+    FE_F(Clouds, thickness, "Thickness", Float, 10, 20000, nullptr),
+    FE_F(Clouds, layers, "Layers", Int, 1, 3, nullptr),
+    FE_F(Clouds, layer_spacing, "Layer spacing", Float, 0, 20000, nullptr),
+    FE_F(Clouds, coverage, "Coverage", Float, 0, 1, nullptr),
+    FE_F(Clouds, density, "Density", Float, 0, 3, nullptr),
+    FE_F(Clouds, color, "Color", Color, 0, 0, nullptr),
+    FE_F(Clouds, scale, "Scale", Float, 0.05f, 20, nullptr),
+    FE_F(Clouds, wind, "Wind", Vec3, 0, 0, nullptr),
+    FE_F(Clouds, sun_glow, "Sun glow", Float, 0, 1, nullptr),
+    FE_F(Clouds, ambient, "Ambient", Float, 0, 2, nullptr),
+    FE_F(Clouds, distance, "Fade distance", Float, 500, 200000, nullptr),
+};
 
 #undef FE_FOLIAGE
 #undef FE_F
@@ -339,6 +357,7 @@ const ModuleInfo kInfos[kModuleKindCount] = {
     FE_M(Sky, Sky, "sky", "Sky", kSky, true, offsetof(Sky, current)),
     FE_M(PostProcess, PostProcess, "post_process", "Post Processing", kPost, true, offsetof(PostProcess, current)),
     FE_M(Terrain, Terrain, "terrain", "Terrain", kTerrain, false, 0),
+    FE_M(Clouds, Clouds, "clouds", "Clouds", kClouds, true, offsetof(Clouds, current)),
 };
 
 #undef FE_M
@@ -371,6 +390,7 @@ ModuleKind settings_of(ObjectKind kind) {
         case ObjectKind::Sky: return ModuleKind::Sky;
         case ObjectKind::PostProcess: return ModuleKind::PostProcess;
         case ObjectKind::Terrain: return ModuleKind::Terrain;
+        case ObjectKind::Clouds: return ModuleKind::Clouds;
         default: return ModuleKind::Count;
     }
 }
@@ -382,6 +402,7 @@ ObjectKind object_kind_of(ModuleKind kind) {
         case ModuleKind::Sky: return ObjectKind::Sky;
         case ModuleKind::PostProcess: return ObjectKind::PostProcess;
         case ModuleKind::Terrain: return ObjectKind::Terrain;
+        case ModuleKind::Clouds: return ObjectKind::Clouds;
         default: return ObjectKind::Count;
     }
 }
@@ -395,6 +416,7 @@ const char* object_kind_name(ObjectKind kind) {
         case ObjectKind::Sky: return "Sky";
         case ObjectKind::PostProcess: return "Post Processing";
         case ObjectKind::Terrain: return "Terrain";
+        case ObjectKind::Clouds: return "Clouds";
         default: return "?";
     }
 }
@@ -421,6 +443,7 @@ void* ModuleSet::data(ModuleKind k) {
         case ModuleKind::Sky: return &sky;
         case ModuleKind::PostProcess: return &post_process;
         case ModuleKind::Terrain: return &terrain;
+        case ModuleKind::Clouds: return &clouds;
         default: return nullptr;
     }
 }
@@ -449,6 +472,7 @@ void ModuleSet::reset(ModuleKind k) {
         case ModuleKind::Sky: sky = Sky(); break;
         case ModuleKind::PostProcess: post_process = PostProcess(); break;
         case ModuleKind::Terrain: terrain = Terrain(); break;
+        case ModuleKind::Clouds: clouds = Clouds(); break;
         default: break;
     }
 }

@@ -67,6 +67,9 @@ static void test_meta(World& w) {
             case FieldType::Path:
                 ECS_CHECK(m[i].type == ecs_id(ecs_char_t) && m[i].count == kPathMax);
                 break;
+            case FieldType::PathList:
+                ECS_CHECK(m[i].type == ecs_id(ecs_char_t) && m[i].count == kPathListMax);
+                break;
             case FieldType::Enum: {
                 const EcsEnum* en = ecs_get(ew, m[i].type, EcsEnum);
                 ECS_CHECK(en != nullptr);

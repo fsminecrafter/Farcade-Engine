@@ -99,6 +99,7 @@ drawn as lines.
 | Sky | `sky` | The background: a zenith/horizon/ground gradient with a sun disc, or one flat color. Has **Current** |
 | Sky Light | `skylight` | Ambient light from the sky and the ground. Has **Current** |
 | Post Processing | `post_process` | Exposure, tonemapping, contrast, saturation, tint, vignette, bloom. Has **Current** |
+| Clouds | `clouds` | Ray marched volumetric clouds in the sky: height, thickness, layers, coverage, density, colour, wind, sun glow; Quality Low / Medium / Ultra. Has **Current**. See docs/graphics.md |
 | Terrain | `terrain` | A heightfield in chunks, shaped with brushes, with painted foliage, chunk streaming and physics ground. See docs/terrain.md |
 | Empty | — | Only a transform: use it as a group, a marker, or a holder for modules |
 

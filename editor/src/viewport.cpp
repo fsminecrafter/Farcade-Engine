@@ -125,6 +125,7 @@ uint64_t Editor::view_hash(int w, int h) const {
         mix(&o.parent, sizeof(o.parent));
         mix(&o.streaming, sizeof(o.streaming));
         if (o.kind == ObjectKind::Terrain) mix(&o.modules.terrain, sizeof(o.modules.terrain));
+        if (o.kind == ObjectKind::Clouds) mix(&o.modules.clouds, sizeof(o.modules.clouds));
     }
     // Terrain edits (each brush application) and foliage batches still being built.
     uint64_t tc = terrain_store_change();

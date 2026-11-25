@@ -837,6 +837,7 @@ int mod_index(lua_State* L) {
     case FieldType::Color:
     case FieldType::Vec3: push_vec3(L, v.v); break;
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path: lua_pushstring(L, v.s ? v.s : ""); break;
     case FieldType::Bits: lua_pushinteger(L, (lua_Integer)(uint32_t)v.i); break;
     case FieldType::Object: {
@@ -887,6 +888,7 @@ int mod_newindex(lua_State* L) {
         break;
     }
     case FieldType::Text:
+    case FieldType::PathList:
     case FieldType::Path:
         if (t != LUA_TSTRING) return luaL_error(L, "%s.%s expects a string, got %s", mi.name, key, luaL_typename(L, 3));
         v = FieldValue::from_string(lua_tostring(L, 3));

@@ -16,7 +16,7 @@
 #   build/host/bin/fe-gfx-shot   fe-gfx-shot <out.png> [width height]: renders a demo scene
 #   build/os/bin/gfx_smoke.run   renders a lit cube on Minimal-OS ("FE GFX PASS <base> <hq>": base tier and GPU tier checksums)
 
-GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp engine/gfx/shaders_hq.cpp engine/gfx/passes.cpp engine/gfx/shader_file.cpp engine/gfx/feature_level.cpp engine/gfx/graphics_settings.cpp engine/gfx/shaders_post.cpp engine/gfx/post_stack.cpp engine/gfx/gi.cpp engine/gfx/culling.cpp engine/gfx/stb_image_impl.c
+GFX_SRC      := engine/gfx/renderer.cpp engine/gfx/shaders.cpp engine/gfx/shaders_hq.cpp engine/gfx/passes.cpp engine/gfx/shader_file.cpp engine/gfx/feature_level.cpp engine/gfx/graphics_settings.cpp engine/gfx/shaders_post.cpp engine/gfx/post_stack.cpp engine/gfx/gi.cpp engine/gfx/culling.cpp engine/gfx/clouds.cpp engine/gfx/stb_image_impl.c
 GFX_SRC      += engine/gfx/particles.cpp     # particles and sprites over the image (particles.h)
 GFX_HOST_SRC := engine/gfx/host/fgpu_host.c external/fgpu/fgpu_raster.c external/fgpu/fgpu_shader.c \
                 external/fgpu/fgpu_jit_x64.c external/fgpu/fgpu_ir.c

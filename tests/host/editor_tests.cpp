@@ -785,7 +785,7 @@ int main() {
             CHECK(mi.has_current == (cf != nullptr), "%s: has_current matches a 'current' field", mi.name);
             if (cf) CHECK(cf->offset == mi.current_offset && cf->type == FieldType::Bool, "%s: current offset", mi.name);
         }
-        CHECK(with_current == 5, "camera, sky, sky light, post processing and listener have Current (%d)", with_current);
+        CHECK(with_current == 6, "camera, sky, sky light, post processing, clouds and listener have Current (%d)", with_current);
 
         int objects0 = ed.scene.count();
         ObjectId c1 = ed.create_kind("Cam A", ObjectKind::Camera, Vec3(0, 2, 5));
@@ -1351,6 +1351,7 @@ int main() {
                     case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); v = v + Vec3(0.125f, -0.25f, 1.5f); memcpy(p, &v, sizeof v); break; }
                     case FieldType::Text:
                     case FieldType::Path: snprintf((char*)p, kPathMax, "sounds/a \"b\" c.ogg"); break;
+                    case FieldType::PathList: snprintf((char*)p, kPathListMax, "models/a.mof; models/b \"c\".mof;d.mof"); break;
                     }
                 }
             }
@@ -1369,8 +1370,7 @@ int main() {
                 const uint8_t* db = (const uint8_t*)b1->modules.data((ModuleKind)k);
                 for (int f = 0; f < mi.field_count; f++) {
                     const FieldInfo& fi = mi.fields[f];
-                    size_t sz = fi.type == FieldType::Path || fi.type == FieldType::Text ? (size_t)kPathMax : fi.type == FieldType::Color || fi.type == FieldType::Vec3 ? sizeof(Vec3)
-                              : fi.type == FieldType::Bool || fi.type == FieldType::Enum ? 1 : 4;
+                    size_t sz = field_size(fi.type);
                     if (memcmp(da + fi.offset, db + fi.offset, sz) != 0) { wrong++; printf("  field %s.%s differs\n", mi.name, fi.name); }
                 }
             }
@@ -1895,6 +1895,35 @@ int main() {
             int fol = 0;
             for (int i = 0; i < rb.scene.item_count; i++) fol += rb.scene.items[i].foliage;
             CHECK(fol == st.foliage_batches, "foliage items are marked");
+            // Several models in one layer: a folder of them, each instance picks one.
+            {
+                long one_model = st.foliage_instances;
+                char dirp[512];
+                snprintf(dirp, sizeof dirp, "%s/plants", ed.project_dir);
+                platform::make_dir(dirp);
+                size_t n2 = 0;
+                void* m2 = platform::read_file("assets/samples/cube_textured.mof", &n2);
+                for (int k = 0; k < 3; k++) {
+                    char fp[600];
+                    snprintf(fp, sizeof fp, "%s/plant_%d.mof", dirp, k);
+                    if (m2) platform::write_file(fp, m2, n2);
+                }
+                free(m2);
+                to->modules.terrain.foliage[0].model[0] = 0;
+                CHECK(ed.foliage_add_model(t, 0, "plants"), "a folder adds its models");
+                CHECK(!ed.foliage_add_model(t, 0, "plants/plant_1.mof"), "one already there is not added twice");
+                CHECK(ed.foliage_add_model(t, 0, "grass.mof") && !ed.foliage_add_model(t, 0, "notes.txt"), "a .mof is added, other files are not");
+                CHECK(!strcmp(to->modules.terrain.foliage[0].model, "plants/plant_0.mof;plants/plant_1.mof;plants/plant_2.mof;grass.mof"),
+                      "the list (%s)", to->modules.terrain.foliage[0].model);
+                rb.build(ed.scene, view, proj, Vec3(0, 20, 40), 0.1f, 500.0f);
+                int nb = 0;
+                for (int i = 0; i < rb.scene.item_count; i++) nb += rb.scene.items[i].foliage;
+                CHECK(rb.terrain.stats().foliage_batches > st.foliage_batches || nb >= 4, "the models get batches of their own (%d)", nb);
+                long many = rb.terrain.stats().foliage_instances;
+                CHECK(many >= one_model * 9 / 10 && many <= one_model * 11 / 10 + 8, "about as many instances, spread over the models (%ld vs %ld)", many, one_model);
+                // Back to one model for the rest.
+                snprintf(to->modules.terrain.foliage[0].model, kPathListMax, "grass.mof");
+            }
             // Far away, the same batch draws fewer instances (a prefix), and none past the distance.
             to->modules.terrain.foliage[0].distance = 400.0f;
             rb.build(ed.scene, view, proj, Vec3(0, 20, 40), 0.1f, 500.0f);

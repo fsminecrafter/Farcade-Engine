@@ -72,6 +72,7 @@ struct FoliageInstance {
     Vec3 up;
     float yaw = 0;
     float scale = 1;
+    uint32_t pick = 0;              // a random number for choosing among the layer's models (pick % count)
 };
 
 class TerrainData {

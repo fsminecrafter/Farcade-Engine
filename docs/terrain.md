@@ -109,13 +109,17 @@ grows a `.mof` model wherever you paint it with the Foliage tool.
 
 | Field | Meaning |
 | --- | --- |
-| Model | The `.mof`, usually a tuft of grass, a flower or a small plant. Its texture and material colour are used |
+| Models | One or more `.mof` models (a tuft of grass, flowers, small plants). Each instance takes one of them at random. Add them with **Add models...** (Ctrl-click or Shift-click several in the picker, Ctrl+A for all), **Add folder...** (every `.mof` in it), or drop files or folders from Files on the list. Their textures and material colours are used |
 | Density | Instances per square meter where the layer is painted at full strength |
 | Scale | The smallest and largest random scale |
 | Distance | The farthest the layer is drawn. Over the last 60% it thins out |
 | Max slope | Ground steeper than this gets none |
 | Align to slope | The model stands along the ground's normal (else straight up) |
 | Shadows | The layer casts shadows (off by default: it is expensive) |
+
+In the scene file and in Lua (`obj.terrain.foliage1_model`) the models are one
+string of paths separated by `;` (at most 1023 characters, enough for about 20
+to 40 models).
 
 Each instance stands on the ground and is turned at random around its up
 axis. It is never tipped over, so nothing ends up in the ground.
@@ -129,8 +133,8 @@ with a fixed hash, so the same paint always gives the same grass, and the
 FarcadeGL has no instanced draws, so foliage has its own path:
 
 - **Batches.** Each loaded chunk is split into blocks of about 16 m. Per
-  layer and model part, each block's instances are merged into one mesh, so
-  a block costs one draw per part.
+  layer, model and model part, each block's instances are merged into one
+  mesh, so a block costs one draw per part of each model it uses.
 - **Thinning by distance.** A block's instances are in random priority
   order. The renderer draws only a prefix of the batch
   (`RenderMesh::draw_count`), and the prefix shrinks with the block's

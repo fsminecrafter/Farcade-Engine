@@ -92,6 +92,9 @@ struct RenderScene {
     Sky sky;
     SkyLight sky_light;
     PostProcess post;
+    // The current Clouds object's settings (clouds_on false: no clouds).
+    bool clouds_on = false;
+    Clouds clouds;
     // Optional project asset reader. It returns malloc-compatible file bytes
     // (or null); the renderer releases them with free(). Required when a draw
     // item references a texture or custom shader.
@@ -147,6 +150,7 @@ struct RendererStats {
     // into the CPU depth buffer (and their triangles), and the time it took.
     int items_in = 0, culled_frustum = 0, culled_occlusion = 0, occluders = 0, occluder_triangles = 0;
     double cull_ms = 0;
+    int cloud_quality = 0;                  // clouds drawn: 0 none, 1 low, 2 medium, 3 ultra (after the caps)
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

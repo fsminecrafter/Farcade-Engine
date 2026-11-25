@@ -882,6 +882,7 @@ int TerrainData::scatter(int cx, int cz, int layer, const FoliageLayer& fl, Foli
                 fi.up = fl.align_to_slope ? nn : Vec3(0, 1, 0);
                 fi.yaw = unit(h4) * 2.0f * kPi;
                 fi.scale = smin + (smax - smin) * unit(hash32(h4 ^ 0x9e3779b9u));
+                fi.pick = hash32(h4 ^ 0x27d4eb2fu);
                 keys[n] = ((uint64_t)hash32(h4 ^ 0x85ebca6bu) << 32) | (uint64_t)(uint32_t)n;
                 n++;
             }

@@ -576,6 +576,18 @@ int main(int argc, char** argv) {
         snprintf(path, sizeof(path), "%s/editor-terrain-ultra.png", out);
         if (!platform::headless_save_png(path)) return 1;
         printf("wrote %s\n", path);
+        // Clouds over the hills, looking up from the ground.
+        ObjectId cl = ed.create_kind("Clouds", ObjectKind::Clouds, Vec3(0, 6, 0));
+        if (Object* co = ed.scene.get(cl)) { co->modules.clouds.coverage = 0.6f; co->modules.clouds.quality = CloudQuality::Ultra; }
+        ed.scene.select_only(cl);
+        ed.camera.target = Vec3(0, (td ? td->height_at(128, 150) : 0) + 12.0f, 22);
+        ed.camera.pitch = -14;
+        ed.camera.distance = 10;
+        for (int i = 0; i < 16; i++) ed.frame();
+        printf("clouds: quality %d drawn\n", ed.fgl_stats.cloud_quality);
+        snprintf(path, sizeof(path), "%s/editor-clouds.png", out);
+        if (!platform::headless_save_png(path)) return 1;
+        printf("wrote %s\n", path);
     }
     ed.shutdown();
     return 0;

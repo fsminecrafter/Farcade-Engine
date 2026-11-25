@@ -97,6 +97,7 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
     if (const Sky* s = (const Sky*)sc.current_data(ModuleKind::Sky)) scene.sky = *s;
     if (const SkyLight* s = (const SkyLight*)sc.current_data(ModuleKind::SkyLight)) scene.sky_light = *s;
     if (const PostProcess* p = (const PostProcess*)sc.current_data(ModuleKind::PostProcess)) scene.post = *p;
+    if (const Clouds* c = (const Clouds*)sc.current_data(ModuleKind::Clouds)) { scene.clouds = *c; scene.clouds_on = true; }
     // The current camera's screen shaders.
     if (const Camera* c = (const Camera*)sc.current_data(ModuleKind::Camera)) {
         const char* paths[3] = { c->shader1, c->shader2, c->shader3 };

@@ -1485,6 +1485,85 @@ void test_culling() {
     free(on);
 }
 
+// ---------------------------------------------------------------- clouds
+
+void test_clouds() {
+    // A sun low in the sky and clouds overhead: every quality and layer count compiles (no step down) in the
+    // base tier and the GPU tier, the sky looking up gets brighter/whiter where clouds are, and Off removes them.
+    Vec3 cp[kCubeVertices], cn[kCubeVertices];
+    make_cube(cp, cn, 0.5f);
+    DrawItem it;
+    it.mesh = RenderMesh{ cp, cn, kCubeVertices, 41 };
+    it.model = Mat4::translation(Vec3(0, -3, -6));
+    RenderLight sun;
+    sun.type = LightType::Directional;
+    sun.direction = normalize(Vec3(-0.5f, -0.4f, -0.6f));
+    sun.intensity = 2.0f;
+    FlatScene f(Vec3(0.2f, 0.3f, 0.4f));
+    f.scene.camera.proj = Mat4::perspective(radians(70.0f), 160.0f / 120.0f, 0.1f, 1000.0f);
+    f.scene.camera.view = Mat4::look_at(Vec3(0, 2, 0), Vec3(0, 6, -10), Vec3(0, 1, 0));
+    f.scene.camera.position = Vec3(0, 2, 0);
+    f.scene.items = &it;
+    f.scene.item_count = 1;
+    f.scene.lights = &sun;
+    f.scene.light_count = 1;
+    f.scene.clouds_on = true;
+    f.scene.clouds.coverage = 0.8f;
+    f.scene.clouds.density = 1.2f;
+    for (int tier = 0; tier < 2; tier++) {
+        Renderer r;
+        GraphicsSettings g;
+        g.apply_preset(tier ? GraphicsPreset::Ultra : GraphicsPreset::Low);
+        g.allow_gpu_effects_on_cpu = tier == 1;
+        if (tier) g.feature_level = FeatureLevelMode::GpuTier;
+        g.antialiasing = false;
+        g.clouds = CloudSetting::Ultra;
+        r.set_settings(g);
+        CHECK(r.init(160, 120));
+        for (int q = 0; q < 3; q++)
+            for (int layers = 1; layers <= 3; layers++) {
+                f.scene.clouds.quality = (CloudQuality)q;
+                f.scene.clouds.layers = layers;
+                bool ok = render_ok(r, f.scene);
+                CHECK_MSG(ok, "renders with clouds");
+                if (r.stats().cloud_quality != q + 1)
+                    printf("clouds: tier %d quality %d layers %d drew quality %d (%s)\n", tier, q + 1, layers, r.stats().cloud_quality, r.error());
+                CHECK_MSG(r.stats().cloud_quality == q + 1, "every cloud variant compiles");
+            }
+        // The upper half with and without clouds: they change many pixels, and differently across the sky.
+        f.scene.clouds.quality = CloudQuality::Medium;
+        f.scene.clouds.layers = 1;
+        render_ok(r, f.scene);
+        static int with[160 * 50];
+        for (int y = 0; y < 50; y++)
+            for (int x = 0; x < 160; x++) with[y * 160 + x] = lum(px(r, x, y));
+        f.scene.clouds_on = false;
+        render_ok(r, f.scene);
+        int changed = 0, mn = 255, mx = -255;
+        for (int y = 0; y < 50; y++)
+            for (int x = 0; x < 160; x++) {
+                int dlt = with[y * 160 + x] - lum(px(r, x, y));
+                if (dlt > 6 || dlt < -6) changed++;
+                if (dlt < mn) mn = dlt;
+                if (dlt > mx) mx = dlt;
+            }
+        printf("clouds: tier %d, %d of 8000 sky pixels changed, by %d .. %d\n", tier, changed, mn, mx);
+        CHECK_MSG(changed > 60, "clouds change the sky overhead");
+        CHECK_MSG(mx - mn > 10, "lit and shaded parts (shapes, not a flat veil)");
+        CHECK_MSG(r.stats().cloud_quality == 0, "no clouds without the object");
+        f.scene.clouds_on = true;
+        g.clouds = CloudSetting::Low;
+        r.set_settings(g);
+        f.scene.clouds.quality = CloudQuality::Ultra;
+        render_ok(r, f.scene);
+        CHECK_MSG(r.stats().cloud_quality == 1, "the setting caps the quality");
+        g.clouds = CloudSetting::Off;
+        r.set_settings(g);
+        render_ok(r, f.scene);
+        CHECK_MSG(r.stats().cloud_quality == 0, "Off hides them");
+    }
+}
+
 int main() {
     test_feature_levels();
     test_tonemaps();
@@ -1507,5 +1586,6 @@ int main() {
     test_screen_shaders();
     test_no_recompile();
     test_culling();
+    test_clouds();
     return finish_tests("gfx_stack_tests");
 }

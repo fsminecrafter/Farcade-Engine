@@ -607,6 +607,7 @@ void Editor::create_menu_items(ObjectId parent, const Vec3& at) {
     if (menu_item("Sky", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Sky", ObjectKind::Sky, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Sky Light", nullptr, false, true, FE_ICON_SUN)) create_kind("Sky Light", ObjectKind::SkyLight, Vec3(at.x, 3, at.z), parent);
     if (menu_item("Post Processing", nullptr, false, true, FE_ICON_WAND)) create_kind("Post Processing", ObjectKind::PostProcess, Vec3(at.x, 3, at.z), parent);
+    if (menu_item("Clouds", nullptr, false, true, FE_ICON_CLOUD)) create_kind("Clouds", ObjectKind::Clouds, Vec3(at.x, 6, at.z), parent);
     ImGui::Separator();
     if (menu_item("Terrain", nullptr, false, true, FE_ICON_PLANE)) {
         ObjectId id = create_kind("Terrain", ObjectKind::Terrain, Vec3(0, 0, 0), kNoObject);

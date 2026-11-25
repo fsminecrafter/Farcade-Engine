@@ -179,7 +179,8 @@ Vec3 terrain_origin(Scene& sc, const Object& o) {
 
 namespace {
 
-constexpr int kMaxParts = 4;                // foliage model parts drawn per layer
+constexpr int kMaxParts = 4;                // parts drawn of each foliage model
+constexpr int kMaxLayerModels = 64;         // models in one foliage layer's list
 constexpr int kMaxInstances = 65536;        // per chunk and layer
 constexpr uint32_t kMaxBatchVertices = 1u << 21;
 
@@ -206,17 +207,15 @@ struct FoliagePart {
     Vec3 color = Vec3(1, 1, 1);
 };
 
-struct FoliageBatch {
-    uint32_t version = 0;                   // the chunk's foliage version it was scattered for
-    uint64_t settings = 0;                  // hash of the layer's settings and the model
+// One model's instances in a block, and the geometry of a prefix of them.
+struct FoliageGroup {
+    int model = 0;                          // index into the layer's loaded models
     FoliageInstance* inst = nullptr;
-    int total = 0;                          // scattered
+    int total = 0;
     int built = 0;                          // instances in the geometry (a prefix)
-    bool scattered = false;
     FoliagePart parts[kMaxParts];
     int part_count = 0;
     Vec3 lo, hi;                            // terrain local bounds of the built instances
-    uint64_t last_used = 0;
     size_t bytes = 0;
     void free_geometry() {
         for (int p = 0; p < part_count; p++) { free(parts[p].pos); free(parts[p].nrm); free(parts[p].uv); parts[p] = FoliagePart(); }
@@ -224,10 +223,30 @@ struct FoliageBatch {
         built = 0;
         bytes = inst ? sizeof(FoliageInstance) * (size_t)total : 0;
     }
-    void release() { free_geometry(); free(inst); *this = FoliageBatch(); }
+    void release() { free_geometry(); free(inst); *this = FoliageGroup(); }
 };
 
-uint64_t layer_hash(const FoliageLayer& fl, const Model* m) {
+// A block of a chunk's layer: its instances split by model (each instance picks one of the layer's models).
+struct FoliageBatch {
+    uint32_t version = 0;                   // the chunk's foliage version it was scattered for
+    uint64_t settings = 0;                  // hash of the layer's settings and models
+    bool scattered = false;
+    FoliageGroup* groups = nullptr;
+    int group_count = 0;
+    uint64_t last_used = 0;
+    size_t bytes = 0;
+    void sum() {
+        bytes = 0;
+        for (int g = 0; g < group_count; g++) bytes += groups[g].bytes;
+    }
+    void release() {
+        for (int g = 0; g < group_count; g++) groups[g].release();
+        free(groups);
+        *this = FoliageBatch();
+    }
+};
+
+uint64_t layer_hash(const FoliageLayer& fl, const Model* const* ms, int count) {
     uint64_t h = 1469598103934665603ull;
     h = fnv(h, fl.model, strlen(fl.model));
     h = fnv(h, &fl.density, sizeof fl.density);
@@ -235,8 +254,10 @@ uint64_t layer_hash(const FoliageLayer& fl, const Model* m) {
     h = fnv(h, &fl.scale_max, sizeof fl.scale_max);
     h = fnv(h, &fl.max_slope, sizeof fl.max_slope);
     h = fnv(h, &fl.align_to_slope, sizeof fl.align_to_slope);
-    h = mix64(h, (uint64_t)(uintptr_t)m);
-    if (m) h = mix64(h, m->part_count);
+    for (int i = 0; i < count; i++) {
+        h = mix64(h, (uint64_t)(uintptr_t)ms[i]);
+        h = mix64(h, (uint64_t)ms[i]->part_count);
+    }
     return h;
 }
 
@@ -386,14 +407,20 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
         Mat4 model = Mat4::translation(k->origin);
         Vec3 local_eye = eye - k->origin;
         float lod_d = ts.lod_distance > 1.0f ? ts.lod_distance : 1.0f;
-        // Foliage models of the layers.
-        const Model* models[kFoliageLayers] = {};
+        // Foliage models of the layers: each layer's list, the ones that load (an instance picks one of them).
+        const Model* models[kFoliageLayers][kMaxLayerModels] = {};
+        int model_count[kFoliageLayers] = {};
         uint64_t lhash[kFoliageLayers] = {};
         for (int l = 0; l < kFoliageLayers; l++) {
             const FoliageLayer& fl = ts.foliage[l];
             if (!fl.model[0] || !(fl.density > 0)) continue;
-            models[l] = model_load(fl.model);
-            lhash[l] = layer_hash(fl, models[l]);
+            char one[kPathMax];
+            for (const char* at = path_list_next(fl.model, one, kPathMax); at && model_count[l] < kMaxLayerModels;
+                 at = path_list_next(at, one, kPathMax)) {
+                const Model* m = model_load(one);
+                if (m && m->part_count > 0) models[l][model_count[l]++] = m;
+            }
+            lhash[l] = layer_hash(fl, models[l], model_count[l]);
         }
         for (int c = 0; c < k->chunks; c++) {
             int cx = c % td->chunks_x, cz = c / td->chunks_x;
@@ -459,14 +486,14 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                 }
             }
             // ---- foliage of this chunk: scattered once per chunk and layer, split into sub x sub blocks that
-            // each thin out by their own distance (finer steps than whole chunks).
+            // each thin out by their own distance (finer steps than whole chunks), and in each block by model.
             const int S = k->sub, S2 = S * S;
             const float bsize = td->chunk_size / (float)S;
             for (int l = 0; l < kFoliageLayers; l++) {
                 FoliageBatch* subs = &k->batch[(c * kFoliageLayers + l) * S2];
                 const FoliageLayer& fl = ts.foliage[l];
-                const Model* m = models[l];
-                if (!m || m->part_count <= 0) {
+                const int M = model_count[l];
+                if (M <= 0) {
                     for (int q = 0; q < S2; q++) if (subs[q].bytes || subs[q].scattered) subs[q].release();
                     continue;
                 }
@@ -484,131 +511,156 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                         all = (FoliageInstance*)malloc(sizeof(FoliageInstance) * (size_t)(bound > 0 ? bound : 1));
                         total = all ? td->scatter(cx, cz, l, fl, all, bound) : 0;
                     }
-                    // Into the blocks, keeping the priority order.
-                    int counts[16] = {};
+                    // Into the blocks and, in each, by model, keeping the priority order.
                     auto block_of = [&](const FoliageInstance& fi) {
                         int bx = (int)((fi.pos.x - lo.x) / bsize), bz = (int)((fi.pos.z - lo.z) / bsize);
                         bx = bx < 0 ? 0 : (bx >= S ? S - 1 : bx);
                         bz = bz < 0 ? 0 : (bz >= S ? S - 1 : bz);
                         return bz * S + bx;
                     };
-                    for (int i = 0; i < total; i++) counts[block_of(all[i])]++;
+                    int* counts = (int*)calloc((size_t)S2 * (size_t)M, sizeof(int));
+                    for (int i = 0; i < total && counts; i++) counts[block_of(all[i]) * M + (int)(all[i].pick % (uint32_t)M)]++;
                     for (int q = 0; q < S2; q++) {
                         FoliageBatch& b = subs[q];
-                        b.inst = counts[q] ? (FoliageInstance*)malloc(sizeof(FoliageInstance) * (size_t)counts[q]) : nullptr;
-                        b.total = 0;
                         b.scattered = true;
                         b.version = fver;
                         b.settings = lhash[l];
+                        int used = 0;
+                        for (int g = 0; g < M && counts; g++) used += counts[q * M + g] > 0;
+                        b.groups = used ? (FoliageGroup*)calloc((size_t)used, sizeof(FoliageGroup)) : nullptr;
+                        b.group_count = 0;
+                        for (int g = 0; g < M && b.groups; g++) {
+                            int n = counts[q * M + g];
+                            if (!n) continue;
+                            FoliageGroup& gr = b.groups[b.group_count++];
+                            gr = FoliageGroup();
+                            gr.model = g;
+                            gr.inst = (FoliageInstance*)malloc(sizeof(FoliageInstance) * (size_t)n);
+                            if (!gr.inst) { b.group_count--; continue; }
+                        }
                     }
-                    for (int i = 0; i < total; i++) {
+                    for (int i = 0; i < total && counts; i++) {
                         FoliageBatch& b = subs[block_of(all[i])];
-                        if (b.inst) b.inst[b.total++] = all[i];
+                        int g = (int)(all[i].pick % (uint32_t)M);
+                        for (int k2 = 0; k2 < b.group_count; k2++)
+                            if (b.groups[k2].model == g) { b.groups[k2].inst[b.groups[k2].total++] = all[i]; break; }
                     }
-                    for (int q = 0; q < S2; q++) subs[q].bytes = sizeof(FoliageInstance) * (size_t)subs[q].total;
+                    for (int q = 0; q < S2; q++) {
+                        for (int g = 0; g < subs[q].group_count; g++) subs[q].groups[g].bytes = sizeof(FoliageInstance) * (size_t)subs[q].groups[g].total;
+                        subs[q].sum();
+                    }
+                    free(counts);
                     free(all);
                     if (clock_ms() - t_start > build_budget_ms) budget_left = false;
                 }
+                float smax = fl.scale_max > fl.scale_min ? fl.scale_max : fl.scale_min;
                 for (int q = 0; q < S2; q++) {
                     FoliageBatch& b = subs[q];
-                    if (b.total <= 0) continue;
+                    if (!b.group_count) continue;
                     Vec3 qlo(lo.x + (float)(q % S) * bsize, lo.y, lo.z + (float)(q / S) * bsize);
                     Vec3 qhi(qlo.x + bsize, hi.y, qlo.z + bsize);
                     float share = foliage_share(box_distance(local_eye, qlo, qhi), fl.distance);
                     if (share <= 0) continue;
-                    int need = (int)((float)b.total * share + 0.999f);
-                    if (need < 1) need = 1;
-                    if (need > b.total) need = b.total;
-                    // Geometry for a power-of-two share of the instances that covers `need`.
-                    if (need > b.built || (b.built > 4 * need && b.built > 256)) {
-                        if (!budget_left) { stats_.pending = true; if (b.built <= 0) continue; }
-                        else {
-                            int target = b.total;
-                            while (target / 2 >= need && target / 2 >= 64) target /= 2;
-                            uint32_t verts = 0;
-                            int parts = m->part_count < kMaxParts ? m->part_count : kMaxParts;
-                            for (int p = 0; p < parts; p++) verts += m->parts[p].vertex_count;
-                            if (verts == 0) continue;
-                            if ((uint64_t)target * verts > kMaxBatchVertices) target = (int)(kMaxBatchVertices / verts);
-                            if (target < 1) continue;
-                            b.free_geometry();
-                            float smax = fl.scale_max > fl.scale_min ? fl.scale_max : fl.scale_min;
-                            Vec3 mlo = m->mesh.bounds_min, mhi = m->mesh.bounds_max;
-                            float r = fmaxf_(fmaxf_(fabsf_(mlo.x), fabsf_(mhi.x)), fmaxf_(fabsf_(mlo.z), fabsf_(mhi.z))) * 1.4143f;
-                            if (fl.align_to_slope) r = fmaxf_(r, fmaxf_(fabsf_(mlo.y), fabsf_(mhi.y)));
-                            Vec3 blo(1e30f, 1e30f, 1e30f), bhi(-1e30f, -1e30f, -1e30f);
-                            for (int i = 0; i < target; i++) { blo = vmin(blo, b.inst[i].pos); bhi = vmax(bhi, b.inst[i].pos); }
-                            b.lo = Vec3(blo.x - r * smax, blo.y + fminf_(mlo.y, fl.align_to_slope ? -r : 0.0f) * smax, blo.z - r * smax);
-                            b.hi = Vec3(bhi.x + r * smax, bhi.y + fmaxf_(mhi.y, fl.align_to_slope ? r : 0.0f) * smax, bhi.z + r * smax);
-                            bool ok = true;
-                            for (int p = 0; p < parts && ok; p++) {
-                                const ModelPart& mp = m->parts[p];
-                                FoliagePart& fp = b.parts[b.part_count];
-                                uint32_t pv = mp.vertex_count / 3 * 3;
-                                size_t nv = (size_t)pv * (size_t)target;
-                                if (!pv) continue;
-                                fp.pos = (Vec3*)malloc(sizeof(Vec3) * nv);
-                                fp.nrm = (Vec3*)malloc(sizeof(Vec3) * nv);
-                                fp.uv = mp.uvs ? (float*)malloc(sizeof(float) * 2 * nv) : nullptr;
-                                if (!fp.pos || !fp.nrm || (mp.uvs && !fp.uv)) { free(fp.pos); free(fp.nrm); free(fp.uv); fp = FoliagePart(); ok = false; break; }
-                                fp.per = pv;
-                                snprintf(fp.texture, sizeof fp.texture, "%s", mp.texture);
-                                fp.color = mp.color;
-                                for (int i = 0; i < target; i++) {
-                                    const FoliageInstance& fi = b.inst[i];
-                                    // Frame: up along fi.up, turned by yaw around it, scaled.
-                                    Vec3 u = fi.up;
-                                    Vec3 ref = fabsf_(u.z) < 0.9f ? Vec3(0, 0, 1) : Vec3(1, 0, 0);
-                                    Vec3 bx = normalize(cross(u, ref));
-                                    Vec3 bz = cross(bx, u);
-                                    float cy = fcos(fi.yaw), sy = fsin(fi.yaw);
-                                    Vec3 X = bx * cy - bz * sy, Z = bx * sy + bz * cy;
-                                    Vec3* op = fp.pos + (size_t)i * pv;
-                                    Vec3* on = fp.nrm + (size_t)i * pv;
-                                    for (uint32_t v = 0; v < pv; v++) {
-                                        const Vec3& sp = mp.positions[v];
-                                        op[v] = fi.pos + (X * sp.x + u * sp.y + Z * sp.z) * fi.scale;
-                                        Vec3 sn = mp.normals ? mp.normals[v] : Vec3(0, 1, 0);
-                                        on[v] = X * sn.x + u * sn.y + Z * sn.z;
+                    bool drawn = false;
+                    for (int gi = 0; gi < b.group_count; gi++) {
+                        FoliageGroup& gr = b.groups[gi];
+                        const Model* m = models[l][gr.model];
+                        if (gr.total <= 0 || !m) continue;
+                        int need = (int)((float)gr.total * share + 0.999f);
+                        if (need < 1) need = 1;
+                        if (need > gr.total) need = gr.total;
+                        // Geometry for a power-of-two share of the instances that covers `need`.
+                        if (need > gr.built || (gr.built > 4 * need && gr.built > 256)) {
+                            if (!budget_left) { stats_.pending = true; if (gr.built <= 0) continue; }
+                            else {
+                                int target = gr.total;
+                                while (target / 2 >= need && target / 2 >= 64) target /= 2;
+                                uint32_t verts = 0;
+                                int parts = m->part_count < kMaxParts ? m->part_count : kMaxParts;
+                                for (int p = 0; p < parts; p++) verts += m->parts[p].vertex_count;
+                                if (verts == 0) continue;
+                                if ((uint64_t)target * verts > kMaxBatchVertices) target = (int)(kMaxBatchVertices / verts);
+                                if (target < 1) continue;
+                                gr.free_geometry();
+                                Vec3 mlo = m->mesh.bounds_min, mhi = m->mesh.bounds_max;
+                                float r = fmaxf_(fmaxf_(fabsf_(mlo.x), fabsf_(mhi.x)), fmaxf_(fabsf_(mlo.z), fabsf_(mhi.z))) * 1.4143f;
+                                if (fl.align_to_slope) r = fmaxf_(r, fmaxf_(fabsf_(mlo.y), fabsf_(mhi.y)));
+                                Vec3 blo(1e30f, 1e30f, 1e30f), bhi(-1e30f, -1e30f, -1e30f);
+                                for (int i = 0; i < target; i++) { blo = vmin(blo, gr.inst[i].pos); bhi = vmax(bhi, gr.inst[i].pos); }
+                                gr.lo = Vec3(blo.x - r * smax, blo.y + fminf_(mlo.y, fl.align_to_slope ? -r : 0.0f) * smax, blo.z - r * smax);
+                                gr.hi = Vec3(bhi.x + r * smax, bhi.y + fmaxf_(mhi.y, fl.align_to_slope ? r : 0.0f) * smax, bhi.z + r * smax);
+                                bool ok = true;
+                                for (int p = 0; p < parts && ok; p++) {
+                                    const ModelPart& mp = m->parts[p];
+                                    FoliagePart& fp = gr.parts[gr.part_count];
+                                    uint32_t pv = mp.vertex_count / 3 * 3;
+                                    size_t nv = (size_t)pv * (size_t)target;
+                                    if (!pv) continue;
+                                    fp.pos = (Vec3*)malloc(sizeof(Vec3) * nv);
+                                    fp.nrm = (Vec3*)malloc(sizeof(Vec3) * nv);
+                                    fp.uv = mp.uvs ? (float*)malloc(sizeof(float) * 2 * nv) : nullptr;
+                                    if (!fp.pos || !fp.nrm || (mp.uvs && !fp.uv)) { free(fp.pos); free(fp.nrm); free(fp.uv); fp = FoliagePart(); ok = false; break; }
+                                    fp.per = pv;
+                                    snprintf(fp.texture, sizeof fp.texture, "%s", mp.texture);
+                                    fp.color = mp.color;
+                                    for (int i = 0; i < target; i++) {
+                                        const FoliageInstance& fi = gr.inst[i];
+                                        // Frame: up along fi.up, turned by yaw around it, scaled.
+                                        Vec3 u = fi.up;
+                                        Vec3 ref = fabsf_(u.z) < 0.9f ? Vec3(0, 0, 1) : Vec3(1, 0, 0);
+                                        Vec3 bx = normalize(cross(u, ref));
+                                        Vec3 bz = cross(bx, u);
+                                        float cy = fcos(fi.yaw), sy = fsin(fi.yaw);
+                                        Vec3 X = bx * cy - bz * sy, Z = bx * sy + bz * cy;
+                                        Vec3* op = fp.pos + (size_t)i * pv;
+                                        Vec3* on = fp.nrm + (size_t)i * pv;
+                                        for (uint32_t v = 0; v < pv; v++) {
+                                            const Vec3& sp = mp.positions[v];
+                                            op[v] = fi.pos + (X * sp.x + u * sp.y + Z * sp.z) * fi.scale;
+                                            Vec3 sn = mp.normals ? mp.normals[v] : Vec3(0, 1, 0);
+                                            on[v] = X * sn.x + u * sn.y + Z * sn.z;
+                                        }
+                                        if (fp.uv) memcpy(fp.uv + (size_t)i * pv * 2, mp.uvs, sizeof(float) * 2 * pv);
                                     }
-                                    if (fp.uv) memcpy(fp.uv + (size_t)i * pv * 2, mp.uvs, sizeof(float) * 2 * pv);
+                                    gr.bytes += nv * (sizeof(Vec3) * 2 + (fp.uv ? sizeof(float) * 2 : 0));
+                                    gr.part_count++;
                                 }
-                                b.bytes += nv * (sizeof(Vec3) * 2 + (fp.uv ? sizeof(float) * 2 : 0));
-                                b.part_count++;
+                                if (!ok) { gr.free_geometry(); continue; }
+                                gr.built = target;
+                                b.sum();
+                                stats_.foliage_built++;
+                                if (clock_ms() - t_start > build_budget_ms) budget_left = false;
                             }
-                            if (!ok) { b.free_geometry(); continue; }
-                            b.built = target;
-                            stats_.foliage_built++;
-                            if (clock_ms() - t_start > build_budget_ms) budget_left = false;
                         }
+                        if (gr.built <= 0) continue;
+                        int draw = need < gr.built ? need : gr.built;
+                        drawn = true;
+                        uint64_t bid = (uint64_t)((((c * kFoliageLayers + l) * S2) + q) * 64 + gr.model);
+                        for (int p = 0; p < gr.part_count; p++) {
+                            FoliagePart& fp = gr.parts[p];
+                            gfx::DrawItem* it = push(o.id);
+                            if (!it) break;
+                            it->mesh.positions = fp.pos;
+                            it->mesh.normals = fp.nrm;
+                            it->mesh.uvs = fp.uv;
+                            it->mesh.vertex_count = fp.per * (uint32_t)gr.built;
+                            it->mesh.draw_count = fp.per * (uint32_t)draw;
+                            it->mesh.key = mix64(mix64(mix64(mix64(td->serial ^ 0xF011A6Eull, bid), (uint64_t)p), b.settings ^ fver), (uint64_t)gr.built) | 1ull;
+                            it->mesh.has_bounds = true;
+                            it->mesh.bounds_min = gr.lo;
+                            it->mesh.bounds_max = gr.hi;
+                            it->model = model;
+                            it->texture_path = fp.texture[0] ? fp.texture : nullptr;
+                            it->color = fp.color;
+                            it->roughness = 0.8f;
+                            it->cast_shadows = fl.cast_shadows;
+                            it->occluder = false;
+                            it->foliage = true;
+                            stats_.foliage_batches++;
+                        }
+                        stats_.foliage_instances += draw;
                     }
-                    if (b.built <= 0) continue;
-                    int draw = need < b.built ? need : b.built;
-                    b.last_used = frame_;
-                    uint64_t bid = (uint64_t)(((c * kFoliageLayers + l) * S2) + q);
-                    for (int p = 0; p < b.part_count; p++) {
-                        FoliagePart& fp = b.parts[p];
-                        gfx::DrawItem* it = push(o.id);
-                        if (!it) break;
-                        it->mesh.positions = fp.pos;
-                        it->mesh.normals = fp.nrm;
-                        it->mesh.uvs = fp.uv;
-                        it->mesh.vertex_count = fp.per * (uint32_t)b.built;
-                        it->mesh.draw_count = fp.per * (uint32_t)draw;
-                        it->mesh.key = mix64(mix64(mix64(mix64(td->serial ^ 0xF011A6Eull, bid), (uint64_t)p), b.settings ^ fver), (uint64_t)b.built) | 1ull;
-                        it->mesh.has_bounds = true;
-                        it->mesh.bounds_min = b.lo;
-                        it->mesh.bounds_max = b.hi;
-                        it->model = model;
-                        it->texture_path = fp.texture[0] ? fp.texture : nullptr;
-                        it->color = fp.color;
-                        it->roughness = 0.8f;
-                        it->cast_shadows = fl.cast_shadows;
-                        it->occluder = false;
-                        it->foliage = true;
-                        stats_.foliage_batches++;
-                    }
-                    stats_.foliage_instances += draw;
+                    if (drawn) b.last_used = frame_;
                 }
             }
         }
@@ -622,7 +674,8 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
 }
 
 bool TerrainView::loaded(Scene& sc, const Object& o) const {
-    if (o.kind == ObjectKind::Terrain) return true;
+    if (o.kind == ObjectKind::Terrain || o.kind == ObjectKind::Sky || o.kind == ObjectKind::SkyLight ||
+        o.kind == ObjectKind::PostProcess || o.kind == ObjectKind::Clouds) return true;
     switch (o.streaming) {
         case StreamMode::AlwaysLoaded: return true;
         case StreamMode::Unloaded: return !playing_ || o.stream_loaded;

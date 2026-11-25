@@ -5,6 +5,7 @@
 #pragma once
 
 #include "gfx/shaders_post.h"
+#include "gfx/clouds.h"
 #include <stddef.h>
 
 namespace fe::gfx::shaders {
@@ -13,7 +14,7 @@ namespace fe::gfx::shaders {
 constexpr int kMaxLights = 8;
 
 // Sizes of the buffers the generators write into (they are always enough).
-constexpr size_t kSourceBytes = 12 * 1024;
+constexpr size_t kSourceBytes = 24 * 1024;
 
 // Uniforms, as the renderer sets them (names of the FGSL uniforms):
 //   lit/unlit/sky:  the post chain of shaders_post.h (u_post, u_tint, u_res and, when compiled
@@ -49,6 +50,7 @@ void unlit_vertex(char* out, size_t cap);
 void unlit_fragment(char* out, size_t cap, const PostKey& post = PostKey());
 // The background: one triangle covering the screen at the far plane.
 void sky_vertex(char* out, size_t cap);
-void sky_fragment(char* out, size_t cap, const PostKey& post = PostKey());
+// With clouds (gfx/clouds.h) when `clouds` has a quality: blended over the sky and the sun disc.
+void sky_fragment(char* out, size_t cap, const PostKey& post = PostKey(), CloudKey clouds = CloudKey());
 
 }  // namespace fe::gfx::shaders

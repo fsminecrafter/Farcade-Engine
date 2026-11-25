@@ -172,7 +172,7 @@ public:
 
     // ---- the file and folder picker (file_dialog.cpp): every "choose a
     // file" field opens it instead of asking for a typed path.
-    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene };
+    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene, FoliageModels, FoliageFolder };
     enum PickOwner : uint8_t { PickRoot = 0, PickExport = 1, PickProject = 2 };
     struct FileDialog {
         PickFor target = PickFor::None;
@@ -184,7 +184,20 @@ public:
         char exts[96] = {};         // ".gltf;.glb;.obj", empty: every file
         char name[256] = {};        // the chosen file's name in `dir`
         char filter[64] = {};
+        // Several files at once (set `multi` after open_file_dialog): Ctrl-click adds or removes one,
+        // Shift-click a range, Ctrl+A all; Open hands each to file_dialog_done.
+        bool multi = false;
+        static constexpr int kMaxPicks = 64;
+        char picks[kMaxPicks][128] = {};
+        int pick_count = 0;
+        int last_click = -1;
     } file_dialog_;
+    // Where FoliageModels / FoliageFolder picks go: a terrain's foliage layer.
+    ObjectId foliage_pick_object_ = kNoObject;
+    int foliage_pick_layer_ = 0;
+    // Adds a .mof (or every .mof in a folder) to a foliage layer's list; false when it was not added
+    // (not a model, already there, or the list is full).
+    bool foliage_add_model(ObjectId terrain, int layer, const char* path);
     void open_file_dialog(PickFor target, uint8_t owner, const char* title, bool folder, const char* start, const char* exts);
     void file_dialog_popup(uint8_t owner);
     void file_dialog_done(PickFor target, const char* path);

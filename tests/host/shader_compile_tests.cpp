@@ -85,10 +85,17 @@ void cpu_tier(const PostKey* posts, int np) {
         unlit_fragment(g_fs, kSourceBytes, posts[pi]);
         snprintf(what, sizeof what, "unlit, %s", pn);
         check(what, kSourceBytes);
-        sky_vertex(g_vs, kSourceBytes);
-        sky_fragment(g_fs, kSourceBytes, posts[pi]);
-        snprintf(what, sizeof what, "sky, %s", pn);
-        check(what, kSourceBytes);
+        // The sky with every cloud quality and layer count (gfx/clouds.h).
+        for (int cq = 0; cq <= 3; cq++)
+            for (int cl = 1; cl <= (cq ? 3 : 1); cl++) {
+                fe::gfx::CloudKey ck;
+                ck.quality = (uint8_t)cq;
+                ck.layers = (uint8_t)cl;
+                sky_vertex(g_vs, kSourceBytes);
+                sky_fragment(g_fs, kSourceBytes, posts[pi], ck);
+                snprintf(what, sizeof what, "sky, clouds %d x%d, %s", cq, cl, pn);
+                check(what, kSourceBytes);
+            }
     }
 }
 
@@ -148,12 +155,17 @@ void gpu_tier_rest(const PostKey* posts, int np) {
             snprintf(what, sizeof what, "hq unlit%s%s, %s", fog ? " fog" : "", hdr ? " hdr" : "", pn);
             check(what, kHqSourceBytes);
         }
-        for (int hdr = 0; hdr < 2; hdr++) {
-            sky_vertex(g_vs, kHqSourceBytes);
-            hq_sky_fragment(g_fs, kHqSourceBytes, hdr != 0, posts[pi]);
-            snprintf(what, sizeof what, "hq sky%s, %s", hdr ? " hdr" : "", pn);
-            check(what, kHqSourceBytes);
-        }
+        for (int hdr = 0; hdr < 2; hdr++)
+            for (int cq = 0; cq <= 3; cq++)
+                for (int cl = 1; cl <= (cq ? 3 : 1); cl++) {
+                    fe::gfx::CloudKey ck;
+                    ck.quality = (uint8_t)cq;
+                    ck.layers = (uint8_t)cl;
+                    sky_vertex(g_vs, kHqSourceBytes);
+                    hq_sky_fragment(g_fs, kHqSourceBytes, hdr != 0, posts[pi], ck);
+                    snprintf(what, sizeof what, "hq sky%s, clouds %d x%d, %s", hdr ? " hdr" : "", cq, cl, pn);
+                    check(what, kHqSourceBytes);
+                }
         for (int bits = 0; bits < 8; bits++) {
             bool bloom = bits & 1, chroma = (bits >> 1) & 1, ssr = (bits >> 2) & 1;
             pp_vertex(g_vs, kHqSourceBytes);

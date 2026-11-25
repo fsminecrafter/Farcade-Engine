@@ -152,10 +152,12 @@ struct GpuTier::Impl {
     // whenever the camera starts or stops moving, which must not recompile anything.
     FGLShader* comp_p[16] = {};             // [draft * 8 + ssr * 4 + chromatic * 2 + bloom]
     shaders::PostKey comp_key[16], unlit_key[8], sky_key[4];
+    CloudKey sky_ckey[4];
     const PostFrame* pf = nullptr;          // this frame's post chain values
     FGLShader* fxaa_p = nullptr;
     FGLShader* unlit_p[8] = {};             // [draft * 4 + fog * 2 + hdr]
     FGLShader* sky_p[4] = {};               // [draft * 2 + hdr]
+    CloudKey cloud_key_used;                // the clouds the last sky shader has
     LitProg lit_p[kMaxLitVariants];
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
@@ -1131,8 +1133,24 @@ struct GpuTier::Impl {
         shaders::PostKey pk = pf->key;
         if (!make_keyed(&unlit_p[ui], &unlit_key[ui], shaders::hq_unlit_vertex,
                         [fog, h2, pk](char* o, size_t c) { shaders::hq_unlit_fragment(o, c, fog, h2, pk); }, "unlit")) return false;
-        if (!make_keyed(&sky_p[si], &sky_key[si], shaders::sky_vertex,
-                        [h2, pk](char* o, size_t c) { shaders::hq_sky_fragment(o, c, h2, pk); }, "sky")) return false;
+        // The sky, with the clouds compiled in; a cloud variant that does not compile steps down a quality.
+        {
+            CloudKey ck = host.clouds.key;
+            for (;;) {
+                if (sky_p[si] && (sky_key[si] != pf->key || sky_ckey[si] != ck)) drop(&sky_p[si]);
+                bool ok = sky_p[si] != nullptr;
+                if (!ok) {
+                    ok = make(&sky_p[si], shaders::sky_vertex, [h2, pk, ck](char* o, size_t c) { shaders::hq_sky_fragment(o, c, h2, pk, ck); }, "sky");
+                    if (ok) { sky_key[si] = pf->key; sky_ckey[si] = ck; }
+                }
+                if (ok) break;
+                if (!ck.quality || (gate && gate->deferred)) return false;
+                if (host.cloud_ok) host.cloud_ok[ck.layers] = (uint8_t)(ck.quality - 1);
+                ck.quality--;
+                if (err && err_cap) err[0] = 0;
+            }
+            cloud_key_used = ck;
+        }
         FGLShader* unlit = unlit_p[ui];
         FGLShader* sky = sky_p[si];
 
@@ -1192,6 +1210,8 @@ struct GpuTier::Impl {
         if (!failed) {
             fglDisable(gl, FGL_CULL_FACE);
             fglUseShader(gl, sky);
+            // The clouds' textures now: the meshes before rebound the texture units.
+            set_cloud_uniforms(gl, sky, host.clouds, host.cloud_noise, host.cloud_weather);
             fglSetModel(gl, to_fgl(Mat4::identity()));
             fglDraw(gl, tri, 0, 3);
         }
@@ -1634,6 +1654,7 @@ void GpuTier::release(FGLContext*) { impl_->release_all(); }
 void GpuTier::release_targets() { impl_->release_targets(); }
 void GpuTier::set_gate(CompileGate* gate) { impl_->gate = gate; }
 
+int GpuTier::cloud_quality() const { return impl_->cloud_key_used.quality; }
 const GpuTierStats& GpuTier::stats() const { return impl_->stats; }
 int GpuTier::live_surfaces() const { return impl_->surfaces; }
 int GpuTier::live_programs() const { return impl_->programs; }

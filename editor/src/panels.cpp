@@ -4,6 +4,7 @@
 #include "icon_glyphs.h"
 #include "icons.h"
 #include "model_import.h"
+#include "model_cache.h"
 #include "widgets.h"
 #include "platform/platform.h"
 
@@ -27,6 +28,7 @@ Icon object_icon(const Object& o) {
         case ObjectKind::SkyLight: return Icon::Sun;
         case ObjectKind::PostProcess: return Icon::Wand;
         case ObjectKind::Terrain: return Icon::Plane;
+        case ObjectKind::Clouds: return Icon::Cloud;
         case ObjectKind::Empty:
             if (o.modules.has(ModuleKind::Light)) return Icon::Bulb;
             if (o.modules.has(ModuleKind::AudioStream) || o.modules.has(ModuleKind::AudioSampler)) return Icon::Speaker;
@@ -65,6 +67,7 @@ Icon module_icon(ModuleKind k) {
         case ModuleKind::Sky: return Icon::Cloud;
         case ModuleKind::PostProcess: return Icon::Wand;
         case ModuleKind::Terrain: return Icon::Plane;
+        case ModuleKind::Clouds: return Icon::Cloud;
         default: return Icon::File;
     }
 }
@@ -645,6 +648,10 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
                 prop_label(f.label);
                 ImGui::InputText("##v", (char*)fp, kPathMax);
                 break;
+            case FieldType::PathList:
+                prop_label(f.label);
+                ImGui::InputText("##v", (char*)fp, kPathListMax);
+                break;
             case FieldType::Object: {
                 // A link to another object: pick from the list or drop a hierarchy row.
                 prop_label(f.label);
@@ -1094,6 +1101,16 @@ void Editor::settings_graphics() {
         prop_label("Dynamic resolution");
         toggle_switch("##dynres", &g.dynamic_resolution);
         track("gfx:dynres");
+        {
+            static const char* cq[] = { "Off", "Low", "Medium", "Ultra" };
+            int c = (int)g.clouds;
+            prop_label("Clouds");
+            if (ImGui::Combo("##clouds", &c, cq, 4)) { g.clouds = (gfx::CloudSetting)c; g.preset = gfx::GraphicsPreset::Custom; }
+            track("gfx:clouds");
+            faint("The highest quality the Clouds object is drawn at (it asks for its own; the lower wins). Low: 22 "
+                  "samples a ray, sun light estimated; Medium: 16 with finer edges; Ultra: 13 with edges and a real sample "
+                  "towards the sun. Shared by the layers.");
+        }
         prop_label("Occlusion culling");
         toggle_switch("##occl", &g.occlusion_culling);
         track("gfx:occlusion");
@@ -1349,15 +1366,20 @@ void Editor::panel_inspector() {
         if (o->kind != ObjectKind::Terrain) {
             if (vec3_field("Rotation", &rot, 0.5f, "%.1f")) o->rotation = Quat::euler_deg(rot);
             if (vec3_field("Scale", &scl, 0.02f, "%.2f")) o->scale = scl;
-            // Streaming: when the object is loaded at run time (terrain chunks, scripts).
-            static const char* modes[] = { "Dynamic (with its terrain chunk)", "Always loaded", "Unloaded (a script loads it)" };
-            int sm = (int)o->streaming;
-            prop_label("Streaming");
-            if (ImGui::Combo("##streaming", &sm, modes, 3)) {
-                for (int i = 0; i < n; i++)
-                    if (Object* so = scene.get(scene.selected(i))) so->streaming = (StreamMode)sm;
+            // Streaming: when the object is loaded at run time (terrain chunks, scripts). Not for the
+            // scene-wide settings objects.
+            bool scene_wide = o->kind == ObjectKind::Sky || o->kind == ObjectKind::SkyLight || o->kind == ObjectKind::PostProcess ||
+                              o->kind == ObjectKind::Clouds;
+            if (!scene_wide) {
+                static const char* modes[] = { "Dynamic (with its terrain chunk)", "Always loaded", "Unloaded (a script loads it)" };
+                int sm = (int)o->streaming;
+                prop_label("Streaming");
+                if (ImGui::Combo("##streaming", &sm, modes, 3)) {
+                    for (int i = 0; i < n; i++)
+                        if (Object* so = scene.get(scene.selected(i))) so->streaming = (StreamMode)sm;
+                }
+                track("inspector:streaming");
             }
-            track("inspector:streaming");
         }
         ImGui::Dummy(ImVec2(0, 4));
     }
@@ -1417,6 +1439,88 @@ void Editor::panel_inspector() {
 
 // ---------------------------------------------------------------- terrain
 
+// ---- a foliage layer's model list ("a.mof;b.mof")
+
+static int foliage_list_count(const char* list) {
+    char one[kPathMax];
+    int n = 0;
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax)) n++;
+    return n;
+}
+
+static bool foliage_list_has(const char* list, const char* path) {
+    char one[kPathMax];
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax))
+        if (!strcmp(one, path)) return true;
+    return false;
+}
+
+static void foliage_list_remove(char* list, int index) {
+    char out[kPathListMax] = {}, one[kPathMax];
+    int i = 0;
+    for (const char* at = path_list_next(list, one, kPathMax); at; at = path_list_next(at, one, kPathMax), i++) {
+        if (i == index) continue;
+        if (out[0]) strncat(out, ";", sizeof out - strlen(out) - 1);
+        strncat(out, one, sizeof out - strlen(out) - 1);
+    }
+    memcpy(list, out, kPathListMax);
+}
+
+// Appends a path that is not there yet; false when it is or the list is full.
+static bool foliage_list_add(char* list, const char* path) {
+    if (foliage_list_has(list, path)) return false;
+    size_t len = strlen(list), n = strlen(path);
+    if (len + (len ? 1 : 0) + n >= (size_t)kPathListMax) return false;
+    if (len) strcat(list, ";");
+    strcat(list, path);
+    return true;
+}
+
+namespace {
+struct MofList { char names[256][128]; int count = 0; };
+void collect_mof(const platform::DirEntry& e, void* user) {
+    MofList* l = (MofList*)user;
+    size_t n = strlen(e.name);
+    if (!e.is_dir && n > 4 && l->count < 256 && (!strcmp(e.name + n - 4, ".mof") || !strcmp(e.name + n - 4, ".MOF")))
+        snprintf(l->names[l->count++], sizeof l->names[0], "%s", e.name);
+}
+}  // namespace
+
+bool Editor::foliage_add_model(ObjectId terrain, int layer, const char* path) {
+    Object* o = scene.get(terrain);
+    if (!o || o->kind != ObjectKind::Terrain || layer < 0 || layer >= kFoliageLayers || !path || !path[0]) return false;
+    char* list = o->modules.terrain.foliage[layer].model;
+    char full[512];
+    project_path(path, full, sizeof full);
+    // A folder: every .mof in it, by name.
+    static MofList mofs;
+    mofs.count = 0;
+    if (platform::list_dir(full, collect_mof, &mofs)) {
+        for (int i = 1; i < mofs.count; i++)
+            for (int j = i; j > 0 && strcmp(mofs.names[j - 1], mofs.names[j]) > 0; j--) {
+                char t[128];
+                memcpy(t, mofs.names[j], sizeof t); memcpy(mofs.names[j], mofs.names[j - 1], sizeof t); memcpy(mofs.names[j - 1], t, sizeof t);
+            }
+        int added = 0;
+        for (int i = 0; i < mofs.count; i++) {
+            char one[512];
+            snprintf(one, sizeof one, "%s/%s", path, mofs.names[i]);
+            added += foliage_list_add(list, one);
+        }
+        if (added) log(LogLevel::Info, "Foliage layer %d: %d model%s from %s", layer + 1, added, added == 1 ? "" : "s", path_filename(path));
+        else log(LogLevel::Warning, "No new .mof models in %s", path_filename(path));
+        return added > 0;
+    }
+    size_t n = strlen(path);
+    if (n < 5 || strcmp(path + n - 4, ".mof")) return false;          // foliage takes .mof (import other formats first)
+    if (foliage_list_has(list, path)) return false;
+    if (!foliage_list_add(list, path)) {
+        log(LogLevel::Warning, "Foliage layer %d is full (its list holds %d characters of paths)", layer + 1, kPathListMax - 1);
+        return false;
+    }
+    return true;
+}
+
 void Editor::terrain_section(Object* o) {
     const Palette& pal = ui_palette();
     auto faint = [&](const char* text) {
@@ -1474,9 +1578,12 @@ void Editor::terrain_section(Object* o) {
                 char names[kFoliageLayers][96];
                 const char* ptrs[kFoliageLayers];
                 for (int l = 0; l < kFoliageLayers; l++) {
-                    const char* m = ts.foliage[l].model;
-                    const char* fn = strrchr(m, '/');
-                    snprintf(names[l], sizeof names[l], "Layer %d: %s", l + 1, m[0] ? (fn ? fn + 1 : m) : "(no model yet)");
+                    int nm = foliage_list_count(ts.foliage[l].model);
+                    char first[kPathMax];
+                    path_list_next(ts.foliage[l].model, first, kPathMax);
+                    const char* fn = strrchr(first, '/');
+                    if (nm > 1) snprintf(names[l], sizeof names[l], "Layer %d: %d models", l + 1, nm);
+                    else snprintf(names[l], sizeof names[l], "Layer %d: %s", l + 1, nm ? (fn ? fn + 1 : first) : "(no model yet)");
                     ptrs[l] = names[l];
                 }
                 prop_label("Layer");
@@ -1537,11 +1644,72 @@ void Editor::terrain_section(Object* o) {
         for (int l = 0; l < kFoliageLayers; l++) {
             FoliageLayer& fl = ts.foliage[l];
             ImGui::PushID(l);
-            const char* fn = strrchr(fl.model, '/');
+            int nmodels = foliage_list_count(fl.model);
+            char first[kPathMax];
+            path_list_next(fl.model, first, kPathMax);
+            const char* fn = strrchr(first, '/');
             char title[128];
-            snprintf(title, sizeof title, "Layer %d: %s###layer", l + 1, fl.model[0] ? (fn ? fn + 1 : fl.model) : "empty");
+            if (nmodels > 1) snprintf(title, sizeof title, "Layer %d: %d models###layer", l + 1, nmodels);
+            else snprintf(title, sizeof title, "Layer %d: %s###layer", l + 1, nmodels ? (fn ? fn + 1 : first) : "empty");
             if (ImGui::TreeNodeEx(title, l == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-                slot_field("Model", fl.model, sizeof fl.model, this, path_is_model, Icon::Model);
+                // The models: each instance picks one at random. Drop .mof files or folders here, or add them.
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("Models (each instance takes one at random)");
+                float rowh = ImGui::GetFrameHeight();
+                int remove = -1;
+                {
+                    char one[kPathMax];
+                    int i = 0;
+                    for (const char* at = path_list_next(fl.model, one, kPathMax); at; at = path_list_next(at, one, kPathMax), i++) {
+                        ImGui::PushID(i);
+                        const char* nm = strrchr(one, '/');
+                        bool loads = model_load(one) != nullptr;
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        draw_icon(dl, Icon::Model, ImVec2(p0.x + 2, p0.y + (rowh - ImGui::GetFontSize()) * 0.5f), ImGui::GetFontSize(),
+                                  loads ? pal.text_dim : IM_COL32(230, 90, 90, 255));
+                        ImGui::Dummy(ImVec2(ImGui::GetFontSize() + 6, rowh));
+                        ImGui::SameLine();
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TextUnformatted(nm ? nm + 1 : one);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", one, loads ? "" : "\n(cannot be read: not drawn)");
+                        ImGui::SameLine(ImGui::GetContentRegionMax().x - rowh);
+                        if (icon_button(Icon::Close, "Remove from the layer", false, rowh)) remove = i;
+                        ImGui::PopID();
+                    }
+                }
+                if (remove >= 0) foliage_list_remove(fl.model, remove);
+                if (!nmodels) ImGui::TextDisabled("None yet: drop .mof files or a folder here");
+                if (ImGui::Button("Add models...")) {
+                    foliage_pick_object_ = o->id;
+                    foliage_pick_layer_ = l;
+                    open_file_dialog(PickFor::FoliageModels, PickRoot, "Add foliage models", false, project_dir, ".mof");
+                    file_dialog_.multi = true;
+                }
+                track("terrain:fadd");
+                ImGui::SameLine();
+                if (ImGui::Button("Add folder...")) {
+                    foliage_pick_object_ = o->id;
+                    foliage_pick_layer_ = l;
+                    open_file_dialog(PickFor::FoliageFolder, PickRoot, "Add every .mof in a folder", true, project_dir, nullptr);
+                }
+                track("terrain:ffolder");
+                if (nmodels) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear")) fl.model[0] = 0;
+                }
+                ImGui::EndGroup();
+                // Files (or folders) dropped anywhere on the list.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(kFilePayload)) {
+                        char rel[512];
+                        const char* dropped = (const char*)pl->Data;
+                        size_t pn = strlen(project_dir);
+                        snprintf(rel, sizeof rel, "%s", pn && !strncmp(dropped, project_dir, pn) && dropped[pn] == '/' ? dropped + pn + 1 : dropped);
+                        if (!foliage_add_model(o->id, l, rel)) log(LogLevel::Warning, "%s was not added to the layer", path_filename(dropped));
+                    }
+                    ImGui::EndDragDropTarget();
+                }
                 prop_label("Density");
                 ImGui::DragFloat("##d", &fl.density, 0.05f, 0.0f, 50.0f, "%.2f / m2");
                 track("terrain:fdensity");

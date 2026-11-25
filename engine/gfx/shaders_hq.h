@@ -11,6 +11,7 @@
 //                  already applied ("pre-exposed"): decode is e * e * 8
 //   AO + depth     r = occlusion (1 = open), g:b = 16 bit packed depth / far
 #pragma once
+#include "gfx/clouds.h"
 
 #include "gfx/shaders_post.h"
 #include <stddef.h>
@@ -62,7 +63,7 @@ void hq_lit_vertex(char* out, size_t cap, int cascades);   // cascades 0: no sun
 void hq_lit_fragment(char* out, size_t cap, const HqLitKey& k);
 void hq_unlit_vertex(char* out, size_t cap);
 void hq_unlit_fragment(char* out, size_t cap, bool fog, bool hdr, const PostKey& post);
-void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post);         // vertex: shaders::sky_vertex
+void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post, CloudKey clouds = CloudKey());         // vertex: shaders::sky_vertex
 
 // Depth-only geometry passes: the shadow map (u_shm in fgl matrices) and the
 // linear depth for SSAO (u_pp.x = 1 / far).

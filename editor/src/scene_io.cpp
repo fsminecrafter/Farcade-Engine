@@ -9,7 +9,7 @@ namespace fe {
 
 namespace {
 
-const char* const kObjectKinds[] = { "mesh", "empty", "camera", "skylight", "sky", "post_process", "terrain" };
+const char* const kObjectKinds[] = { "mesh", "empty", "camera", "skylight", "sky", "post_process", "terrain", "clouds" };
 const char* const kStreamModes[] = { "dynamic", "always", "unloaded" };
 const char* const kMeshKinds[] = { "cube", "plane", "sphere", "cylinder", "model" };
 const char* const kPropTypes[] = { "number", "text", "toggle", "list", "object", "file" };
@@ -95,6 +95,7 @@ void write_fields(Out& o, const ModuleInfo& mi, const void* data, const char* in
         case FieldType::Color:
         case FieldType::Vec3: { Vec3 v; memcpy(&v, p, sizeof v); o.vec(v); break; }
         case FieldType::Text:
+        case FieldType::PathList:
         case FieldType::Path: o.raw(" ", 1); o.str((const char*)p); break;
         case FieldType::Object: { uint32_t v; memcpy(&v, p, 4); o.f(" %u", (unsigned)v); break; }
         }
@@ -192,6 +193,7 @@ bool read_field(const ModuleInfo& mi, void* data, const Line& l) {
     case FieldType::Vec3: { Vec3 v; if (!parse_vec(l, 1, &v)) return false; memcpy(p, &v, sizeof v); return true; }
     case FieldType::Text:
     case FieldType::Path: copy_str((char*)p, kPathMax, l.tok[1]); return true;
+    case FieldType::PathList: copy_str((char*)p, kPathListMax, l.tok[1]); return true;
     }
     return false;
 }

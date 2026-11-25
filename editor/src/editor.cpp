@@ -14,6 +14,7 @@
 #include "model_import.h"
 #include "terrain_bridge.h"
 #include "core/vfs.h"
+#include "stb/stb_image.h"
 
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
@@ -664,6 +665,54 @@ bool Editor::generate_terrain(Object* o, float level, float size_x, float size_z
     terrain_mark_dirty(td);
     log(LogLevel::Info, "%s: %d x %d chunks of %.0f m (%d x %d cells), at y %.2f", o->name, td->chunks_x, td->chunks_z, (double)td->chunk_size,
         td->side_x(), td->side_z(), (double)level);
+    return true;
+}
+
+bool Editor::import_heightmap(ObjectId id, const char* path) {
+    Object* o = scene.get(id);
+    TerrainData* td = o && o->kind == ObjectKind::Terrain ? terrain_data(*o) : nullptr;
+    if (!td || !td->valid()) { log(LogLevel::Warning, "Import heightmap: generate the terrain first"); return false; }
+    size_t size = 0;
+    void* bytes = platform::read_file(path, &size);
+    if (!bytes) { log(LogLevel::Error, "Import heightmap: cannot read %s", path); return false; }
+    int w = 0, h = 0, comp = 0;
+    float* samples = nullptr;
+    bool terrarium = false;
+    if (stbi_is_16_bit_from_memory((const stbi_uc*)bytes, (int)size)) {
+        stbi_us* p = stbi_load_16_from_memory((const stbi_uc*)bytes, (int)size, &w, &h, &comp, 1);
+        if (p) {
+            samples = (float*)malloc(sizeof(float) * (size_t)w * (size_t)h);
+            for (size_t i = 0; samples && i < (size_t)w * h; i++) samples[i] = (float)p[i] / 65535.0f;
+            stbi_image_free(p);
+        }
+    } else {
+        stbi_uc* p = stbi_load_from_memory((const stbi_uc*)bytes, (int)size, &w, &h, &comp, 3);
+        if (p) {
+            samples = (float*)malloc(sizeof(float) * (size_t)w * (size_t)h);
+            terrarium = comp >= 3;
+            for (size_t i = 0; samples && i < (size_t)w * h; i++) {
+                const stbi_uc* c = p + i * 3;
+                samples[i] = terrarium ? (float)c[0] * 256.0f + (float)c[1] + (float)c[2] / 256.0f - 32768.0f : (float)c[0] / 255.0f;
+            }
+            stbi_image_free(p);
+        }
+    }
+    free(bytes);
+    if (!samples) { log(LogLevel::Error, "Import heightmap: %s is not an image this reads (PNG, JPG, BMP)", path_filename(path)); return false; }
+    Vec3 origin = terrain_origin(scene, *o);
+    bool ok;
+    if (terrarium) {
+        float mn = 1e30f;
+        for (size_t i = 0; i < (size_t)w * h; i++) mn = samples[i] < mn ? samples[i] : mn;
+        ok = td->import_heights(samples, w, h, 1.0f, terrain_gen_level - origin.y - mn);
+    } else {
+        ok = td->import_heights(samples, w, h, terrain_import_high - terrain_import_low, terrain_import_low - origin.y);
+    }
+    free(samples);
+    if (!ok) { log(LogLevel::Error, "Import heightmap: the image is too small"); return false; }
+    o->modules.terrain.revision = td->revision;
+    terrain_mark_dirty(td);
+    log(LogLevel::Info, "%s: heights from %s (%d x %d%s)", o->name, path_filename(path), w, h, terrarium ? ", Terrarium elevation" : "");
     return true;
 }
 

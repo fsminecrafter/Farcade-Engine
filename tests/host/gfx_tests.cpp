@@ -2148,8 +2148,39 @@ void check_cutout(bool tier) {
     t.items[0].double_sided = false;
 }
 
+// A detail texture multiplies the albedo (x2, so its 0.5 grey is neutral): a red detail (1, 0, 0) doubles red
+// and removes green, at its strength.
+void check_detail(bool tier) {
+    const char* tn = tier ? "GPU tier" : "base tier";
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    t.scene.read_asset = read_hook_asset;
+    t.scene.item_count = 1;
+    t.items[0].color = Vec3(0.4f, 0.4f, 0.4f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    if (tier) g.pbr = true; else g.allow_gpu_effects_on_cpu = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px plain = t.at(r, Vec3(0, 1.0f, 0));
+    t.items[0].detail_path = "red.bmp";
+    t.items[0].detail_repeats = 4.0f;
+    t.items[0].detail_strength = 1.0f;
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px full = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(full.r > plain.r + 20 && full.g < plain.g / 2, "%s: the detail texture multiplies the albedo (%d %d %d, was %d %d %d)", tn,
+           full.r, full.g, full.b, plain.r, plain.g, plain.b);
+    t.items[0].detail_strength = 0.0f;
+    CHECK(render_ok(r, t.scene));
+    Px none = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(abs(none.g - plain.g) < 4, "%s: strength 0 leaves it as it was (%d vs %d)", tn, none.g, plain.g);
+}
+
 void test_shader_hooks() {
     test_shader_sections();
+    check_detail(true);
+    check_detail(false);
     check_cutout(true);
     check_cutout(false);
     check_displace_matches(true);

@@ -132,6 +132,11 @@ void cpu_tier(const PostKey* posts, int np) {
                 lit_fragment(g_fs, kSourceBytes, 2, 2, 2, posts[pi], gi != 0);
                 snprintf(what, sizeof what, "lit 2/2/2%s%s%s +cutout +two-sided, %s", gi ? " gi" : "", d ? " +displace" : "", sf ? " +surface" : "", pn);
                 if (splice(kSourceBytes, d, sf, false, false, true, true)) check(what, kSourceBytes); else fail_splice(what);
+                lit_vertex(g_vs, kSourceBytes);
+                lit_fragment(g_fs, kSourceBytes, 2, 2, 2, posts[pi], gi != 0);
+                snprintf(what, sizeof what, "lit 2/2/2%s +detail, %s", gi ? " gi" : "", pn);
+                if (fe::gfx::hook_vertex(g_vs, kSourceBytes, nullptr, true) && fe::gfx::hook_fragment(g_fs, kSourceBytes, nullptr, false, true))
+                    check(what, kSourceBytes); else fail_splice(what);
             }
             unlit_vertex(g_vs, kSourceBytes);
             unlit_fragment(g_fs, kSourceBytes, posts[pi]);
@@ -211,6 +216,12 @@ void gpu_tier_lit(const PostKey* posts, int np) {
                             hq_lit_fragment(g_fs, kHqSourceBytes, k);
                             snprintf(w3, sizeof w3, "%s +displace +texture +cutout +two-sided", what);
                             if (splice(kHqSourceBytes, true, false, true, false, true, true)) check(w3, kHqSourceBytes); else fail_splice(w3);
+                            // terrain: a colour map texture and a detail texture
+                            hq_lit_vertex(g_vs, kHqSourceBytes, c);
+                            hq_lit_fragment(g_fs, kHqSourceBytes, k);
+                            snprintf(w3, sizeof w3, "%s +texture +detail", what);
+                            if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, nullptr, true) &&
+                                fe::gfx::hook_fragment(g_fs, kHqSourceBytes, nullptr, true, true)) check(w3, kHqSourceBytes); else fail_splice(w3);
                         }
                     }
                 }

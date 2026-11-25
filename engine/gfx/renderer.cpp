@@ -73,6 +73,7 @@ struct Locs {
     int gi = -1, gi0 = -1, gi1 = -1;
     int time = -1;                          // custom item shaders: u_time (seconds, delta, frame, 0)
     int cut = -1;                           // alpha cut-out threshold (u_cut.x)
+    int detail = -1, det = -1;              // detail texture (u_detail) and its repeats / strength (u_det)
 };
 
 struct Shader {
@@ -88,7 +89,7 @@ struct Variant {
     shaders::PostKey key;
     bool gi = false;
     uint64_t hook = 0;                      // ShaderSections::hook_id spliced in (0 = none)
-    uint8_t mat = 0;                        // material features: 1 alpha cut-out, 2 two-sided
+    uint8_t mat = 0;                        // material features: 1 alpha cut-out, 2 two-sided, 4 detail texture
     bool unlit = false;                     // a hooked / material unlit shader (hook or mat only)
     uint64_t setup = 0;                     // the frame its frame uniforms were set for (+1)
     uint64_t last_use = 0;
@@ -364,6 +365,8 @@ struct Renderer::Impl {
         l->gi1 = fglUniformLocation(sh, "u_gi1");
         l->time = fglUniformLocation(sh, "u_time");
         l->cut = fglUniformLocation(sh, "u_cut");
+        l->detail = fglUniformLocation(sh, "u_detail");
+        l->det = fglUniformLocation(sh, "u_det");
     }
 
     CompileGate gate;
@@ -713,7 +716,7 @@ struct Renderer::Impl {
         }
         // The hooks (shader_file.h): the base shaders already sample u_texture.
         if ((hk || mat) && (!hook_vertex(vs, shaders::kSourceBytes, hk ? hk->displace : nullptr, true) ||
-                            !hook_fragment(fs, shaders::kSourceBytes, hk ? hk->surface : nullptr, false) ||
+                            !hook_fragment(fs, shaders::kSourceBytes, hk ? hk->surface : nullptr, false, (mat & 4) != 0) ||
                             !hook_material(fs, shaders::kSourceBytes, (mat & 1) != 0, (mat & 2) != 0))) {
             free(vs); free(fs);
             set_error("FarcadeGL: a shader hook does not fit in the shader source");
@@ -1136,6 +1139,11 @@ struct Renderer::Impl {
         fglUniformTexture(gl, s.sh, s.loc.texture, texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         if (s.loc.time >= 0) fglUniform4f(s.sh, s.loc.time, (float)item_time, item_dt, (float)frame, 0.0f);
         if (s.loc.cut >= 0) fglUniform4f(s.sh, s.loc.cut, it.alpha_cut, 0.0f, 0.0f, 0.0f);
+        if (s.loc.detail >= 0) {
+            FGLTexture dt = it.detail_path && it.detail_path[0] ? texture_for(it.detail_path, scene) : white_texture;
+            fglUniformTexture(gl, s.sh, s.loc.detail, dt ? dt : white_texture, FGL_TEXTURE_LINEAR);
+            fglUniform4f(s.sh, s.loc.det, it.detail_repeats, it.detail_strength, 0.0f, 0.0f);
+        }
         return draw_mesh(it, true, failed);
     }
 
@@ -1395,7 +1403,8 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
             Shader* item_shader = it.unlit ? &unlit_s : lit;
-            const uint8_t mat = (uint8_t)((it.alpha_cut > 0.0f ? 1 : 0) | (it.double_sided ? 2 : 0));
+            const uint8_t mat = (uint8_t)((it.alpha_cut > 0.0f ? 1 : 0) | (it.double_sided ? 2 : 0) |
+                                          (it.detail_path && it.detail_path[0] && !it.unlit ? 4 : 0));
             const ShaderSections* sec = it.shader_path && it.shader_path[0] ? sections_for(it.shader_path, scene) : nullptr;
             if (sec || mat) {
                 // Hooks and material features (cut-out, two-sided): the built-in shader with them spliced in

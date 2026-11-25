@@ -86,6 +86,9 @@ public:
     // Sizes are clamped: cells 4..128 per chunk, at most kTerrainMaxCells
     // cells a side. False when out of memory.
     bool generate(int chunks_x, int chunks_z, int cells, float chunk_size, float height);
+    // Replaces every height with a grid of w x h samples (row by row along x) stretched over the whole map,
+    // read bilinearly, as height = offset + sample * scale. One history step. False without data or samples.
+    bool import_heights(const float* samples, int w, int h, float scale, float offset);
     bool valid() const { return heights != nullptr; }
     void clear();                   // no data, no history
 

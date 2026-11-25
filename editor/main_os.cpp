@@ -1,7 +1,9 @@
 // farcade-editor: the editor on Minimal-OS (full screen).
 //
-//   run 0:/programs/farcade-editor.run [--frames N] [--farcadegl] [--play]
+//   run 0:/programs/farcade-editor.run [--frames N] [--farcadegl] [--play] [--project DIR]
 //
+// --project DIR opens that project (its project.fe and entry scene) instead of the demo scene, e.g. the
+// example world: --project 0:/projects/are-valley (docs/example-world.md).
 // Prints "FE EDITOR READY" once the first frame is on the screen, then every
 // 60 frames the average frame time. With --frames N it quits after N frames
 // and prints "FE EDITOR DONE". --farcadegl draws the viewport with FarcadeGL
@@ -44,6 +46,7 @@ int main(int argc, char** argv) {
     long max_frames = 0;
     Bench bench;
     bool farcadegl = false, play = false, profile = false, adaptive = true, scene_test = false;
+    const char* project = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) max_frames = atol(argv[++i]);
         else if (strcmp(argv[i], "--farcadegl") == 0) farcadegl = true;
@@ -53,6 +56,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--no-adaptive") == 0) adaptive = false;
         else if (strcmp(argv[i], "--bench") == 0 && i + 1 < argc) bench.frames_per_phase = atol(argv[++i]);
         else if (strcmp(argv[i], "--scene-test") == 0) scene_test = true;
+        else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) project = argv[++i];
     }
 
     static Editor ed;
@@ -66,8 +70,9 @@ int main(int argc, char** argv) {
     // The platform layer starts its mouse at the centre of the screen; show
     // the cursor there before the first mouse event arrives.
     ImGui::GetIO().AddMousePosEvent(platform::width() * 0.5f, platform::height() * 0.5f);
-    demo_scene(ed);
-    ed.history_reset();         // the demo scene is where undo starts
+    if (project) ed.open_project(project);
+    else demo_scene(ed);
+    ed.history_reset();         // the demo scene (or the opened one) is where undo starts
     if (scene_test) {
         size_t n1 = 0, n2 = 0;
         int count = ed.scene.count();

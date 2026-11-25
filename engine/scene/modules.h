@@ -407,7 +407,7 @@ struct PostProcess {
 
 // ---------------------------------------------------------------- terrain
 
-constexpr int kFoliageLayers = 4;
+constexpr int kFoliageLayers = 8;
 
 // One kind of foliage on a terrain: a .mof model scattered where the layer is
 // painted, turned randomly around its up axis (never tipped into the ground),
@@ -422,6 +422,9 @@ struct FoliageLayer {
     float scale_min = 0.8f;
     float scale_max = 1.2f;
     float distance = 60.0f;             // meters: drawn up to here, thinning out over the last 60%
+    // Model LOD: beyond this distance a block draws x_lod1.mof, beyond twice it x_lod2.mof, where those files
+    // exist next to x.mof (mofconv --lods writes them). 0 = always the full models.
+    float lod_distance = 0.0f;
     float max_slope = 40.0f;            // degrees: steeper ground gets none
     bool align_to_slope = false;        // stand along the ground's normal (else straight up)
     bool cast_shadows = false;
@@ -443,7 +446,12 @@ struct Terrain {
     char texture[kPathMax] = {};
     Vec3 color = Vec3(0.34f, 0.46f, 0.24f);
     float roughness = 0.9f;
-    float uv_scale = 4.0f;              // meters per texture repeat
+    float uv_scale = 4.0f;              // meters per texture repeat (the size of the map: one colour map over it all)
+    // A tiling detail texture multiplied over the texture up close (its grey 0.5 is neutral): ground grain
+    // under a colour map. detail_scale is meters per repeat, detail_strength 0..1.
+    char detail_texture[kPathMax] = {};
+    float detail_scale = 4.0f;
+    float detail_strength = 1.0f;
     bool cast_shadows = true;
     float friction = 0.8f;
     uint32_t layer = 1;                 // collision layer bits

@@ -172,7 +172,7 @@ public:
 
     // ---- the file and folder picker (file_dialog.cpp): every "choose a
     // file" field opens it instead of asking for a typed path.
-    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene, FoliageModels, FoliageFolder };
+    enum class PickFor : uint8_t { None, ImportModel, OpenProject, ExportFolder, ProjectIcon, ProjectScene, ExportScene, FoliageModels, FoliageFolder, Heightmap };
     enum PickOwner : uint8_t { PickRoot = 0, PickExport = 1, PickProject = 2 };
     struct FileDialog {
         PickFor target = PickFor::None;
@@ -224,6 +224,12 @@ public:
     // (world y) of size_x x size_z meters in chunks of chunk_size meters with `cells` grid cells a side;
     // with keep_center the object moves so the map's middle stays where it was. A history step (undo).
     bool generate_terrain(Object* o, float level, float size_x, float size_z, float chunk_size, int cells, bool keep_center);
+    // Heights from an image over the whole terrain (one undo step): a 16 or 8 bit grey image maps black..white
+    // to terrain_import_low..high (world y); an RGB image is read as Terrarium elevation (meters =
+    // r * 256 + g + b / 256 - 32768, the free AWS terrain tiles), its lowest point put at the Y level.
+    bool import_heightmap(ObjectId terrain, const char* path);
+    float terrain_import_low = 0.0f, terrain_import_high = 100.0f;
+    ObjectId heightmap_pick_object_ = kNoObject;
     void unique_terrain_path(const Object& o, char* out, size_t cap);
     // The brushes of the Inspector's terrain tools, applied in the viewport with the left mouse button
     // (Shift: the opposite - Lower, Restore, Erase; Ctrl-click with Level: take the height under the mouse).

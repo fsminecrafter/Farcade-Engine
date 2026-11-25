@@ -401,6 +401,9 @@ void Editor::file_dialog_done(PickFor target, const char* path) {
                 log(LogLevel::Warning, "%s was not added (not a .mof, already in the layer, or the list is full)", path_filename(path));
             break;
         }
+        case PickFor::Heightmap:
+            import_heightmap(heightmap_pick_object_, path);
+            break;
         case PickFor::None: break;
     }
 }

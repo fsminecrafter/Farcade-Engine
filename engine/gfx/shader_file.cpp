@@ -309,7 +309,7 @@ bool hook_vertex(char* src, size_t cap, const char* displace, bool uv) {
     return finish(src, cap, b);
 }
 
-bool hook_fragment(char* src, size_t cap, const char* surface, bool tex) {
+bool hook_fragment(char* src, size_t cap, const char* surface, bool tex, bool detail) {
     char* m = nullptr;
     const char* body = nullptr;
     if (!find_main(src, &m, &body)) return false;
@@ -321,10 +321,16 @@ bool hook_fragment(char* src, size_t cap, const char* surface, bool tex) {
     if ((tex || surface || base_tex) && !strstr(src, "varying vec2 v_uv;")) b.add("varying vec2 v_uv;\n");
     if (tex && !strstr(src, "vec3 srgb2lin(")) b.add("vec3 srgb2lin(vec3 c) {\n    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));\n}\n");
     if (surface) add_hook(b, src, surface);
+    if (detail) {
+        if (!strstr(src, "varying vec2 v_uv;") && !(tex || surface || base_tex)) b.add("varying vec2 v_uv;\n");
+        b.add("uniform sampler2D u_detail;\n"
+              "uniform vec4 u_det;\n");          // x: detail repeats per texture repeat, y: strength
+    }
     b.add(kMainLine);
     b.add("    vec3 fe_alb = v_alb");
     if (tex || base_tex) b.add(" * srgb2lin(texture2D(u_texture, v_uv).rgb)");
     b.add(";\n");
+    if (detail) b.add("    fe_alb = fe_alb * mix(vec3(1.0, 1.0, 1.0), texture2D(u_detail, v_uv * u_det.x).rgb * 2.0, u_det.y);\n");
     if (surface) b.add("    fe_alb = surface(fe_alb, v_uv);\n");
     Buf tmp(cap);
     if (base_tex) {

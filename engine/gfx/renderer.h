@@ -62,6 +62,11 @@ struct DrawItem {
     // shadow maps and depth); 0 = opaque. double_sided: no back face culling, back faces lit from their side.
     float alpha_cut = 0.0f;
     bool double_sided = false;
+    // A tiling detail texture multiplied over the texture (terrain ground grain under a colour map): repeated
+    // detail_repeats times per texture repeat; strength 0..1. Null = none.
+    const char* detail_path = nullptr;
+    float detail_repeats = 1.0f;
+    float detail_strength = 1.0f;
 };
 
 // A light in world space (filled from a Light module and its object).

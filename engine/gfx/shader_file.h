@@ -51,7 +51,9 @@ bool hook_vertex(char* src, size_t cap, const char* displace, bool uv);
 // hook_fragment: the albedo the shader reads from the varying v_alb becomes
 // `fe_alb = surface(v_alb * texture, v_uv)` (the texture when `tex`, the call when `surface`). A shader that
 // already multiplies v_alb by u_texture (the base tier's) keeps doing it once.
-bool hook_fragment(char* src, size_t cap, const char* surface, bool tex);
+// `detail`: the albedo is also multiplied by a tiling detail texture (u_detail at v_uv * u_det.x, 0.5 grey is
+// neutral, strength u_det.y), before the surface hook.
+bool hook_fragment(char* src, size_t cap, const char* surface, bool tex, bool detail = false);
 // Material features of a fragment shader: `cutout` discards where u_texture's alpha is below u_cut.x (leaf
 // cards; the vertex shader needs v_uv: hook_vertex(..., uv = true)); `two_sided` turns the normal it reads
 // towards the viewer (normalize(v_nrm) in shaders with u_cam and v_pos, the normal pass's view space

@@ -1767,9 +1767,167 @@ void test_particles() {
 
 }  // namespace
 
+#define CHECKF(cond, ...) \
+    do { g_checks++; if (!(cond)) { g_failures++; fprintf(stderr, "%s:%d: CHECK failed: %s (", __FILE__, __LINE__, #cond); \
+         fprintf(stderr, __VA_ARGS__); fprintf(stderr, ")\n"); } } while (0)
+
+// ---------------------------------------------------------------- shader hooks (shader_file.h)
+
+const char kShiftHook[] =
+    "// @displace\n"
+    "// moves the mesh up 0.6 m in every pass\n"
+    "uniform mat4 fgl_Model;\n"
+    "vec3 displace(vec3 p, vec3 n, vec2 uv) {\n"
+    "    return p + vec3(0.0, 0.6, 0.0);\n"
+    "}\n";
+const char kRedSurface[] =
+    "// @surface\n"
+    "vec3 surface(vec3 albedo, vec2 uv) {\n"
+    "    return vec3(0.9, 0.04, 0.04);\n"
+    "}\n";
+const char kBrokenHook[] =
+    "// @displace\n"
+    "vec3 displace(vec3 p, vec3 n, vec2 uv) {\n"
+    "    return p + nonsense;\n"
+    "}\n";
+
+void* read_hook_asset(const char* path, size_t* size, void* u) {
+    const char* src = nullptr;
+    if (!strcmp(path, "shift.fshader")) src = kShiftHook;
+    else if (!strcmp(path, "red_surface.fshader")) src = kRedSurface;
+    else if (!strcmp(path, "broken.fshader")) src = kBrokenHook;
+    else return read_test_asset(path, size, u);
+    *size = strlen(src);
+    char* m = (char*)malloc(*size + 1);
+    if (m) memcpy(m, src, *size + 1);
+    return m;
+}
+
+void test_shader_sections() {
+    ShaderSections sec;
+    char e[128];
+    CHECK(parse_shader_sections(kShiftHook, strlen(kShiftHook), &sec, e, sizeof e) && sec.displace && !sec.surface && !sec.full() && sec.hook_id);
+    uint64_t id = sec.hook_id;
+    free_shader_sections(&sec);
+    const char* both = "// @vertex\nvoid main() {}\n// @fragment\nvoid main() {}\n// @surface\nvec3 surface(vec3 a, vec2 uv) { return a; }\n";
+    CHECK(parse_shader_sections(both, strlen(both), &sec, e, sizeof e) && sec.full() && sec.surface && sec.hook_id && sec.hook_id != id);
+    free_shader_sections(&sec);
+    const char* half = "// @vertex\nvoid main() {}\n";
+    CHECK(!parse_shader_sections(half, strlen(half), &sec, e, sizeof e) && strstr(e, "@fragment"));
+    const char* nofn = "// @displace\nvec3 other(vec3 p) { return p; }\n";
+    CHECK(!parse_shader_sections(nofn, strlen(nofn), &sec, e, sizeof e) && strstr(e, "displace("));
+    const char* lead = "uniform vec4 x;\n// @surface\nvec3 surface(vec3 a, vec2 uv) { return a; }\n";
+    CHECK(!parse_shader_sections(lead, strlen(lead), &sec, e, sizeof e));
+    // parse_shader_file skips the hook sections of a file that has both
+    char v[256], f[256];
+    CHECK(parse_shader_file(both, strlen(both), v, sizeof v, f, sizeof f, e, sizeof e) && !strstr(f, "surface"));
+    // splicing: the declarations a shader has are not repeated, positions go through the hook
+    char src[1024] =
+        "uniform mat4 fgl_ModelViewProjection;\nuniform mat4 fgl_Model;\nattribute vec3 position;\n"
+        "void main() {\n    gl_Position = fgl_ModelViewProjection * vec4(position, 1.0);\n}\n";
+    CHECK(hook_vertex(src, sizeof src, kShiftHook, true));
+    CHECK(strstr(src, "vec4(fe_p, 1.0)") && !strstr(src, "vec4(position, 1.0)") && strstr(src, "v_uv = texcoord;"));
+    const char* first = strstr(src, "uniform mat4 fgl_Model;\n");
+    CHECK(first && !strstr(first + 1, "uniform mat4 fgl_Model;\n"));
+    char small[64] = "void main() {\n}\n";
+    CHECK(!hook_vertex(small, sizeof small, kShiftHook, true) && !strcmp(small, "void main() {\n}\n"));
+}
+
+// The same picture with the hook moving the cube up as with the cube's model moved up: shadows, AO and
+// lighting all see the moved mesh. `tier`: the GPU tier (shadows, AO, PBR), else the base tier.
+void check_displace_matches(bool tier) {
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    t.scene.read_asset = read_hook_asset;
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    if (tier) { g.shadows = true; g.ambient_occlusion = true; g.pbr = true; }
+    else g.allow_gpu_effects_on_cpu = false;
+    r.set_settings(g);
+    const int n = W * H;
+    uint32_t* a = (uint32_t*)malloc((size_t)n * 4);
+    uint32_t* c = (uint32_t*)malloc((size_t)n * 4);
+    t.items[0].shader_path = "shift.fshader";
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    memcpy(a, r.pixels(), (size_t)n * 4);
+    t.items[0].shader_path = nullptr;
+    CHECK(render_ok(r, t.scene));
+    memcpy(c, r.pixels(), (size_t)n * 4);
+    t.items[0].model = Mat4::translation(Vec3(0, 1.1f, 0));
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    auto differ = [&](const uint32_t* x, const uint32_t* y) {
+        long d = 0;
+        for (int i = 0; i < n; i++)
+            for (int k = 0; k < 24; k += 8) {
+                int p = (x[i] >> k) & 0xFF, q = (y[i] >> k) & 0xFF;
+                if ((p > q ? p - q : q - p) > 6) { d++; break; }
+            }
+        return d;
+    };
+    long same = differ(a, r.pixels()), moved = differ(a, c);
+    CHECKF(same * 200 < n, "%s: the hooked cube matches the moved cube (%ld of %d pixels differ)", tier ? "GPU tier" : "base tier", same, n);
+    CHECKF(moved > same * 10 && moved > 100, "%s: and differs from the cube where it was (%ld pixels)", tier ? "GPU tier" : "base tier", moved);
+    t.items[0].model = Mat4::translation(Vec3(0, 0.5f, 0));
+    // A surface hook: the albedo it returns is lit.
+    t.items[0].color = Vec3(0.1f, 0.8f, 0.1f);
+    t.items[0].shader_path = "red_surface.fshader";
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px top = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(top.r > top.g * 3 && top.r > 60, "surface hook: the cube is red (%d %d %d)", top.r, top.g, top.b);
+    // A texture on a lit item (red.bmp): the albedo is multiplied by it.
+    t.items[0].shader_path = nullptr;
+    t.items[0].color = Vec3(1, 1, 1);
+    t.items[0].texture_path = "red.bmp";
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    top = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(top.r > top.g * 3 && top.r > 60, "texture: the lit cube is red (%d %d %d)", top.r, top.g, top.b);
+    t.items[0].texture_path = nullptr;
+    // A hook that does not compile: the cube is drawn without it (and a warning), the frame goes on.
+    t.items[0].color = Vec3(0.8f, 0.8f, 0.8f);
+    r.take_warning();
+    t.items[0].shader_path = "broken.fshader";
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    CHECK(differ(c, r.pixels()) * 200 < n);
+    { const char* w = r.take_warning(); CHECKF(w && strstr(w, "broken.fshader"), "%s warns: %s", tier ? "GPU tier" : "base tier", w ? w : "(none)"); }
+    CHECK(render_ok(r, t.scene));                   // not compiled again
+    t.items[0].shader_path = nullptr;
+    free(a);
+    free(c);
+}
+
+void test_shader_hooks() {
+    test_shader_sections();
+    check_displace_matches(true);
+    check_displace_matches(false);
+    // A full custom shader no longer takes the frame off the GPU tier: its object is drawn with it.
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    t.scene.read_asset = read_hook_asset;
+    t.items[0].shader_path = "blue.fshader";
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    g.shadows = true;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier());
+    Px top = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(top.b > 200 && top.r < 40, "full shader in the GPU tier (%d %d %d)", top.r, top.g, top.b);
+    CHECK(lum_at(t, r, Vec3(1.0f, 0, 0)) < lum_at(t, r, Vec3(1.0f, 0, 1.6f)) * 0.7f);     // it still casts its shadow
+    // with an HDR target (bloom): its colour is encoded, so it still reads blue
+    g.bloom = true;
+    r.set_settings(g);
+    t.scene.post.bloom = 0.0001f;
+    t.scene.post.bloom_threshold = 50.0f;
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier());
+    top = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(top.b > 150 && top.r < 60, "full shader into the HDR target (%d %d %d)", top.r, top.g, top.b);
+}
+
 int main() {
     test_shader_file();
     test_asset_materials();
+    test_shader_hooks();
     test_device();
     test_shader_cache();
     test_projection();

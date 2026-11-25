@@ -1,14 +1,66 @@
 # Graphics: the GPU tier of the FarcadeGL renderer
 
-## Texture and custom shader assets
+## Textures and shaders on materials
 
-A mesh material can reference an image texture or a combined FGSL shader file.
-Use the Inspector's Texture and Shader slots, or assign paths from a script
-through `object.material.texture` and `object.material.shader`. Script inputs
-declared as `file` (or `asset`) are path strings and can be dropped on from the
-Files panel.
+A mesh material can reference an image texture and a `.fshader` file. Use the
+Inspector's Texture and Shader slots, or assign paths from a script through
+`object.material.texture` and `object.material.shader`. Script inputs declared
+as `file` (or `asset`) are path strings and can be dropped on from the Files
+panel. A terrain foliage layer has a Shader slot too (docs/terrain.md).
 
-The `.fshader` format uses the existing FGSL syntax and two comment markers:
+Both work on every tier. The GPU tier keeps its shadows, AO, reflections, GI
+and fog for textured and shaded objects: each object picks its own program
+in each pass, so nothing drops the frame to the base tier.
+
+### Textures
+
+The texture multiplies the material colour (both in linear light). Built-in
+meshes get generated planar UVs. Texture alpha is not blended (the targets
+are XRGB).
+
+### Shader hooks: `@displace` and `@surface`
+
+A hook is a small function that the renderer splices into its own generated
+shaders, so the object keeps the built-in lighting, shadows and effects:
+
+```glsl
+// @displace
+// Runs in every pass that draws the mesh: shadow maps, depth, normals, lighting.
+uniform vec4 u_time;
+vec3 displace(vec3 p, vec3 n, vec2 uv) {
+    return p + vec3(sin(u_time.x + p.x) * 0.1 * (1.0 - uv.y), 0.0, 0.0);
+}
+
+// @surface
+// The albedo (material colour times the texture, linear) in, the albedo to light out.
+vec3 surface(vec3 albedo, vec2 uv) {
+    return albedo * (0.8 + 0.2 * step(0.5, fract(uv.x * 8.0)));
+}
+```
+
+- `displace` gets the vertex position `p` and normal `n` in the mesh's own
+  space (before the object's transform) and the texture coordinate `uv`, and
+  returns the new position. Because every pass runs it, the shadows and the
+  AO follow the moved mesh. The normal is not changed.
+- `surface` changes the colour that is lit. It runs in the lit pass only.
+- A file may have either hook or both. Declare the uniforms a hook uses:
+  `u_time` (x: seconds rendered, y: the frame's delta, z: the frame number)
+  and the FarcadeGL matrices (`fgl_Model`, `fgl_View` ...) in any hook;
+  `u_texture` and `u_mat` (material colour, roughness) in `@surface`.
+  Declarations the generated shader already has are not repeated.
+- A hook that does not compile, or does not fit the GPU's instruction limit
+  in a pass, is left out of that pass: the object is drawn the built-in way
+  and the renderer warns once (Console).
+- `assets/samples/foliage/sway.fshader` is a wind sway written as a
+  `@displace` hook.
+
+The editor draws only when something changes, so `u_time` moves in Play and
+in the player.
+
+### Full custom shaders: `@vertex` and `@fragment`
+
+A file with `// @vertex` and `// @fragment` sections replaces the object's
+shading completely:
 
 ```glsl
 // @vertex
@@ -29,17 +81,16 @@ void main() {
 }
 ```
 
-`u_texture` is bound to the material image; without one it is a white texture.
-Built-in meshes currently get generated planar UVs, and texture alpha is not
-blended by the XRGB material path.
-The renderer also supplies the usual FarcadeGL matrix uniforms, `u_mat`
-(material color and roughness) and `u_time` (x: seconds rendered, y: the
-frame's delta, z: the frame number) for animated materials such as wind sway
-(`assets/samples/foliage/sway.fshader`, docs/terrain.md). The editor draws
-only when something changes, so `u_time` moves in Play and in the player. A custom shader replaces the built-in material
-shading. When a visible mesh has a texture or custom shader, the renderer uses
-its base FarcadeGL path for that frame, so advanced GPU-tier effects (such as
-shadows, SSAO and fog) are not applied.
+The renderer supplies the FarcadeGL matrix uniforms, `u_texture` (the
+material image, else white), `u_mat` (material colour and roughness) and
+`u_time`. The shader's colour is written as it is: the object gets no
+built-in lighting, shadows or fog on itself. In the GPU tier the other passes
+still draw it with the built-in programs, so it casts shadows and occludes
+like any mesh, and the rest of the frame keeps every effect. When the frame
+renders through an HDR target (bloom, TAA) its colour is encoded for that
+target (treated as a display colour).
+
+A file with both a full shader and hooks uses the hooks.
 
 ## Camera screen shaders
 

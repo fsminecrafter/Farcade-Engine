@@ -1812,7 +1812,7 @@ void Editor::terrain_section(Object* o) {
                 track("terrain:fshadow");
                 // A custom material for every instance (a wind sway): it gets u_time.
                 slot_field("Shader", fl.shader, sizeof fl.shader, this, path_is_shader, Icon::Wand);
-                if (fl.shader[0]) faint("A custom shader draws this layer on the base FarcadeGL path (no shadows, AO or fog that frame).");
+                if (fl.shader[0]) faint("A @displace / @surface shader keeps shadows, AO and every effect (assets/samples/foliage/sway.fshader).");
                 ImGui::TreePop();
             }
             ImGui::PopID();

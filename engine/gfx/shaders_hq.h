@@ -48,8 +48,12 @@ struct HqLitKey {
     bool local_soft = false;                        // 4 taps, else 1
     PostKey post;                                   // tonemap, grading, grain (shaders_post.h)
     bool gi = false;                                // probe GI (shaders.h emit_gi_lookup) replaces the hemisphere diffuse ambient
+    // Materials (spliced in by the tier, shader_file.h): the albedo is multiplied by u_texture; the hooks of
+    // a .fshader (ShaderSections::hook_id, 0 = none).
+    bool tex = false;
+    uint64_t hook = 0;
     bool operator==(const HqLitKey& o) const {
-        return post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return tex == o.tex && hook == o.hook && post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }

@@ -58,7 +58,7 @@ struct LitProg {
     shaders::HqLitKey key;
     uint64_t last = 0;
     uint64_t setup = 0;                     // the frame its frame uniforms were set for
-    int mat = -1, pbr = -1, tex = -1, time = -1;
+    int mat = -1, pbr = -1, tex = -1, time = -1, cut = -1;
 };
 
 // The geometry passes' programs of one hook set (a .fshader's @displace, ShaderSections::hook_id): the same
@@ -70,6 +70,8 @@ struct HookProgs {
     FGLShader* sh[HP_COUNT] = {};
     bool bad[HP_COUNT] = {};
     int time[HP_COUNT] = { -1, -1, -1, -1, -1, -1 };
+    int cut[HP_COUNT] = { -1, -1, -1, -1, -1, -1 };     // alpha cut-out: u_cut and the item's texture
+    int tex[HP_COUNT] = { -1, -1, -1, -1, -1, -1 };
     uint64_t last = 0;
 };
 
@@ -638,8 +640,9 @@ struct GpuTier::Impl {
         shaders::hq_lit_fragment(fs, shaders::kHqSourceBytes, key);
         const char* disp = key.hook && hk ? hk->displace : nullptr;
         const char* surf = key.hook && hk ? hk->surface : nullptr;
-        if ((disp || surf || key.tex) &&
-            (!hook_vertex(vs, shaders::kHqSourceBytes, disp, key.tex || surf) || !hook_fragment(fs, shaders::kHqSourceBytes, surf, key.tex))) {
+        if ((disp || surf || key.tex || key.mat) &&
+            (!hook_vertex(vs, shaders::kHqSourceBytes, disp, key.tex || surf) || !hook_fragment(fs, shaders::kHqSourceBytes, surf, key.tex) ||
+             !hook_material(fs, shaders::kHqSourceBytes, (key.mat & 1) != 0, (key.mat & 2) != 0))) {
             free(vs); free(fs);
             fail("FarcadeGL: a shader hook does not fit in the lit shader");
             return nullptr;
@@ -656,6 +659,7 @@ struct GpuTier::Impl {
         slot->pbr = fglUniformLocation(sh, "u_pbr");
         slot->tex = fglUniformLocation(sh, "u_texture");
         slot->time = fglUniformLocation(sh, "u_time");
+        slot->cut = fglUniformLocation(sh, "u_cut");
         slot->setup = 0;
         return slot;
     }
@@ -675,17 +679,28 @@ struct GpuTier::Impl {
 
     // The geometry pass program of an item with a @displace hook, or null (none, or it did not compile: the
     // built-in program is used).
+    // An item's material bits in the geometry passes: 1 alpha cut-out (needs its texture), 2 two-sided.
+    static uint8_t item_mat(const DrawItem& it) {
+        return (uint8_t)((it.alpha_cut > 0.0f && item_textured(it) ? 1 : 0) | (it.double_sided ? 2 : 0));
+    }
+
+    // The geometry pass program of an item with a @displace hook, an alpha cut-out or (the normal pass) two
+    // sides, or null (none of those, or it did not compile: the built-in program is used).
     FGLShader* hook_prog(const DrawItem& it, HookPass pass) {
         const ShaderSections* sec = item_sections(it);
-        if (!sec || !sec->displace) return nullptr;
+        const char* disp = sec ? sec->displace : nullptr;
+        uint8_t mat = item_mat(it);
+        if (pass != HP_NORMAL) mat &= 1;                    // two sides only change the normals
+        if (!disp && !mat) return nullptr;
+        uint64_t id = (disp ? sec->hook_id : 0x5bd1e995ull) * 31u + mat;
         HookProgs* hs = nullptr;
-        for (HookProgs& h : hook_p) if (h.id == sec->hook_id) { hs = &h; break; }
+        for (HookProgs& h : hook_p) if (h.id == id) { hs = &h; break; }
         if (!hs) {
             hs = &hook_p[0];
             for (HookProgs& h : hook_p) { if (!h.id) { hs = &h; break; } if (h.last < hs->last) hs = &h; }
             for (FGLShader*& p : hs->sh) drop(&p);
             *hs = HookProgs();
-            hs->id = sec->hook_id;
+            hs->id = id;
         }
         hs->last = frame;
         if (hs->sh[pass]) return hs->sh[pass];
@@ -701,10 +716,11 @@ struct GpuTier::Impl {
         case HP_SHADOW_OVER: shaders::hq_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_shadow_over_fragment(fs, shaders::kHqSourceBytes); break;
         default: shaders::hq_material_vertex(vs, shaders::kHqSourceBytes); shaders::hq_material_fragment(fs, shaders::kHqSourceBytes); break;
         }
-        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, sec->displace, false);
+        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, disp, (mat & 1) != 0) &&
+                  hook_material(fs, shaders::kHqSourceBytes, (mat & 1) != 0, (mat & 2) != 0);
         char keep[256] = {};
         if (err && err_cap) snprintf(keep, sizeof keep, "%s", err);
-        if (ok) ok = compile(&hs->sh[pass], vs, fs, "displaced");
+        if (ok) ok = compile(&hs->sh[pass], vs, fs, disp ? "displaced" : "material");
         free(vs);
         free(fs);
         if (!ok) {
@@ -716,6 +732,8 @@ struct GpuTier::Impl {
             return nullptr;
         }
         hs->time[pass] = fglUniformLocation(hs->sh[pass], "u_time");
+        hs->cut[pass] = fglUniformLocation(hs->sh[pass], "u_cut");
+        hs->tex[pass] = fglUniformLocation(hs->sh[pass], "u_texture");
         return hs->sh[pass];
     }
 
@@ -779,6 +797,13 @@ struct GpuTier::Impl {
                 cur = p;
             }
             per_item(p, *it);
+            if (p != base)
+                for (HookProgs& hs : hook_p)
+                    if (hs.sh[pass] == p && hs.cut[pass] >= 0) {
+                        fglUniform4f(p, hs.cut[pass], it->alpha_cut, 0, 0, 0);
+                        if (hs.tex[pass] >= 0 && hp->texture)
+                            fglUniformTexture(gl, p, hs.tex[pass], hp->texture(hp->user, it->texture_path, *sp), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+                    }
             hp->draw_mesh(hp->user, *it, false, &failed);
         }
         return !failed;
@@ -818,8 +843,8 @@ struct GpuTier::Impl {
     }
 
     // A textured and / or hooked unlit program for unlit_p's slot.
-    UnlitProg* unlit_material(int slot, bool tex, const ShaderSections* sec) {
-        uint64_t hook = sec && sec->hooks() ? sec->hook_id : 0;
+    UnlitProg* unlit_material(int slot, bool tex, const ShaderSections* sec, uint8_t mat = 0) {
+        uint64_t hook = (sec && sec->hooks() ? sec->hook_id : 0) * 31u + mat;
         UnlitProg* up = nullptr;
         for (UnlitProg& u : unlit_m) if (u.sh && u.slot == slot && u.tex == tex && u.hook == hook && u.key == pf->key) { up = &u; break; }
         if (up) { up->last = frame; return up; }
@@ -833,9 +858,10 @@ struct GpuTier::Impl {
         bool fog = (slot & 2) != 0, hdr = (slot & 1) != 0;
         shaders::hq_unlit_vertex(vs, shaders::kHqSourceBytes);
         shaders::hq_unlit_fragment(fs, shaders::kHqSourceBytes, fog, hdr, pf->key);
-        const char* disp = hook ? sec->displace : nullptr;
-        const char* surf = hook ? sec->surface : nullptr;
-        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, disp, true) && hook_fragment(fs, shaders::kHqSourceBytes, surf, tex);
+        const char* disp = sec && sec->hooks() ? sec->displace : nullptr;
+        const char* surf = sec && sec->hooks() ? sec->surface : nullptr;
+        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, disp, true) && hook_fragment(fs, shaders::kHqSourceBytes, surf, tex) &&
+                  hook_material(fs, shaders::kHqSourceBytes, (mat & 1) != 0, false);
         if (ok) ok = compile(&up->sh, vs, fs, "unlit (material)");
         free(vs);
         free(fs);
@@ -875,6 +901,8 @@ struct GpuTier::Impl {
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
             hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
+            hash = fnv(hash, &it.alpha_cut, sizeof it.alpha_cut);
+            if (it.alpha_cut > 0.0f && it.texture_path) hash = fnv(hash, it.texture_path, strlen(it.texture_path));
             if (!it.mesh.key) cacheable = false;
         }
         *count = n;
@@ -1128,6 +1156,8 @@ struct GpuTier::Impl {
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
             hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
+            hash = fnv(hash, &it.alpha_cut, sizeof it.alpha_cut);
+            if (it.alpha_cut > 0.0f && it.texture_path) hash = fnv(hash, it.texture_path, strlen(it.texture_path));
             if (!it.mesh.key || item_displaced(it)) cacheable = false;
         }
         hash = fnv(hash, &size, sizeof size);
@@ -1500,11 +1530,12 @@ struct GpuTier::Impl {
         };
         LitProg* base_lit = nullptr;
         // The lit program of an item; a material variant that does not compile falls back to the built-in one.
-        auto lit_for = [&](bool tex, const ShaderSections* sec, const char* path) -> LitProg* {
+        auto lit_for = [&](bool tex, const ShaderSections* sec, const char* path, uint8_t mat) -> LitProg* {
             shaders::HqLitKey k = key;
             k.tex = tex;
             k.hook = sec && sec->hooks() ? sec->hook_id : 0;
-            for (int attempt = 0; attempt < 2 && (k.tex || k.hook); attempt++) {
+            k.mat = mat;
+            for (int attempt = 0; attempt < 2 && (k.tex || k.hook || k.mat); attempt++) {
                 if (!lit_is_bad(k)) {
                     char keep[256] = {};
                     if (err && err_cap) snprintf(keep, sizeof keep, "%s", err);
@@ -1545,13 +1576,13 @@ struct GpuTier::Impl {
                 full = p != nullptr;
             }
             if (!p && it.unlit) {
-                if (tex || (sec && sec->hooks())) {
-                    up = unlit_material(ui, tex, sec);
+                if (tex || (sec && sec->hooks()) || (item_mat(it) & 1)) {
+                    up = unlit_material(ui, tex, sec, item_mat(it) & 1);
                     if (!up && gate && gate->deferred) return false;
                 }
                 p = up ? up->sh : unlit;
             } else if (!p) {
-                lp = lit_for(tex, sec, it.shader_path);
+                lp = lit_for(tex, sec, it.shader_path, item_mat(it));
                 if (!lp) return false;
                 p = lp->sh;
             }
@@ -1565,10 +1596,12 @@ struct GpuTier::Impl {
             if (lp) {
                 fglUniform4f(p, lp->mat, it.color.x, it.color.y, it.color.z, it.roughness);
                 fglUniform4f(p, lp->pbr, fclamp(it.metallic, 0.0f, 1.0f), 0, 0, 0);
+                if (lp->cut >= 0) fglUniform4f(p, lp->cut, it.alpha_cut, 0, 0, 0);
                 if (lp->tex >= 0 && host.texture)
                     fglUniformTexture(gl, p, lp->tex, host.texture(host.user, it.texture_path, s), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             } else {
                 u4(p, "u_mat", it.color.x, it.color.y, it.color.z, it.roughness);
+                u4(p, "u_cut", it.alpha_cut, 0, 0, 0);
                 int tl = fglUniformLocation(p, "u_texture");
                 if (tl >= 0 && host.texture) fglUniformTexture(gl, p, tl, host.texture(host.user, it.texture_path, s), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             }

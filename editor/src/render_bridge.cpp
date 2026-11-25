@@ -52,6 +52,8 @@ void RenderBridge::build(Scene& sc, const Mat4& view, const Mat4& proj, const Ve
                 d.texture_path = o.texture_path[0] ? o.texture_path : (pt.texture[0] ? pt.texture : nullptr);
                 d.shader_path = o.shader_path;
                 d.color = Vec3(pt.color.x * tint.x, pt.color.y * tint.y, pt.color.z * tint.z);
+                d.alpha_cut = o.texture_path[0] ? 0.0f : pt.alpha_cut;     // an object texture replaces the material's
+                d.double_sided = pt.double_sided;
                 d.roughness = o.roughness;
                 d.metallic = o.metallic;
                 d.unlit = o.unlit;

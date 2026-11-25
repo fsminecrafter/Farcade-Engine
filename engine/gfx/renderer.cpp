@@ -72,6 +72,7 @@ struct Locs {
     int lift = -1, gamma = -1, gain = -1, grain = -1;
     int gi = -1, gi0 = -1, gi1 = -1;
     int time = -1;                          // custom item shaders: u_time (seconds, delta, frame, 0)
+    int cut = -1;                           // alpha cut-out threshold (u_cut.x)
 };
 
 struct Shader {
@@ -87,7 +88,8 @@ struct Variant {
     shaders::PostKey key;
     bool gi = false;
     uint64_t hook = 0;                      // ShaderSections::hook_id spliced in (0 = none)
-    bool unlit = false;                     // a hooked unlit shader (hook != 0 only)
+    uint8_t mat = 0;                        // material features: 1 alpha cut-out, 2 two-sided
+    bool unlit = false;                     // a hooked / material unlit shader (hook or mat only)
     uint64_t setup = 0;                     // the frame its frame uniforms were set for (+1)
     uint64_t last_use = 0;
     bool used = false;
@@ -307,8 +309,9 @@ struct Renderer::Impl {
         d.page_flip = 0;
         gl = fglCreateContext(&d);
         if (!gl) { set_error("FarcadeGL: cannot create the render surfaces"); return false; }
-        static const FGLAttribute attrs[3] = { { 0, 3 }, { 12, 3 }, { 24, 2 } };
-        fglVertexLayout(gl, kVertexBytes, 3, attrs);
+        // FGSL's attribute locations by name: position 0, normal 1, color 2 (not used), texcoord 3.
+        static const FGLAttribute attrs[4] = { { 0, 3 }, { 12, 3 }, { 0, 0 }, { 24, 2 } };
+        fglVertexLayout(gl, kVertexBytes, 4, attrs);
         return true;
     }
 
@@ -360,6 +363,7 @@ struct Renderer::Impl {
         l->gi0 = fglUniformLocation(sh, "u_gi0");
         l->gi1 = fglUniformLocation(sh, "u_gi1");
         l->time = fglUniformLocation(sh, "u_time");
+        l->cut = fglUniformLocation(sh, "u_cut");
     }
 
     CompileGate gate;
@@ -423,7 +427,7 @@ struct Renderer::Impl {
         uint32_t* pixels = (uint32_t*)malloc((size_t)w * (size_t)h * sizeof(uint32_t));
         if (!pixels) { stbi_image_free(rgba); set_error("out of memory decoding texture"); return 0; }
         for (size_t i = 0, n = (size_t)w * h; i < n; i++)
-            pixels[i] = ((uint32_t)rgba[i * 4] << 16) | ((uint32_t)rgba[i * 4 + 1] << 8) | rgba[i * 4 + 2];
+            pixels[i] = ((uint32_t)rgba[i * 4 + 3] << 24) | ((uint32_t)rgba[i * 4] << 16) | ((uint32_t)rgba[i * 4 + 1] << 8) | rgba[i * 4 + 2];
         stbi_image_free(rgba);
         FGLTexture texture = fglCreateTexture(gl, (uint32_t)w, (uint32_t)h, pixels);
         free(pixels);
@@ -663,7 +667,7 @@ struct Renderer::Impl {
     }
 
     bool make_shaders() {
-        const uint32_t white = 0x00FFFFFFu;
+        const uint32_t white = 0xFFFFFFFFu;                 // opaque (alpha cut-out reads the top byte)
         white_texture = fglCreateTexture(gl, 1, 1, &white);
         if (!white_texture) { set_error("FarcadeGL: cannot create the default texture"); return false; }
         // The sky: one triangle that covers the screen.
@@ -682,11 +686,11 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Variant* lit_slot(int nd, int np, int ns, const shaders::PostKey& key, bool gi, const ShaderSections* hk, bool unlit_v) {
+    Variant* lit_slot(int nd, int np, int ns, const shaders::PostKey& key, bool gi, const ShaderSections* hk, bool unlit_v, uint8_t mat = 0) {
         uint64_t hook = hk ? hk->hook_id : 0;
-        if (!hook) unlit_v = false;
+        if (!hook && !mat) unlit_v = false;
         for (Variant& v : variants) {
-            if (v.used && v.hook == hook && v.unlit == unlit_v && v.key == key &&
+            if (v.used && v.hook == hook && v.mat == mat && v.unlit == unlit_v && v.key == key &&
                 (unlit_v || (v.nd == nd && v.np == np && v.ns == ns && v.gi == gi))) { v.last_use = frame; return &v; }
         }
         Variant* slot = nullptr;
@@ -708,7 +712,9 @@ struct Renderer::Impl {
             shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key, gi);
         }
         // The hooks (shader_file.h): the base shaders already sample u_texture.
-        if (hk && (!hook_vertex(vs, shaders::kSourceBytes, hk->displace, true) || !hook_fragment(fs, shaders::kSourceBytes, hk->surface, false))) {
+        if ((hk || mat) && (!hook_vertex(vs, shaders::kSourceBytes, hk ? hk->displace : nullptr, true) ||
+                            !hook_fragment(fs, shaders::kSourceBytes, hk ? hk->surface : nullptr, false) ||
+                            !hook_material(fs, shaders::kSourceBytes, (mat & 1) != 0, (mat & 2) != 0))) {
             free(vs); free(fs);
             set_error("FarcadeGL: a shader hook does not fit in the shader source");
             return nullptr;
@@ -720,7 +726,7 @@ struct Renderer::Impl {
         if (!ok) return nullptr;
         slot->shader = s;
         slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key; slot->gi = gi;
-        slot->hook = hook; slot->unlit = unlit_v; slot->setup = 0;
+        slot->hook = hook; slot->mat = mat; slot->unlit = unlit_v; slot->setup = 0;
         slot->used = true;
         slot->last_use = frame;
         return slot;
@@ -1104,7 +1110,7 @@ struct Renderer::Impl {
         // inside out: draw both faces, the depth test keeps the right ones.
         const float* m = it.model.m;
         Vec3 c0(m[0], m[1], m[2]), c1(m[4], m[5], m[6]), c2(m[8], m[9], m[10]);
-        if (dot(c0, cross(c1, c2)) < 0.0f) fglDisable(gl, FGL_CULL_FACE);
+        if (it.double_sided || dot(c0, cross(c1, c2)) < 0.0f) fglDisable(gl, FGL_CULL_FACE);
         else fglEnable(gl, FGL_CULL_FACE);
         fglSetModel(gl, to_fgl(it.model));
         uint32_t first = 0;
@@ -1129,6 +1135,7 @@ struct Renderer::Impl {
         fglUniform4f(s.sh, s.loc.mat, it.color.x, it.color.y, it.color.z, it.roughness);
         fglUniformTexture(gl, s.sh, s.loc.texture, texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
         if (s.loc.time >= 0) fglUniform4f(s.sh, s.loc.time, (float)item_time, item_dt, (float)frame, 0.0f);
+        if (s.loc.cut >= 0) fglUniform4f(s.sh, s.loc.cut, it.alpha_cut, 0.0f, 0.0f, 0.0f);
         return draw_mesh(it, true, failed);
     }
 
@@ -1388,18 +1395,22 @@ struct Renderer::Impl {
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
             Shader* item_shader = it.unlit ? &unlit_s : lit;
-            if (it.shader_path && it.shader_path[0]) {
-                // Hooks: the built-in shader with them spliced in (lights and all); else the file's full shader.
-                const ShaderSections* sec = sections_for(it.shader_path, scene);
+            const uint8_t mat = (uint8_t)((it.alpha_cut > 0.0f ? 1 : 0) | (it.double_sided ? 2 : 0));
+            const ShaderSections* sec = it.shader_path && it.shader_path[0] ? sections_for(it.shader_path, scene) : nullptr;
+            if (sec || mat) {
+                // Hooks and material features (cut-out, two-sided): the built-in shader with them spliced in
+                // (lights and all); else the file's full shader.
                 Variant* v = nullptr;
-                if (sec && sec->hooks() && !hook_is_bad(sec->hook_id)) {
-                    v = lit_slot(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on, sec, it.unlit);
+                const bool hooks = sec && sec->hooks() && !hook_is_bad(sec->hook_id);
+                const bool full = sec && sec->full() && !sec->hooks();
+                if (hooks || (mat && !full)) {
+                    v = lit_slot(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on, hooks ? sec : nullptr, it.unlit, mat);
                     if (!v) {
                         if (gate.deferred) { failed = true; break; }
                         // A hook that does not compile: the object is drawn without it, with a warning.
                         snprintf(warning, sizeof warning, "shader %s: %s", it.shader_path, error);
                         error[0] = 0;
-                        bad_hooks[bad_hook_next++ % 16] = sec->hook_id;
+                        if (hooks) bad_hooks[bad_hook_next++ % 16] = sec->hook_id;
                         if (it.unlit && !unlit_s.sh && !use_shader(&unlit_s, false, pf.key)) { failed = true; break; }
                         if (it.unlit) set_post(unlit_s, scene.post);
                         if (!it.unlit && !lit) {

@@ -26,6 +26,8 @@ struct ModelPart {
     uint32_t vertex_count = 0;
     Vec3 color = Vec3(1, 1, 1);         // the material's base color factor (sRGB-ish)
     char texture[320] = {};             // "mof:<model path>#<texture index>" for model_asset_reader, or ""
+    float alpha_cut = 0.0f;             // the material's alpha mask cutoff (MASK, or BLEND drawn as a 0.5 mask); 0 = opaque
+    bool double_sided = false;
     uint32_t mesh_index = 0;            // into mof.meshes
     uint32_t submesh_index = 0;         // into mof.submeshes
     uint32_t material = 0xFFFFFFFFu;    // into mof.materials, or MOF_NONE

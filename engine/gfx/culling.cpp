@@ -280,7 +280,7 @@ int Culler::run(const RenderScene& s, bool occlusion, int* out, CullStats* st) {
             for (int i = 0; i < n; i++) {
                 if (!state_[i]) continue;
                 const DrawItem& it = s.items[i];
-                if (!it.occluder || it.foliage || (it.shader_path && it.shader_path[0])) continue;
+                if (!it.occluder || it.foliage || it.alpha_cut > 0.0f || (it.shader_path && it.shader_path[0])) continue;
                 bool has_occ = it.mesh.occluder_positions && it.mesh.occluder_count;
                 if (!has_occ && (!it.mesh.positions || it.mesh.vertex_count > kMaxOccluderVertices)) continue;
                 Vec3 c = (wlo_[i] + whi_[i]) * 0.5f;

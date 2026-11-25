@@ -52,8 +52,9 @@ struct HqLitKey {
     // a .fshader (ShaderSections::hook_id, 0 = none).
     bool tex = false;
     uint64_t hook = 0;
+    uint8_t mat = 0;                                // 1 alpha cut-out (with tex), 2 two-sided
     bool operator==(const HqLitKey& o) const {
-        return tex == o.tex && hook == o.hook && post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return tex == o.tex && hook == o.hook && mat == o.mat && post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }

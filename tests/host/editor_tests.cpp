@@ -1809,6 +1809,76 @@ int main() {
         CHECK(strstr(ed.project_dir, "other-project") != nullptr, "the project is open (%s)", ed.project_dir);
     }
 
+    // ---- Shift + double-click selects similar objects; edits go to every selected object
+    {
+        ed.stop();
+        ed.new_scene();
+        ObjectId c1 = ed.create_object("C1", MeshKind::Cube, Vec3(-2, 0.5f, 0));
+        ObjectId c2 = ed.create_object("C2", MeshKind::Cube, Vec3(2, 0.5f, 0));
+        ObjectId c3 = ed.create_object("C3", MeshKind::Cube, Vec3(0, 0.5f, -3));
+        ObjectId sp = ed.create_object("S", MeshKind::Sphere, Vec3(0, 0.5f, 2));
+        ObjectId l1 = ed.create_light(LightType::Point, Vec3(0, 3, 0));
+        ObjectId l2 = ed.create_light(LightType::Point, Vec3(3, 3, 0));
+        ObjectId l3 = ed.create_light(LightType::Spot, Vec3(-3, 3, 0));
+        ed.scene.get(c3)->visible = false;
+        ed.camera.target = Vec3(0, 0.5f, 0);
+        ed.camera.yaw = 0;
+        ed.camera.pitch = 25;
+        ed.camera.distance = 10;
+        ed.tool = Tool::Select;
+        ed.terrain_tool = Editor::TerrainTool::None;
+        ed.scene.clear_selection();
+        frames(3);
+        float x1, y1;
+        object_screen(c1, &x1, &y1);
+        ev_key(platform::KEY_LSHIFT, true, platform::MOD_SHIFT); frames(1);
+        ev_move(x1, y1); frames(1);
+        ev_button(x1, y1, 0, true); frames(1);
+        ev_button(x1, y1, 0, false); frames(1);
+        ev_button(x1, y1, 0, true); frames(1);
+        ev_button(x1, y1, 0, false); frames(1);
+        ev_key(platform::KEY_LSHIFT, false, 0); frames(2);
+        CHECK(ed.scene.is_selected(c1) && ed.scene.is_selected(c2) && !ed.scene.is_selected(c3) && !ed.scene.is_selected(sp) &&
+              ed.scene.active() == c1, "Shift + double-click selects the visible cubes, not the sphere (%d selected)", ed.scene.selected_count());
+        ed.scene.clear_selection();
+        CHECK(ed.select_similar(l1) == 2 && ed.scene.is_selected(l2) && !ed.scene.is_selected(l3), "point lights, not the spot light");
+        // Edits: the active object's changes go to the others that have the same thing.
+        ed.scene.clear_selection();
+        ed.scene.select_add(c2);
+        ed.scene.select_add(sp);
+        ed.scene.select_add(c1);
+        Object before = *ed.scene.get(c1);
+        Object* a = ed.scene.get(c1);
+        a->color = Vec3(0.1f, 0.9f, 0.2f);
+        a->roughness = 0.13f;
+        a->scale.y = 3.0f;
+        ed.scene.add_module(c1, ModuleKind::RigidBody3D);
+        a->modules.rigidbody3d.mass = 7.0f;
+        ed.apply_edit_to_selection(before, *a);
+        Object* b = ed.scene.get(c2);
+        Object* s2 = ed.scene.get(sp);
+        CHECK(b->color.y > 0.89f && s2->color.y > 0.89f && b->roughness == 0.13f && s2->roughness == 0.13f, "look goes to all");
+        CHECK(b->scale.y == 3.0f && b->scale.x == 1.0f && b->position.x == 2.0f, "scale per axis, positions stay");
+        CHECK(b->modules.has(ModuleKind::RigidBody3D) && b->modules.rigidbody3d.mass == 7.0f && s2->modules.has(ModuleKind::RigidBody3D),
+              "an added module (with its values) goes to all");
+        CHECK(!strcmp(b->name, "C2"), "names stay");
+        before = *a;
+        a->modules.rigidbody3d.mass = 2.0f;
+        a->modules.rigidbody3d.velocity.x = 5.0f;
+        b->modules.rigidbody3d.velocity.z = -4.0f;
+        ed.apply_edit_to_selection(before, *a);
+        CHECK(b->modules.rigidbody3d.mass == 2.0f && b->modules.rigidbody3d.velocity.x == 5.0f && b->modules.rigidbody3d.velocity.z == -4.0f,
+              "a module field, a vector per component");
+        // Through the Inspector: the Unlit switch with three selected.
+        frames(2);
+        bool was = ed.scene.get(c2)->unlit;
+        CHECK(click_ui("inspector:unlit"), "the Unlit switch");
+        frames(2);
+        CHECK(ed.scene.get(c1)->unlit != was && ed.scene.get(c2)->unlit != was && ed.scene.get(sp)->unlit != was, "the Inspector edits all three");
+        ed.new_scene();
+        frames(2);
+    }
+
     // ---- terrain: create, brush in the viewport, undo / redo, foliage, streaming, save and open
     {
         ed.stop();

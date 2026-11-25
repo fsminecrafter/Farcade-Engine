@@ -94,6 +94,7 @@ public:
     bool is_selected(ObjectId id) const;
     void select_only(ObjectId id);      // kNoObject clears
     void toggle(ObjectId id);           // shift-click
+    void select_add(ObjectId id);       // adds (when not selected) and makes it active
     void clear_selection();
     int selected_count() const { return sel_count_; }
     ObjectId selected(int i) const { return selection_[i]; }

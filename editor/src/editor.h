@@ -207,7 +207,16 @@ public:
     void open_project(const char* dir);
     void request_open_project(const char* dir);
     ObjectId create_kind(const char* name, ObjectKind kind, const Vec3& at, ObjectId parent = kNoObject);
-
+    // Shift + double-click (viewport or Hierarchy): adds every visible object similar to `id` to the selection
+    // (same kind; meshes of the same shape and model file; empties with the same modules, lights of the same
+    // type). Returns how many are now selected of them.
+    bool objects_similar(const Object& a, const Object& b) const;
+    int select_similar(ObjectId id);
+    // Editing several objects: the Inspector edits the active one; whatever changed is copied to the other
+    // selected objects that have it (fields of the same modules, a special object's settings to the same
+    // kind, script inputs of the same script). Names, ids, links' data files and "current" stay their own.
+    void apply_edit_to_selection(const Object& before, const Object& after);
+    bool suppress_release_ = false;     // a double-click was handled: its release is no click
     // ---- terrain (terrain_bridge.h). Generate replaces a Terrain object's data with a flat map at `level`
     // (world y) of size_x x size_z meters in chunks of chunk_size meters with `cells` grid cells a side;
     // with keep_center the object moves so the map's middle stays where it was. A history step (undo).

@@ -204,7 +204,7 @@ void Editor::panel_hierarchy() {
         }
     }
 
-    ObjectId clicked = kNoObject;
+    ObjectId clicked = kNoObject, similar = kNoObject;
     bool shift = ImGui::GetIO().KeyShift;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
@@ -225,7 +225,10 @@ void Editor::panel_hierarchy() {
         char key[32];
         snprintf(key, sizeof(key), "hier:%u", o.id);
         track(key);
-        if (hov && ImGui::IsMouseDoubleClicked(0)) frame_selection();
+        if (hov && ImGui::IsMouseDoubleClicked(0)) {
+            if (shift) similar = o.id;              // Shift + double-click: everything like it
+            else frame_selection();
+        }
         // Drag a row onto another to make it a child, onto "Scene" to take it out.
         if (ImGui::BeginDragDropSource()) {
             ObjectId id = o.id;
@@ -314,6 +317,7 @@ void Editor::panel_hierarchy() {
         if (shift) scene.toggle(clicked);
         else scene.select_only(clicked);
     }
+    if (similar != kNoObject) select_similar(similar);
     // Empty area: click clears, right-click creates.
     ImGui::InvisibleButton("##empty", ImVec2(-FLT_MIN, fmaxf_(ImGui::GetContentRegionAvail().y, 40)));
     if (ImGui::IsItemClicked(0) && !shift) scene.clear_selection();
@@ -1262,6 +1266,10 @@ void Editor::panel_inspector() {
     ImGui::Begin(FE_ICON_INSPECTOR "  Inspector###Inspector");
     int n = scene.selected_count();
     Object* o = scene.get(scene.active());
+    // Several selected: the edits made below to the active object go to the others too (end of this function).
+    static Object before;
+    ObjectId edited = o && n > 1 ? o->id : kNoObject;
+    if (edited) before = *o;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float fs = ImGui::GetFontSize();
     if (!o) {
@@ -1323,7 +1331,7 @@ void Editor::panel_inspector() {
         ImGui::AlignTextToFramePadding();
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         const char* kind_text = o->kind == ObjectKind::Mesh ? kinds[(int)o->mesh] : object_kind_name(o->kind);
-        if (n > 1) ImGui::Text("%s   #%u   +%d more selected", kind_text, o->id, n - 1);
+        if (n > 1) ImGui::Text("%s   #%u   +%d more: edits apply to all", kind_text, o->id, n - 1);
         else ImGui::Text("%s   #%u", kind_text, o->id);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
@@ -1433,6 +1441,9 @@ void Editor::panel_inspector() {
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pal.text_faint));
         ImGui::TextWrapped("%d script input%s link%s to this object.", links, links == 1 ? "" : "s", links == 1 ? "s" : "");
         ImGui::PopStyleColor();
+    }
+    if (edited) {
+        if (Object* now = scene.get(edited)) apply_edit_to_selection(before, *now);
     }
     ImGui::End();
 }

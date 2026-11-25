@@ -742,7 +742,19 @@ compiling:
     }
 
     // Click (without dragging) selects; shift-click adds or removes.
-    if (hovered && !gizmo_active && !brushing && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+    // Shift + double-click: every object like the one under the mouse joins the selection.
+    if (hovered && !gizmo_active && !brushing && io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        Ray pr = mouse_ray(v, io.MousePos);
+        float hd = 1e30f, td = 1e30f;
+        ObjectId hit = scene.pick(pr, &hd);
+        Vec3 thit;
+        ObjectId ter = pick_terrain(pr, &td, &thit);
+        if (ter != kNoObject && (hit == kNoObject || td < hd)) hit = ter;
+        if (hit != kNoObject) { select_similar(hit); suppress_release_ = true; }
+    }
+    if (suppress_release_ && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        suppress_release_ = false;
+    } else if (hovered && !gizmo_active && !brushing && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
         ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).x * ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).x +
                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).y * ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0).y < 16.0f) {
         Ray pr = mouse_ray(v, io.MousePos);

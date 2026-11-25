@@ -1563,4 +1563,119 @@ void Editor::shortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (playing()) stop(); else play(); }
 }
 
+// ---------------------------------------------------------------- similar objects, editing several
+
+// Similar: the same kind; meshes of the same shape (and the same model file); empties with the same modules
+// (lights of the same type).
+bool Editor::objects_similar(const Object& a, const Object& b) const {
+    if (a.kind != b.kind) return false;
+    switch (a.kind) {
+        case ObjectKind::Mesh:
+            if (a.mesh != b.mesh) return false;
+            return a.mesh != MeshKind::Model || !strcmp(a.model_path, b.model_path);
+        case ObjectKind::Empty:
+            if (a.modules.present != b.modules.present) return false;
+            if (a.modules.has(ModuleKind::Light) && a.modules.light.type != b.modules.light.type) return false;
+            return true;
+        default:
+            return true;
+    }
+}
+
+int Editor::select_similar(ObjectId id) {
+    Object* a = scene.get(id);
+    if (!a) return 0;
+    Object ref = *a;
+    int added = 0;
+    for (int i = 0; i < scene.count(); i++) {
+        Object& o = scene.at(i);
+        if (o.id == id || !scene.visible_in_tree(o) || !objects_similar(ref, o) || scene.is_selected(o.id)) continue;
+        scene.select_add(o.id);
+        added++;
+    }
+    scene.select_add(id);           // the one clicked stays active
+    const char* what = ref.kind == ObjectKind::Mesh ? (ref.mesh == MeshKind::Model ? path_filename(ref.model_path) : "objects of this shape")
+                                                    : object_kind_name(ref.kind);
+    log(LogLevel::Info, "Selected %d similar (%s): %d selected", added + 1, what, scene.selected_count());
+    return added + 1;
+}
+
+namespace {
+template <typename T> bool differs(const T& a, const T& b) { return memcmp(&a, &b, sizeof(T)) != 0; }
+}  // namespace
+
+void Editor::apply_edit_to_selection(const Object& before, const Object& after) {
+    if (scene.selected_count() < 2 || memcmp(&before, &after, sizeof(Object)) == 0) return;
+    for (int si = 0; si < scene.selected_count(); si++) {
+        Object* t = scene.get(scene.selected(si));
+        if (!t || t->id == after.id) continue;
+        bool same_kind = t->kind == after.kind;
+        // Transform: rotation as a whole, scale per axis (position moves them all by the same amount already).
+        if (differs(before.rotation, after.rotation) && after.kind != ObjectKind::Terrain) t->rotation = after.rotation;
+        for (int k = 0; k < 3; k++)
+            if ((&before.scale.x)[k] != (&after.scale.x)[k]) (&t->scale.x)[k] = (&after.scale.x)[k];
+        if (before.parent != after.parent && !scene.is_ancestor(t->id, after.parent) && t->id != after.parent) scene.set_parent(t->id, after.parent);
+        if (before.streaming != after.streaming) t->streaming = after.streaming;
+        if (before.visible != after.visible) t->visible = after.visible;
+        // Look and mesh (mesh objects).
+        if (after.kind == ObjectKind::Mesh && t->kind == ObjectKind::Mesh) {
+            if (before.mesh != after.mesh) t->mesh = after.mesh;
+            if (strcmp(before.model_path, after.model_path)) memcpy(t->model_path, after.model_path, sizeof t->model_path);
+            if (strcmp(before.texture_path, after.texture_path)) memcpy(t->texture_path, after.texture_path, sizeof t->texture_path);
+            if (strcmp(before.shader_path, after.shader_path)) memcpy(t->shader_path, after.shader_path, sizeof t->shader_path);
+            if (differs(before.color, after.color)) t->color = after.color;
+            if (before.roughness != after.roughness) t->roughness = after.roughness;
+            if (before.metallic != after.metallic) t->metallic = after.metallic;
+            if (before.unlit != after.unlit) t->unlit = after.unlit;
+            if (before.cast_shadows != after.cast_shadows) t->cast_shadows = after.cast_shadows;
+        }
+        // Modules: added or removed ones, then every field that changed (by the reflection tables). A special
+        // object's settings only go to objects of the same kind; the "current" flag and a terrain's data file
+        // and revision stay each object's own.
+        for (int k = 0; k < kModuleKindCount; k++) {
+            ModuleKind mk = (ModuleKind)k;
+            bool was = before.modules.has(mk), is = after.modules.has(mk);
+            if (!is_module(mk) && !same_kind) continue;
+            if (!was && is && is_module(mk) && !t->modules.has(mk)) {
+                if (scene.add_module(t->id, mk)) memcpy(t->modules.data(mk), after.modules.data(mk), module_info(mk).size);
+                continue;
+            }
+            if (was && !is && is_module(mk)) { scene.remove_module(t->id, mk); continue; }
+            if (!was || !is || !t->modules.has(mk)) continue;
+            const ModuleInfo& mi = module_info(mk);
+            const uint8_t* b = (const uint8_t*)before.modules.data(mk);
+            const uint8_t* a = (const uint8_t*)after.modules.data(mk);
+            uint8_t* d = (uint8_t*)t->modules.data(mk);
+            for (int f = 0; f < mi.field_count; f++) {
+                const FieldInfo& fi = mi.fields[f];
+                if (!strcmp(fi.name, "current") || (mk == ModuleKind::Terrain && (!strcmp(fi.name, "data") || !strcmp(fi.name, "revision"))))
+                    continue;
+                uint32_t sz = field_size(fi.type);
+                if (fi.type == FieldType::Color || fi.type == FieldType::Vec3) {
+                    for (int c = 0; c < 3; c++)         // per component: editing x leaves y and z of the others
+                        if (memcmp(b + fi.offset + c * 4, a + fi.offset + c * 4, 4)) memcpy(d + fi.offset + c * 4, a + fi.offset + c * 4, 4);
+                } else if (memcmp(b + fi.offset, a + fi.offset, sz)) {
+                    memcpy(d + fi.offset, a + fi.offset, sz);
+                }
+            }
+        }
+        // Script inputs: the same script (by file) on the other object gets the inputs that changed.
+        for (int s = 0; s < after.script_count && s < before.script_count; s++) {
+            const ScriptSlot& sb = before.scripts[s];
+            const ScriptSlot& sa = after.scripts[s];
+            if (strcmp(sb.path, sa.path)) continue;
+            ScriptSlot* ts = nullptr;
+            for (int j = 0; j < t->script_count && !ts; j++)
+                if (!strcmp(t->scripts[j].path, sa.path)) ts = &t->scripts[j];
+            if (!ts) continue;
+            for (int p = 0; p < sa.prop_count && p < sb.prop_count; p++) {
+                if (!differs(sb.props[p], sa.props[p])) continue;
+                if (ScriptProp* tp = ts->prop(sa.props[p].name)) {
+                    if (tp->type == sa.props[p].type) *tp = sa.props[p];
+                }
+            }
+        }
+    }
+}
+
 }  // namespace fe

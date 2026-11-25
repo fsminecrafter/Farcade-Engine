@@ -132,12 +132,14 @@ with a fixed hash, so the same paint always gives the same grass, and the
 
 ### A shader for a layer (wind sway)
 
-A layer's **Shader** replaces the models' shading with a custom `.fshader`
-(docs/graphics.md), like a mesh's Shader slot. Custom item shaders get
-`u_time` (x: seconds rendered, y: the frame's delta, z: the frame number), so
-a vertex shader can move the instances. `assets/samples/foliage/sway.fshader`
-is a ready sway: copy it into the project and put it in the Shader slot, or
-from a script:
+A layer's **Shader** is a `.fshader` (docs/graphics.md), like a mesh's Shader
+slot. For foliage it is usually a `@displace` hook: a function that moves each
+vertex, which the renderer runs in every pass that draws the instances
+(shadow maps, depth, normals, lighting). The grass, its shadows and its
+ambient occlusion all sway together, and every GPU tier effect stays on.
+Hooks get `u_time` (x: seconds rendered, y: the frame's delta, z: the frame
+number). `assets/samples/foliage/sway.fshader` is a ready sway: copy it into
+the project and put it in the Shader slot, or from a script:
 
 ```lua
 fe.assign_shader_to_foliage("grass", "shaders/sway.fshader")
@@ -145,14 +147,28 @@ fe.assign_shader_to_foliage("grass", "shaders/sway.fshader")
 
 The sample bends each instance more towards its tip, using the texture's v
 coordinate as the height (v = 1 at the base, v = 0 at the tip; its comments say
-how to flip it). Instances are merged into one mesh per block, so the shader
+how to flip it). Instances are merged into one mesh per block, so the hook
 sees terrain space positions; the sample uses them to give neighbours
 different phases.
 
-While any custom shader is visible, the frame is drawn on FarcadeGL's base
-path: the GPU tier's shadows, AO and fog are off for that frame. Use a sway on
-small or nearby layers, or turn it on only where the look matters more than
-those effects.
+The sample also gives the bent blades leaning normals (`displace_normal`),
+so their lighting changes as they sway.
+
+### Foliage shadows
+
+- **Density.** **Settings > Graphics > Shadows > Foliage**
+  (`foliage_shadow_density`) draws that share of each batch's instances into
+  the shadow maps. The instances are in random order, so the shadow thins
+  evenly. At 0 foliage casts no shadow.
+- **Cascades.** **Foliage cascades** (`foliage_shadow_cascades`) limits
+  foliage to the nearest sun cascades. Grass shadows are too small to see in
+  the far ones.
+- **Swaying layers.** A layer's own **Shadows** switch still decides whether
+  it casts at all. A swaying layer is drawn into the sun's cascades every
+  frame, but the rest of the scene is not: each cascade starts from a cached
+  copy of its static casters (docs/graphics.md, Cascaded sun shadows). The
+  Profiler shows these as "swaying only".
+- **Occlusion.** Swaying batches are not used as occluders.
 
 ### How millions of instances are drawn
 

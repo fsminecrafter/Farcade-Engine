@@ -425,8 +425,8 @@ struct FoliageLayer {
     float max_slope = 40.0f;            // degrees: steeper ground gets none
     bool align_to_slope = false;        // stand along the ground's normal (else straight up)
     bool cast_shadows = false;
-    // A custom .fshader material for every instance (a wind sway): it replaces the models' own look and gets
-    // u_time like screen shaders do. Empty = the models' textures and colours.
+    // A .fshader for every instance (a wind sway): its @displace / @surface hooks run in every pass, with u_time
+    // (gfx/shader_file.h). Empty = the models' textures and colours as they are.
     char shader[kPathMax] = {};
 };
 

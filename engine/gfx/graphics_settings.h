@@ -85,6 +85,11 @@ struct GraphicsSettings {
     // moving shadow casters in them lag by up to 3 frames).
     bool cascade_cache = true;
     bool soft_shadows = true;               // PCF filtering (also for point and spot shadows)
+    // Foliage in shadow maps: the share of each foliage batch's instances drawn into them (they are in random
+    // order, so this thins the shadow evenly; 0 = foliage casts none) and how many sun cascades, nearest first,
+    // it casts into (grass shadows are lost in far cascades anyway).
+    float foliage_shadow_density = 0.5f;    // 0..1
+    int foliage_shadow_cascades = 1;        // 1..3
     // Point and spot light shadows: a shadow atlas of 4 x 4 tiles. A spot
     // light takes one tile, a point light six (a cube). The lights with
     // Shadows on that are brightest near the camera get them first.
@@ -130,6 +135,7 @@ struct GraphicsSettings {
 //   shadows           off | single | cascades      shadow_cascades 2..3 (with cascades)
 //   shadow_resolution 512 | 1024 | 2048 | 4096     shadow_distance 1..2000 (m)
 //   soft_shadows      bool             cascade_cache       bool
+//   foliage_shadow_density 0..1        foliage_shadow_cascades 1..3
 //   local_shadows     bool             local_shadow_lights 1..4     local_shadow_resolution 512..4096
 //   ao                off | ssao | gtao       ao_radius 0.05..5    ao_strength 0..2
 //   aa                off | fxaa | smaa | taa
@@ -203,6 +209,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             break;
         case GraphicsPreset::Medium:
             shadows = true; shadow_resolution = 1024; soft_shadows = false; shadow_distance = 30; shadow_cascades = 2;
+            foliage_shadow_density = 0.35f; foliage_shadow_cascades = 1;
             ambient_occlusion = false; bloom = true; antialiasing = true; pbr = true;
             local_shadows = false; bloom_mode = BloomMode::Simple;
             gi_mode = GiMode::Hemisphere; aa_mode = AAMode::FXAA; ao_mode = AOMode::SSAO; ssr = false;
@@ -211,6 +218,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             break;
         case GraphicsPreset::High:
             shadows = true; shadow_resolution = 2048; soft_shadows = true; shadow_distance = 40; shadow_cascades = 3;
+            foliage_shadow_density = 0.5f; foliage_shadow_cascades = 1;
             ambient_occlusion = true; ao_radius = 0.5f; ao_strength = 1.0f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 2; local_shadow_resolution = 1024;
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Normal;
@@ -220,6 +228,7 @@ inline void GraphicsSettings::apply_preset(GraphicsPreset p) {
             break;
         case GraphicsPreset::Ultra:
             shadows = true; shadow_resolution = 4096; soft_shadows = true; shadow_distance = 80; shadow_cascades = 3;
+            foliage_shadow_density = 0.75f; foliage_shadow_cascades = 2;
             ambient_occlusion = true; ao_radius = 0.7f; ao_strength = 1.2f; bloom = true; antialiasing = true; pbr = true;
             local_shadows = true; local_shadow_lights = 4; local_shadow_resolution = 2048;
             gi_mode = GiMode::Probes; gi_density = GiDensity::Normal; gi_update = GiUpdate::Fast;

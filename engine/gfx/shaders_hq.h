@@ -48,8 +48,12 @@ struct HqLitKey {
     bool local_soft = false;                        // 4 taps, else 1
     PostKey post;                                   // tonemap, grading, grain (shaders_post.h)
     bool gi = false;                                // probe GI (shaders.h emit_gi_lookup) replaces the hemisphere diffuse ambient
+    // Materials (spliced in by the tier, shader_file.h): the albedo is multiplied by u_texture; the hooks of
+    // a .fshader (ShaderSections::hook_id, 0 = none).
+    bool tex = false;
+    uint64_t hook = 0;
     bool operator==(const HqLitKey& o) const {
-        return post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
+        return tex == o.tex && hook == o.hook && post == o.post && cascades == o.cascades && gi == o.gi && nd == o.nd && np == o.np && ns == o.ns && pbr == o.pbr && shadow == o.shadow &&
                shadow_light == o.shadow_light && ao == o.ao && fog == o.fog && hdr == o.hdr &&
                nps == o.nps && nss == o.nss && local_soft == o.local_soft;
     }
@@ -69,6 +73,9 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post, Cloud
 // linear depth for SSAO (u_pp.x = 1 / far).
 void hq_shadow_vertex(char* out, size_t cap);
 void hq_shadow_fragment(char* out, size_t cap);
+// The same, drawn over a copy of the static casters' map (sampler u_static, u_sp.xy = 1 / its size): a
+// fragment behind what the copy holds is discarded, so the tile ends up with the nearer of the two.
+void hq_shadow_over_fragment(char* out, size_t cap);
 void pp_white_fragment(char* out, size_t cap);                 // fills with white (clears a shadow tile)
 // Point and spot shadow casters into the atlas: radial distance to the light
 // (u_lp: xyz light position, w 1 / range), packed in 24 bits.

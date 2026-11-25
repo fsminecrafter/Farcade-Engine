@@ -202,10 +202,9 @@ m.texture = self.skin
 ```
 
 - Roughness, metal and shadows show only with FarcadeGL's GPU tier. Color,
-  unlit and visible show with every renderer. Texture and custom shader
-  assignments are rendered by FarcadeGL's base renderer; while any such
-  material is visible, the advanced GPU-tier effects are not run for that
-  frame.
+  unlit, visible, textures and shaders show with every renderer: a shader's
+  `@displace` and `@surface` hooks run inside the GPU tier's passes, and a
+  full custom shader draws its own object (docs/graphics.md).
 - Changes made in Play are visible in the editor while playing and are put
   back on Stop, like everything else.
 - A wrong type or an unknown field raises an error naming the field.

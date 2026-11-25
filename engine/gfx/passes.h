@@ -12,6 +12,7 @@
 #include "gfx/shaders_hq.h"
 #include "gfx/post_stack.h"
 #include "gfx/clouds.h"
+#include "gfx/shader_file.h"
 
 #if defined(FE_HOST)
 #include "gfx/host/farcadegl_host.h"
@@ -63,6 +64,14 @@ struct PassHost {
     CloudFrame clouds;
     FGLTexture cloud_noise = 0, cloud_weather = 0;
     uint8_t* cloud_ok = nullptr;
+    // Materials: an item's .fshader sections (hooks spliced into every pass, or a full shader drawn as it is in
+    // the lit pass; null: none or unreadable) and its texture (the white one when it has none). u_time of
+    // hooked and custom shaders: seconds, delta, frame.
+    const ShaderSections* (*sections)(void* user, const char* path, const RenderScene& scene) = nullptr;
+    FGLTexture (*texture)(void* user, const char* path, const RenderScene& scene) = nullptr;
+    float time[4] = {};
+    // A material that does not compile (its object is drawn the built-in way): told once per program.
+    void (*warn)(void* user, const char* text) = nullptr;
 };
 
 // The clouds' uniforms and textures on a sky shader that has them compiled in.

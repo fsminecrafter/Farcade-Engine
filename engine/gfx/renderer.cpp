@@ -50,7 +50,7 @@ constexpr uint32_t kChunkVertices = 600000;         // a buffer holds up to 16 M
 constexpr int kMaxChunks = 8;
 constexpr int kMaxCachedBuffers = 2048;             // the kernel allows 4096 per program
 constexpr int kMaxTempBuffers = 1024;
-constexpr int kMaxVariants = 12;                    // lit shaders kept
+constexpr int kMaxVariants = 20;                    // lit shaders kept (hooked ones too)
 constexpr uint32_t kCommandBudget = 900 * 1024;     // submit before FGPU_MAX_COMMAND_BYTES (1 MiB)
 constexpr uint32_t kUploadSlice = 8190;             // vertices converted per upload call (a multiple of 3)
 
@@ -86,8 +86,19 @@ struct Variant {
     int nd = 0, np = 0, ns = 0;
     shaders::PostKey key;
     bool gi = false;
+    uint64_t hook = 0;                      // ShaderSections::hook_id spliced in (0 = none)
+    bool unlit = false;                     // a hooked unlit shader (hook != 0 only)
+    uint64_t setup = 0;                     // the frame its frame uniforms were set for (+1)
     uint64_t last_use = 0;
     bool used = false;
+};
+
+// A .fshader's sections (shader_file.h), read once per path.
+struct SectionsEntry {
+    char path[256] = {};
+    ShaderSections s;
+    bool bad = false;                       // could not be read or parsed (warned once)
+    uint64_t last_use = 0;
 };
 
 struct TextureEntry {
@@ -272,6 +283,10 @@ struct Renderer::Impl {
     FGLTexture white_texture = 0;
     TextureEntry textures[128];
     CustomShaderEntry custom_shaders[32];
+    SectionsEntry sections[32];
+    uint64_t bad_hooks[16] = {};            // hook sets whose base tier shader did not compile (drawn without them)
+    int bad_hook_next = 0;
+    bool hook_is_bad(uint64_t id) const { for (uint64_t b : bad_hooks) if (b == id) return true; return false; }
 
     void set_error(const char* what, int code = 0) {
         if (code) snprintf(error, sizeof error, "%s (error %d)", what, code);
@@ -425,6 +440,40 @@ struct Renderer::Impl {
         slot->missing = false;
         slot->last_use = frame;
         return texture;
+    }
+
+    // The sections of a .fshader (hooks and / or a full shader), cached by path; null when the file cannot be
+    // read or parsed (a warning says why, once).
+    const ShaderSections* sections_for(const char* path, const RenderScene& scene) {
+        for (SectionsEntry& e : sections)
+            if (e.path[0] && strcmp(e.path, path) == 0) { e.last_use = frame; return e.bad ? nullptr : &e.s; }
+        SectionsEntry* slot = &sections[0];
+        for (SectionsEntry& e : sections) { if (!e.path[0]) { slot = &e; break; } if (e.last_use < slot->last_use) slot = &e; }
+        free_shader_sections(&slot->s);
+        *slot = SectionsEntry();
+        snprintf(slot->path, sizeof slot->path, "%s", path);
+        slot->last_use = frame;
+        size_t size = 0;
+        char* source = scene.read_asset ? (char*)scene.read_asset(path, &size, scene.asset_user) : nullptr;
+        char perr[128] = {};
+        if (!source) snprintf(perr, sizeof perr, "cannot read it");
+        else if (!parse_shader_sections(source, size, &slot->s, perr, sizeof perr)) {}
+        free(source);
+        if (perr[0]) {
+            slot->bad = true;
+            snprintf(warning, sizeof warning, "shader %s: %s", path, perr);
+            return nullptr;
+        }
+        return &slot->s;
+    }
+
+    static const ShaderSections* tier_sections(void* user, const char* path, const RenderScene& scene) {
+        return static_cast<Impl*>(user)->sections_for(path, scene);
+    }
+    static FGLTexture tier_texture(void* user, const char* path, const RenderScene& scene) {
+        Impl* I = static_cast<Impl*>(user);
+        FGLTexture t = path && path[0] ? I->texture_for(path, scene) : 0;
+        return t ? t : I->white_texture;
     }
 
     Shader* custom_shader(const char* path, const RenderScene& scene) {
@@ -633,9 +682,12 @@ struct Renderer::Impl {
 
     // The lit shader for this mix of lights (compiled once, least recently
     // used ones are dropped).
-    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key, bool gi) {
+    Variant* lit_slot(int nd, int np, int ns, const shaders::PostKey& key, bool gi, const ShaderSections* hk, bool unlit_v) {
+        uint64_t hook = hk ? hk->hook_id : 0;
+        if (!hook) unlit_v = false;
         for (Variant& v : variants) {
-            if (v.used && v.nd == nd && v.np == np && v.ns == ns && v.key == key && v.gi == gi) { v.last_use = frame; return &v.shader; }
+            if (v.used && v.hook == hook && v.unlit == unlit_v && v.key == key &&
+                (unlit_v || (v.nd == nd && v.np == np && v.ns == ns && v.gi == gi))) { v.last_use = frame; return &v; }
         }
         Variant* slot = nullptr;
         for (Variant& v : variants) if (!v.used) { slot = &v; break; }
@@ -648,18 +700,35 @@ struct Renderer::Impl {
         char* vs = (char*)malloc(shaders::kSourceBytes);
         char* fs = (char*)malloc(shaders::kSourceBytes);
         if (!vs || !fs) { free(vs); free(fs); set_error("out of memory"); return nullptr; }
-        shaders::lit_vertex(vs, shaders::kSourceBytes);
-        shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key, gi);
+        if (unlit_v) {
+            shaders::unlit_vertex(vs, shaders::kSourceBytes);
+            shaders::unlit_fragment(fs, shaders::kSourceBytes, key);
+        } else {
+            shaders::lit_vertex(vs, shaders::kSourceBytes);
+            shaders::lit_fragment(fs, shaders::kSourceBytes, nd, np, ns, key, gi);
+        }
+        // The hooks (shader_file.h): the base shaders already sample u_texture.
+        if (hk && (!hook_vertex(vs, shaders::kSourceBytes, hk->displace, true) || !hook_fragment(fs, shaders::kSourceBytes, hk->surface, false))) {
+            free(vs); free(fs);
+            set_error("FarcadeGL: a shader hook does not fit in the shader source");
+            return nullptr;
+        }
         Shader s;
-        bool ok = compile(&s, vs, fs, "lit");
+        bool ok = compile(&s, vs, fs, unlit_v ? "unlit (hooked)" : (hk ? "lit (hooked)" : "lit"));
         free(vs);
         free(fs);
         if (!ok) return nullptr;
         slot->shader = s;
         slot->nd = nd; slot->np = np; slot->ns = ns; slot->key = key; slot->gi = gi;
+        slot->hook = hook; slot->unlit = unlit_v; slot->setup = 0;
         slot->used = true;
         slot->last_use = frame;
-        return &slot->shader;
+        return slot;
+    }
+
+    Shader* lit_variant(int nd, int np, int ns, const shaders::PostKey& key, bool gi) {
+        Variant* v = lit_slot(nd, np, ns, key, gi, nullptr, false);
+        return v ? &v->shader : nullptr;
     }
 
     // ---- mesh cache
@@ -1183,11 +1252,7 @@ struct Renderer::Impl {
         bool taa_up = false;
         if (!banding && (iw < width || ih < height) && settings.antialiasing && settings.aa_mode == AAMode::TAA && !scene.draft) {
             GpuPlan tp = GpuTier::plan(scene, feature_set());
-            bool assets = false;
-            for (int i = 0; i < scene.item_count; i++)
-                assets |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
-                          (scene.items[i].shader_path && scene.items[i].shader_path[0]);
-            taa_up = tp.any() && tp.aa && !assets;
+            taa_up = tp.any() && tp.aa;
         }
         rw = banding || taa_up ? width : iw;
         rh = banding || taa_up ? height : ih;
@@ -1241,11 +1306,9 @@ struct Renderer::Impl {
                 cloud_frame = CloudFrame();
             }
         }
-        bool has_asset_material = false;
-        for (int i = 0; i < scene.item_count; i++)
-            has_asset_material |= (scene.items[i].texture_path && scene.items[i].texture_path[0]) ||
-                                  (scene.items[i].shader_path && scene.items[i].shader_path[0]);
-        bool run_tier = plan.any() && !has_asset_material;
+        // Textures and custom shaders run in the GPU tier too: hooks (shader_file.h) in every pass, a full
+        // custom shader for its own object in the lit pass.
+        bool run_tier = plan.any();
         if (run_tier && banding) {
             set_error("FarcadeGL: bands are not available with the GPU tier or fog");
             in_render = false;
@@ -1274,6 +1337,13 @@ struct Renderer::Impl {
             host.cloud_noise = cloud_noise;
             host.cloud_weather = cloud_weather;
             host.cloud_ok = cloud_ok;
+            host.sections = &Impl::tier_sections;
+            host.texture = &Impl::tier_texture;
+            host.time[0] = (float)item_time; host.time[1] = item_dt; host.time[2] = (float)frame;
+            host.warn = [](void* u, const char* text) {
+                Impl* I = static_cast<Impl*>(u);
+                if (!I->warning[0]) snprintf(I->warning, sizeof I->warning, "%s", text);
+            };
             failed = !tier.render(gl, scene, pl, settings, plan, host, pf, error, (int)sizeof error);
             stats.cloud_quality = tier.cloud_quality();
             if (failed && !error[0]) set_error("FarcadeGL: the GPU tier failed");
@@ -1317,8 +1387,41 @@ struct Renderer::Impl {
 
         for (int i = 0; i < scene.item_count && !failed; i++) {
             const DrawItem& it = scene.items[i];
-            Shader* item_shader = it.shader_path && it.shader_path[0] ? custom_shader(it.shader_path, scene) :
-                                  (it.unlit ? &unlit_s : lit);
+            Shader* item_shader = it.unlit ? &unlit_s : lit;
+            if (it.shader_path && it.shader_path[0]) {
+                // Hooks: the built-in shader with them spliced in (lights and all); else the file's full shader.
+                const ShaderSections* sec = sections_for(it.shader_path, scene);
+                Variant* v = nullptr;
+                if (sec && sec->hooks() && !hook_is_bad(sec->hook_id)) {
+                    v = lit_slot(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on, sec, it.unlit);
+                    if (!v) {
+                        if (gate.deferred) { failed = true; break; }
+                        // A hook that does not compile: the object is drawn without it, with a warning.
+                        snprintf(warning, sizeof warning, "shader %s: %s", it.shader_path, error);
+                        error[0] = 0;
+                        bad_hooks[bad_hook_next++ % 16] = sec->hook_id;
+                        if (it.unlit && !unlit_s.sh && !use_shader(&unlit_s, false, pf.key)) { failed = true; break; }
+                        if (it.unlit) set_post(unlit_s, scene.post);
+                        if (!it.unlit && !lit) {
+                            lit = lit_variant(ls.nd, ls.np, ls.ns, pf.key, gi_frame.on);
+                            if (!lit) { failed = true; break; }
+                            set_lit_frame(*lit, scene, ls);
+                        }
+                        item_shader = it.unlit ? &unlit_s : lit;
+                    }
+                }
+                if (v) {
+                    if (v->setup != frame + 1) {
+                        if (v->unlit) set_post(v->shader, scene.post);
+                        else set_lit_frame(v->shader, scene, ls);
+                        v->setup = frame + 1;
+                    }
+                    item_shader = &v->shader;
+                } else if (sec && sec->full() && !sec->hooks()) {
+                    item_shader = custom_shader(it.shader_path, scene);
+                }
+                // An unreadable or broken file: drawn with the built-in look (sections_for warned).
+            }
             if (!item_shader) { failed = true; break; }
             draw_item(it, *item_shader, scene, &failed);
         }
@@ -1393,6 +1496,7 @@ struct Renderer::Impl {
             for (Variant& v : variants) { if (v.used) drop(&v.shader); v.used = false; }
             for (int i = 0; i < 2; i++) { drop(&unlit[i]); drop(&sky[i]); }
             for (CustomShaderEntry& e : custom_shaders) { drop(&e.shader); e.path[0] = 0; }
+            for (SectionsEntry& e : sections) { free_shader_sections(&e.s); e = SectionsEntry(); }
             for (ScreenShader& e : screen_progs) { drop(&e.shader); e = ScreenShader(); }
             if (screen_tex) fglDestroyTexture(gl, screen_tex);
             screen_tex = 0;

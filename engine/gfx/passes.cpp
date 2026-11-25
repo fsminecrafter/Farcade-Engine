@@ -27,7 +27,9 @@ namespace {
 
 constexpr int kBloomLevels = 5;
 constexpr int kMaxCascades = shaders::kMaxCascades;
-constexpr int kMaxLitVariants = 16;       // draft and full shading of each light mix stay compiled
+constexpr int kMaxLitVariants = 24;       // draft and full shading of each light mix (and textured / hooked ones) stay compiled
+constexpr int kMaxHookSets = 8;           // .fshader hook sets with their pass programs
+constexpr int kMaxFullProgs = 8;          // full custom shaders drawn in the lit pass
 constexpr int kBoundsCache = 128;
 constexpr uint32_t kFrameVec4Count = (uint32_t)shaders::kFrameHeader + 3u * shaders::kMaxLights + kMaxLocalShadows;
 
@@ -55,7 +57,40 @@ struct LitProg {
     FGLShader* sh = nullptr;
     shaders::HqLitKey key;
     uint64_t last = 0;
-    int mat = -1, pbr = -1;
+    uint64_t setup = 0;                     // the frame its frame uniforms were set for
+    int mat = -1, pbr = -1, tex = -1, time = -1;
+};
+
+// The geometry passes' programs of one hook set (a .fshader's @displace, ShaderSections::hook_id): the same
+// passes as the built-in programs with the vertex moved by the hook. `bad`: one did not compile (the items
+// are drawn without the hook in that pass).
+enum HookPass { HP_SHADOW, HP_LOCAL, HP_DEPTH, HP_NORMAL, HP_MATERIAL, HP_SHADOW_OVER, HP_COUNT };
+struct HookProgs {
+    uint64_t id = 0;
+    FGLShader* sh[HP_COUNT] = {};
+    bool bad[HP_COUNT] = {};
+    int time[HP_COUNT] = { -1, -1, -1, -1, -1, -1 };
+    uint64_t last = 0;
+};
+
+// A full custom shader (a .fshader with @vertex / @fragment and no hooks) for the lit pass: [hdr] (the HDR
+// variant encodes its colour, hdr_wrap_fragment).
+struct FullProg {
+    const ShaderSections* sec = nullptr;
+    char path[256] = {};
+    FGLShader* sh[2] = {};
+    bool bad[2] = {};
+    uint64_t last = 0;
+};
+
+// A hooked or textured unlit program: [draft * 4 + fog * 2 + hdr] like unlit_p, plus the material.
+struct UnlitProg {
+    FGLShader* sh = nullptr;
+    int slot = 0;
+    bool tex = false;
+    uint64_t hook = 0;
+    shaders::PostKey key;
+    uint64_t last = 0, setup = 0;
 };
 
 struct Bounds {
@@ -114,6 +149,9 @@ struct CascadeState {
     ShadowFit held;
     uint64_t fit_key = 0;                   // everything but the camera position the fit depends on
     uint64_t hash = 0;                      // the fit and the casters the tile was drawn with (0: not cacheable)
+    // Moving (displaced) casters: the tile holds the static casters' hash `hash` plus them (`dyn`), and the
+    // static casters alone are kept in shadow_static's tile (`static_copy`) to start the next frame from.
+    bool dyn = false, static_copy = false;
     uint64_t fitted_frame = 0;
     Vec3 fitted_at;                         // the camera position of the fit
 };
@@ -159,6 +197,17 @@ struct GpuTier::Impl {
     FGLShader* sky_p[4] = {};               // [draft * 2 + hdr]
     CloudKey cloud_key_used;                // the clouds the last sky shader has
     LitProg lit_p[kMaxLitVariants];
+    HookProgs hook_p[kMaxHookSets];
+    FullProg full_p[kMaxFullProgs];
+    UnlitProg unlit_m[8];
+    shaders::HqLitKey bad_lit[16];          // material variants that did not compile (not tried again)
+    int bad_lit_next = 0;
+    bool lit_is_bad(const shaders::HqLitKey& k) const { for (const shaders::HqLitKey& b : bad_lit) if ((b.tex || b.hook) && b == k) return true; return false; }
+    const PassHost* hp = nullptr;           // this frame's host and scene (materials)
+    const RenderScene* sp = nullptr;
+    const GraphicsSettings* gsp = nullptr;  // this frame's settings (foliage shadows)
+    Target shadow_static;                   // the cascades' static casters alone (CascadeState::static_copy)
+    FGLShader* shadow_over_p = nullptr;     // casters drawn over that copy (hq_shadow_over_fragment)
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
     Target gmat, ao_c, ao_hist, ssr_t, ssr_b;   // roughness / metal G-buffer, GTAO raw and history, the SSR result (+ blur scratch)
@@ -571,7 +620,7 @@ struct GpuTier::Impl {
 
     // ---- lit shaders
 
-    LitProg* lit_variant(const shaders::HqLitKey& key) {
+    LitProg* lit_variant(const shaders::HqLitKey& key, const ShaderSections* hk = nullptr) {
         LitProg* slot = nullptr;
         for (LitProg& v : lit_p) {
             if (v.sh && v.key == key) { v.last = frame; return &v; }
@@ -587,8 +636,16 @@ struct GpuTier::Impl {
         if (!vs || !fs) { free(vs); free(fs); fail("out of memory"); return nullptr; }
         shaders::hq_lit_vertex(vs, shaders::kHqSourceBytes, key.shadow != 0 ? key.cascades : 0);
         shaders::hq_lit_fragment(fs, shaders::kHqSourceBytes, key);
+        const char* disp = key.hook && hk ? hk->displace : nullptr;
+        const char* surf = key.hook && hk ? hk->surface : nullptr;
+        if ((disp || surf || key.tex) &&
+            (!hook_vertex(vs, shaders::kHqSourceBytes, disp, key.tex || surf) || !hook_fragment(fs, shaders::kHqSourceBytes, surf, key.tex))) {
+            free(vs); free(fs);
+            fail("FarcadeGL: a shader hook does not fit in the lit shader");
+            return nullptr;
+        }
         FGLShader* sh = nullptr;
-        bool ok = compile(&sh, vs, fs, "lit");
+        bool ok = compile(&sh, vs, fs, key.hook ? "lit (hooked)" : (key.tex ? "lit (textured)" : "lit"));
         free(vs);
         free(fs);
         if (!ok) return nullptr;
@@ -597,7 +654,194 @@ struct GpuTier::Impl {
         slot->last = frame;
         slot->mat = fglUniformLocation(sh, "u_mat");
         slot->pbr = fglUniformLocation(sh, "u_pbr");
+        slot->tex = fglUniformLocation(sh, "u_texture");
+        slot->time = fglUniformLocation(sh, "u_time");
+        slot->setup = 0;
         return slot;
+    }
+
+    // ---- materials: hooks, textures and full custom shaders
+
+    // An item's .fshader sections (null: none).
+    const ShaderSections* item_sections(const DrawItem& it) const {
+        if (!it.shader_path || !it.shader_path[0] || !hp || !hp->sections) return nullptr;
+        return hp->sections(hp->user, it.shader_path, *sp);
+    }
+    bool item_displaced(const DrawItem& it) const {
+        const ShaderSections* sec = item_sections(it);
+        return sec && sec->displace;
+    }
+    static bool item_textured(const DrawItem& it) { return it.texture_path && it.texture_path[0]; }
+
+    // The geometry pass program of an item with a @displace hook, or null (none, or it did not compile: the
+    // built-in program is used).
+    FGLShader* hook_prog(const DrawItem& it, HookPass pass) {
+        const ShaderSections* sec = item_sections(it);
+        if (!sec || !sec->displace) return nullptr;
+        HookProgs* hs = nullptr;
+        for (HookProgs& h : hook_p) if (h.id == sec->hook_id) { hs = &h; break; }
+        if (!hs) {
+            hs = &hook_p[0];
+            for (HookProgs& h : hook_p) { if (!h.id) { hs = &h; break; } if (h.last < hs->last) hs = &h; }
+            for (FGLShader*& p : hs->sh) drop(&p);
+            *hs = HookProgs();
+            hs->id = sec->hook_id;
+        }
+        hs->last = frame;
+        if (hs->sh[pass]) return hs->sh[pass];
+        if (hs->bad[pass]) return nullptr;
+        char* vs = (char*)malloc(shaders::kHqSourceBytes);
+        char* fs = (char*)malloc(shaders::kHqSourceBytes);
+        if (!vs || !fs) { free(vs); free(fs); return nullptr; }
+        switch (pass) {
+        case HP_SHADOW: shaders::hq_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_shadow_fragment(fs, shaders::kHqSourceBytes); break;
+        case HP_LOCAL: shaders::hq_local_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_local_shadow_fragment(fs, shaders::kHqSourceBytes); break;
+        case HP_DEPTH: shaders::hq_depth_vertex(vs, shaders::kHqSourceBytes); shaders::hq_depth_fragment(fs, shaders::kHqSourceBytes); break;
+        case HP_NORMAL: shaders::hq_normal_vertex(vs, shaders::kHqSourceBytes); shaders::hq_normal_fragment(fs, shaders::kHqSourceBytes); break;
+        case HP_SHADOW_OVER: shaders::hq_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_shadow_over_fragment(fs, shaders::kHqSourceBytes); break;
+        default: shaders::hq_material_vertex(vs, shaders::kHqSourceBytes); shaders::hq_material_fragment(fs, shaders::kHqSourceBytes); break;
+        }
+        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, sec->displace, false);
+        char keep[256] = {};
+        if (err && err_cap) snprintf(keep, sizeof keep, "%s", err);
+        if (ok) ok = compile(&hs->sh[pass], vs, fs, "displaced");
+        free(vs);
+        free(fs);
+        if (!ok) {
+            if (gate && gate->deferred) return nullptr;         // compiled on a later frame
+            // A hook that does not compile: drawn without it, and the frame goes on.
+            hs->bad[pass] = true;
+            warn_material(it.shader_path, err);
+            if (err && err_cap) snprintf(err, (size_t)err_cap, "%s", keep);
+            return nullptr;
+        }
+        hs->time[pass] = fglUniformLocation(hs->sh[pass], "u_time");
+        return hs->sh[pass];
+    }
+
+    // Tells the host that a material's program did not compile (err holds the compiler's message).
+    void warn_material(const char* path, const char* msg) {
+        if (!hp || !hp->warn) return;
+        char b[256];
+        snprintf(b, sizeof b, "shader %s: %s (drawn without it)", path ? path : "?", msg && msg[0] ? msg : "does not compile");
+        hp->warn(hp->user, b);
+    }
+
+    void set_time(FGLShader* sh, int loc) {
+        if (loc >= 0 && hp) fglUniform4f(sh, loc, hp->time[0], hp->time[1], hp->time[2], hp->time[3]);
+    }
+    void set_time(FGLShader* sh) { set_time(sh, fglUniformLocation(sh, "u_time")); }
+
+    // Draws a geometry pass's items: the built-in program, or the hook's where an item has one. `prep` sets
+    // a program's pass uniforms when the pass switches to it; `per_item` (optional) sets per item ones.
+    // Foliage in a shadow map (`cascade`: the sun cascade, -1 for point / spot shadows): false when it casts
+    // none there, else *out is the item with a shorter prefix of its instances
+    // (GraphicsSettings::foliage_shadow_density / foliage_shadow_cascades). Other items are kept as they are.
+    bool shadow_caster(const DrawItem& it, int cascade, DrawItem* out) const {
+        *out = it;
+        if (!it.foliage || !gsp) return true;
+        if (cascade >= 0 && cascade >= gsp->foliage_shadow_cascades) return false;
+        float d = fclamp(gsp->foliage_shadow_density, 0.0f, 1.0f);
+        if (d <= 0.0f) return false;
+        uint32_t unit = it.mesh.instance_vertices;
+        if (!unit || d >= 1.0f) return true;
+        uint32_t all = (it.mesh.draw_count ? it.mesh.draw_count : it.mesh.vertex_count) / unit;
+        uint32_t keep = (uint32_t)((float)all * d + 0.5f);
+        if (!keep) return false;
+        out->mesh.draw_count = keep * unit;
+        return true;
+    }
+
+    // Draws a geometry pass's items: the built-in program, or the hook's where an item has one. `prep` sets
+    // a program's pass uniforms and textures whenever the pass switches to it; `per_item` sets per item ones.
+    // `want` picks the items; `shadow` >= -1 makes it a shadow map pass (shadow_caster, with that cascade).
+    template <class Prep, class PerItem, class Want>
+    bool draw_geometry(const DrawItem* items, int n, FGLShader* base, HookPass pass, Prep prep, PerItem per_item, Want want,
+                       int shadow = -2) {
+        FGLShader* cur = nullptr;
+        bool failed = false;
+        DrawItem thin;
+        for (int i = 0; i < n && !failed; i++) {
+            const DrawItem* it = &items[i];
+            if (!want(*it)) continue;
+            if (shadow >= -1) {
+                if (!shadow_caster(*it, shadow, &thin)) continue;
+                it = &thin;
+            }
+            FGLShader* p = base;
+            if (FGLShader* h = hook_prog(*it, pass)) p = h;
+            else if (gate && gate->deferred) return false;
+            if (p != cur) {
+                fglUseShader(gl, p);
+                prep(p);
+                if (p != base)
+                    for (HookProgs& hs : hook_p) for (int k = 0; k < HP_COUNT; k++) if (hs.sh[k] == p) set_time(p, hs.time[k]);
+                cur = p;
+            }
+            per_item(p, *it);
+            hp->draw_mesh(hp->user, *it, false, &failed);
+        }
+        return !failed;
+    }
+
+    // A full custom shader for an item's lit pass draw (null: it does not compile; drawn the built-in way).
+    FGLShader* full_prog(const DrawItem& it, const ShaderSections* sec, bool hdr) {
+        FullProg* fp = nullptr;
+        for (FullProg& f : full_p) if (f.sec == sec && !strcmp(f.path, it.shader_path)) { fp = &f; break; }
+        if (!fp) {
+            fp = &full_p[0];
+            for (FullProg& f : full_p) { if (!f.sec) { fp = &f; break; } if (f.last < fp->last) fp = &f; }
+            drop(&fp->sh[0]); drop(&fp->sh[1]);
+            *fp = FullProg();
+            fp->sec = sec;
+            snprintf(fp->path, sizeof fp->path, "%s", it.shader_path);
+        }
+        fp->last = frame;
+        int h = hdr ? 1 : 0;
+        if (fp->sh[h]) return fp->sh[h];
+        if (fp->bad[h]) return nullptr;
+        char* fs = (char*)malloc(shaders::kHqSourceBytes);
+        if (!fs) return nullptr;
+        snprintf(fs, shaders::kHqSourceBytes, "%s", sec->fragment);
+        bool ok = !hdr || hdr_wrap_fragment(fs, shaders::kHqSourceBytes);
+        char keep[256] = {};
+        if (err && err_cap) snprintf(keep, sizeof keep, "%s", err);
+        if (ok) ok = compile(&fp->sh[h], sec->vertex, fs, it.shader_path);
+        free(fs);
+        if (!ok) {
+            if (gate && gate->deferred) return nullptr;
+            fp->bad[h] = true;
+            warn_material(it.shader_path, err);
+            if (err && err_cap) snprintf(err, (size_t)err_cap, "%s", keep);
+        }
+        return fp->sh[h];
+    }
+
+    // A textured and / or hooked unlit program for unlit_p's slot.
+    UnlitProg* unlit_material(int slot, bool tex, const ShaderSections* sec) {
+        uint64_t hook = sec && sec->hooks() ? sec->hook_id : 0;
+        UnlitProg* up = nullptr;
+        for (UnlitProg& u : unlit_m) if (u.sh && u.slot == slot && u.tex == tex && u.hook == hook && u.key == pf->key) { up = &u; break; }
+        if (up) { up->last = frame; return up; }
+        up = &unlit_m[0];
+        for (UnlitProg& u : unlit_m) { if (!u.sh) { up = &u; break; } if (u.last < up->last) up = &u; }
+        drop(&up->sh);
+        *up = UnlitProg();
+        char* vs = (char*)malloc(shaders::kHqSourceBytes);
+        char* fs = (char*)malloc(shaders::kHqSourceBytes);
+        if (!vs || !fs) { free(vs); free(fs); return nullptr; }
+        bool fog = (slot & 2) != 0, hdr = (slot & 1) != 0;
+        shaders::hq_unlit_vertex(vs, shaders::kHqSourceBytes);
+        shaders::hq_unlit_fragment(fs, shaders::kHqSourceBytes, fog, hdr, pf->key);
+        const char* disp = hook ? sec->displace : nullptr;
+        const char* surf = hook ? sec->surface : nullptr;
+        bool ok = hook_vertex(vs, shaders::kHqSourceBytes, disp, true) && hook_fragment(fs, shaders::kHqSourceBytes, surf, tex);
+        if (ok) ok = compile(&up->sh, vs, fs, "unlit (material)");
+        free(vs);
+        free(fs);
+        if (!ok) return nullptr;
+        up->slot = slot; up->tex = tex; up->hook = hook; up->key = pf->key; up->last = frame; up->setup = 0;
+        return up;
     }
 
     // ---- the frame
@@ -612,48 +856,87 @@ struct GpuTier::Impl {
     }
 
     // The casters that reach cascade `f`, with a hash of them (0 when one has no mesh key: not cacheable).
-    uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int* count) {
+    // The casters that reach cascade `c` (fit `f`), with a hash of the static ones (0 when one has no mesh key:
+    // not cacheable). *dyn: some are moved by a @displace hook every frame (they are drawn every frame, over
+    // a copy of the static ones; see cascades_pass).
+    uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int c, int* count, bool* dyn) {
         uint64_t hash = 1469598103934665603ull;
         bool cacheable = true;
         int n = 0, nc = 0;
+        *dyn = false;
         const DrawItem* cast_items = casters(s, &nc);
+        DrawItem thin;
         for (int i = 0; i < nc; i++) {
             const DrawItem& it = cast_items[i];
-            if (!it.cast_shadows || !in_cascade(item_bounds(it), f)) continue;
+            if (!it.cast_shadows || !in_cascade(item_bounds(it), f) || !shadow_caster(it, c, &thin)) continue;
+            n++;
+            if (item_displaced(it)) { *dyn = true; continue; }
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
+            hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
             if (!it.mesh.key) cacheable = false;
-            n++;
         }
         *count = n;
         return cacheable ? hash : 0;
     }
 
-    // Redraws one cascade's tile: depth is cleared (the whole surface; it is scratch), the tile is filled
-    // white by a full screen triangle under its viewport, and the casters are drawn into it.
-    bool draw_cascade(const RenderScene& s, const PassHost& host, const ShadowFit& fit, const CascadeSet& cs, int c) {
+    // Copies cascade c's tile between the shadow map and its static copy (to_static: map -> copy), as a full
+    // screen pass under the tile's viewport. Leaves the shadow map bound.
+    bool copy_tile(const PassHost& host, const CascadeSet& cs, int c, bool to_static) {
+        if (!make(&copy_p, shaders::pp_vertex, shaders::pp_copy_fragment, "copy")) return false;
         const int T = cs.tile;
+        if (to_static) set_target(shadow_static.color, 0);
         host.set_viewport(host.user, (c % cs.grid) * T, (c / cs.grid) * T, T, T);
-        fglClear(gl, FGL_DEPTH_BUFFER_BIT);
         fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
-        fglUseShader(gl, white_p);
+        fglUseShader(gl, copy_p);
+        u4(copy_p, "u_p", 1.0f / (float)shadow.w, 1.0f / (float)shadow.h, 0, 0);
+        bind_tex(copy_p, "u_src", to_static ? shadow : shadow_static, FGL_TEXTURE_CLAMP);
         fglSetModel(gl, to_fgl(Mat4::identity()));
         fglDraw(gl, tri, 0, 3);
+        host.set_viewport(host.user, 0, 0, 0, 0);
+        if (to_static) set_target(shadow.color, shadow.depth);
+        return true;
+    }
+
+    // Redraws one cascade's tile: depth is cleared (the whole surface; it is scratch), the tile is filled
+    // white by a full screen triangle under its viewport, and the casters are drawn into it.
+    // What draw_cascade draws: every caster from a white tile, the static ones from a white tile, the moving
+    // ones on top of what the tile and its depth hold, or the moving ones over the restored static copy.
+    enum CascadeDraw { CD_ALL, CD_STATIC, CD_MOVING, CD_MOVING_OVER };
+
+    bool draw_cascade(const RenderScene& s, const PassHost& host, const ShadowFit& fit, const CascadeSet& cs, int c, CascadeDraw what = CD_ALL) {
+        const int T = cs.tile;
+        if (what == CD_MOVING_OVER && !copy_tile(host, cs, c, false)) return false;
+        host.set_viewport(host.user, (c % cs.grid) * T, (c / cs.grid) * T, T, T);
+        if (what != CD_MOVING) fglClear(gl, FGL_DEPTH_BUFFER_BIT);
+        if (what == CD_ALL || what == CD_STATIC) {
+            fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+            fglUseShader(gl, white_p);
+            fglSetModel(gl, to_fgl(Mat4::identity()));
+            fglDraw(gl, tri, 0, 3);
+        }
         fglSetProjection(gl, to_fgl(fit.proj));
         fglSetView(gl, to_fgl(fit.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
-        fglUseShader(gl, shadow_p);
-        bool failed = false;
         int nc = 0;
         const DrawItem* cast_items = casters(s, &nc);
-        for (int i = 0; i < nc && !failed; i++) {
-            const DrawItem& it = cast_items[i];
-            if (!it.cast_shadows || !in_cascade(item_bounds(it), fit)) continue;
-            host.draw_mesh(host.user, it, false, &failed);
-        }
+        const bool over = what == CD_MOVING_OVER;
+        if (over && !make(&shadow_over_p, shaders::hq_shadow_vertex, shaders::hq_shadow_over_fragment, "shadow over")) return false;
+        bool ok = draw_geometry(cast_items, nc, over ? shadow_over_p : shadow_p, over ? HP_SHADOW_OVER : HP_SHADOW,
+            [&](FGLShader* p) {
+                if (!over) return;
+                bind_tex(p, "u_static", shadow_static, FGL_TEXTURE_CLAMP);
+                u4(p, "u_sp", 1.0f / (float)shadow_static.w, 1.0f / (float)shadow_static.h, 0, 0);
+            },
+            [](FGLShader*, const DrawItem&) {},
+            [&](const DrawItem& it) {
+                if (!it.cast_shadows || !in_cascade(item_bounds(it), fit)) return false;
+                if (what == CD_ALL) return true;
+                return item_displaced(it) == (what != CD_STATIC);
+            }, c);
         host.set_viewport(host.user, 0, 0, 0, 0);
-        return !failed;
+        return ok;
     }
 
     // The fraction of the shadow range each cascade ends at.
@@ -697,7 +980,7 @@ struct GpuTier::Impl {
         cs->grid = grid;
         cs->tile = tile;
         stats.cascades = nc;
-        int drawn = 0, reused = 0;
+        int drawn = 0, reused = 0, dynamic = 0;
         double t0 = now_ms();
         bool began = false;
         for (int k = 0; k < nc; k++) {
@@ -733,13 +1016,33 @@ struct GpuTier::Impl {
             cs->fit[k] = fit;
             stats.cascade_texel[k] = fit.meters_per_uv / (float)tile;
             int n_casters = 0;
-            uint64_t hash = cascade_casters(s, fit, &n_casters);
+            bool dyn = false;
+            uint64_t hash = cascade_casters(s, fit, k, &n_casters, &dyn);
             if (hash) { hash = fnv(hash, fit.viewproj.m, sizeof fit.viewproj.m); hash = fnv(hash, &tile, sizeof tile); }
             st.valid = true;
-            if (hash && hash == st.hash) { reused++; continue; }
+            const bool same = hash && hash == st.hash;
+            // Nothing moves and nothing changed: the tile is right as it is.
+            if (!dyn && same && !st.dyn) { reused++; continue; }
             if (!began) { set_target(shadow.color, shadow.depth); began = true; }
-            if (!draw_cascade(s, host, fit, *cs, k)) return false;
+            if (same && st.static_copy) {
+                // The static casters are unchanged: start from their copy and draw only the moving ones over it.
+                if (dyn ? !draw_cascade(s, host, fit, *cs, k, CD_MOVING_OVER) : !copy_tile(host, *cs, k, false)) return false;
+                st.dyn = dyn;
+                if (dyn) dynamic++; else reused++;
+                continue;
+            }
+            if (!dyn) {
+                if (!draw_cascade(s, host, fit, *cs, k, CD_ALL)) return false;
+                st.static_copy = false;
+            } else {
+                // Static casters, a copy of them for the next frames, then the moving ones on top.
+                if (!ensure(shadow_static, size, size, false)) return false;
+                if (!draw_cascade(s, host, fit, *cs, k, CD_STATIC)) return false;
+                st.static_copy = hash != 0 && copy_tile(host, *cs, k, true);
+                if (!draw_cascade(s, host, fit, *cs, k, CD_MOVING)) return false;
+            }
             st.hash = hash;
+            st.dyn = dyn;
             drawn++;
         }
         cs->to_light = cs->fit[0].to_light;
@@ -747,7 +1050,8 @@ struct GpuTier::Impl {
         cs->up = cs->fit[0].up;
         stats.cascades_drawn = drawn;
         stats.cascades_reused = reused;
-        stats.shadow_reused = drawn == 0;
+        stats.cascades_dynamic = dynamic;
+        stats.shadow_reused = drawn == 0 && dynamic == 0;
         if (began) return end_pass(t0, &stats.shadow_ms);
         return true;
     }
@@ -818,11 +1122,13 @@ struct GpuTier::Impl {
         const DrawItem* cast_items = casters(s, &ncast);
         for (int i = 0; i < ncast; i++) {
             const DrawItem& it = cast_items[i];
-            if (!it.cast_shadows) continue;
+            DrawItem thin;
+            if (!it.cast_shadows || !shadow_caster(it, -1, &thin)) continue;
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
-            if (!it.mesh.key) cacheable = false;
+            hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
+            if (!it.mesh.key || item_displaced(it)) cacheable = false;
         }
         hash = fnv(hash, &size, sizeof size);
         stats.local_shadows = local_count;
@@ -834,7 +1140,6 @@ struct GpuTier::Impl {
         fglClearColor(gl, 1, 1, 1);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
-        fglUseShader(gl, local_p);
         bool failed = false;
         for (int j = 0; j < local_count && !failed; j++) {
             const RenderLight& l = *ls.local[j];
@@ -857,17 +1162,18 @@ struct GpuTier::Impl {
                 int t = o.tile + face;
                 host.set_viewport(host.user, (t % kAtlasTiles) * T, (t / kAtlasTiles) * T, T, T);
                 fglSetView(gl, to_fgl(view));
-                for (int i = 0; i < ncast && !failed; i++) {
-                    const DrawItem& it = cast_items[i];
-                    if (!it.cast_shadows) continue;
-                    // only casters that reach into the light's range
-                    Bounds b = item_bounds(it);
-                    if (!b.any) continue;
-                    Vec3 c = vmax(b.lo, vmin(l.position, b.hi));
-                    Vec3 dd = c - l.position;
-                    if (dot(dd, dd) > range * range) continue;
-                    host.draw_mesh(host.user, it, false, &failed);
-                }
+                // only casters that reach into the light's range
+                failed = !draw_geometry(cast_items, ncast, local_p, HP_LOCAL,
+                    [&](FGLShader* p) { u4(p, "u_lp", l.position.x, l.position.y, l.position.z, 1.0f / range); },
+                    [](FGLShader*, const DrawItem&) {},
+                    [&](const DrawItem& it) {
+                        if (!it.cast_shadows) return false;
+                        Bounds b = item_bounds(it);
+                        if (!b.any) return false;
+                        Vec3 c = vmax(b.lo, vmin(l.position, b.hi));
+                        Vec3 dd = c - l.position;
+                        return dot(dd, dd) <= range * range;
+                    }, -1);
             }
         }
         host.set_viewport(host.user, 0, 0, 0, 0);
@@ -912,11 +1218,12 @@ struct GpuTier::Impl {
             fglSetView(gl, to_fgl(s.camera.view));
             fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
             if (pass == 0) u4(sh, "u_pp", 1.0f / far_m, 0, 0, 0);
-            fglUseShader(gl, sh);
-            for (int i = 0; i < s.item_count && !failed; i++) {
-                if (pass == 2) u4(sh, "u_mm", fclamp(s.items[i].roughness, 0.0f, 1.0f), fclamp(s.items[i].metallic, 0.0f, 1.0f), 0, 0);
-                host.draw_mesh(host.user, s.items[i], false, &failed);
-            }
+            failed = !draw_geometry(s.items, s.item_count, sh, pass == 0 ? HP_DEPTH : (pass == 1 ? HP_NORMAL : HP_MATERIAL),
+                [&](FGLShader* p) { if (pass == 0) u4(p, "u_pp", 1.0f / far_m, 0, 0, 0); },
+                [&](FGLShader* p, const DrawItem& it) {
+                    if (pass == 2) u4(p, "u_mm", fclamp(it.roughness, 0.0f, 1.0f), fclamp(it.metallic, 0.0f, 1.0f), 0, 0);
+                },
+                [](const DrawItem&) { return true; });
         }
         if (!end_pass(t0, &stats.depth_ms) || failed) return false;
         if (!want_ao) return true;
@@ -1107,9 +1414,9 @@ struct GpuTier::Impl {
         float density = plan.fog ? 0.06f * fclamp(k.fog, 0.0f, 1.0f) : 0.0f;
         Vec3 fogc = (k.mode == SkyMode::Color ? k.zenith : k.horizon) * k.intensity;
 
-        LitProg* lit = nullptr;
+        // The lit programs: the built-in one, and per material (texture, hooks) a variant of it.
+        shaders::HqLitKey key;
         if (any_lit) {
-            shaders::HqLitKey key;
             key.nd = ls.nd; key.np = ls.np; key.ns = ls.ns;
             key.pbr = plan.pbr;
             key.shadow = use_shadow ? (gs.soft_shadows ? 2 : 1) : 0;
@@ -1123,8 +1430,6 @@ struct GpuTier::Impl {
             key.local_soft = (ls.nps + ls.nss) > 0 && gs.soft_shadows;
             key.post = pf->key;
             key.gi = host.gi_on;
-            lit = lit_variant(key);
-            if (!lit) return false;
         }
         const int dr = pf->key.draft ? 1 : 0;
         int ui = dr * 4 + (plan.fog ? 2 : 0) + (hdr ? 1 : 0);
@@ -1155,55 +1460,117 @@ struct GpuTier::Impl {
         FGLShader* sky = sky_p[si];
 
         // uniforms of the frame
-        set_post(unlit, s.post, w, h);
-        u4(unlit, "u_cam", s.camera.position.x, s.camera.position.y, s.camera.position.z, 0);
-        u4(unlit, "u_fog", fogc.x, fogc.y, fogc.z, density);
+        const SkyLight& sl = s.sky_light;
+        auto setup_unlit = [&](FGLShader* u) {
+            set_post(u, s.post, w, h);
+            u4(u, "u_cam", s.camera.position.x, s.camera.position.y, s.camera.position.z, 0);
+            u4(u, "u_fog", fogc.x, fogc.y, fogc.z, density);
+        };
+        setup_unlit(unlit);
         set_post(sky, s.post, w, h);
         set_sky_uniforms(sky, s, ls);
-        if (lit) {
-            FGLShader* sh = lit->sh;
+        if (any_lit && !upload_frame_data(ls, cs)) return false;
+        Cam ac = read_camera(s.camera);
+        auto setup_lit = [&](LitProg* lp) {
+            if (lp->setup == frame) return;
+            lp->setup = frame;
+            FGLShader* sh = lp->sh;
             set_post(sh, s.post, w, h);
             u4(sh, "u_cam", s.camera.position.x, s.camera.position.y, s.camera.position.z, 0);
-            const SkyLight& sl = s.sky_light;
             u4(sh, "u_sky", sl.sky_color.x * sl.intensity, sl.sky_color.y * sl.intensity, sl.sky_color.z * sl.intensity, 0);
             u4(sh, "u_gnd", sl.ground_color.x * sl.intensity, sl.ground_color.y * sl.intensity, sl.ground_color.z * sl.intensity, 0);
             u4(sh, "u_fog", fogc.x, fogc.y, fogc.z, density);
-            if (!upload_frame_data(ls, cs)) return false;
             if (host.gi_on) {
                 u4(sh, "u_gi0", host.gi0[0], host.gi0[1], host.gi0[2], host.gi0[3]);
                 u4(sh, "u_gi1", host.gi1[0], host.gi1[1], host.gi1[2], host.gi1[3]);
             }
-        }
+            if (use_ao) {
+                const Mat4& vw = s.camera.view;
+                u4(sh, "u_aos", 1.0f / (float)ao_a.w, 1.0f / (float)ao_a.h, (float)ao_a.w, (float)ao_a.h);
+                u4(sh, "u_aof", -vw.m[2], -vw.m[6], -vw.m[10], fminf_(ac.f, 1000.0f));
+            }
+        };
+        // Texture units are context state: a program's samplers are bound again whenever the pass switches to it.
+        auto bind_lit = [&](LitProg* lp) {
+            FGLShader* sh = lp->sh;
+            if (use_shadow) bind_tex(sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
+            if (use_ao) bind_tex(sh, "u_ao", ao_a, FGL_TEXTURE_CLAMP);      // filtered in the shader (by depth)
+            if (ls.nps + ls.nss > 0) bind_tex(sh, "u_atlas", atlas, FGL_TEXTURE_CLAMP);
+            if (host.gi_on) fglUniformTexture(gl, sh, fglUniformLocation(sh, "u_gi"), host.gi_texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
+        };
+        LitProg* base_lit = nullptr;
+        // The lit program of an item; a material variant that does not compile falls back to the built-in one.
+        auto lit_for = [&](bool tex, const ShaderSections* sec, const char* path) -> LitProg* {
+            shaders::HqLitKey k = key;
+            k.tex = tex;
+            k.hook = sec && sec->hooks() ? sec->hook_id : 0;
+            for (int attempt = 0; attempt < 2 && (k.tex || k.hook); attempt++) {
+                if (!lit_is_bad(k)) {
+                    char keep[256] = {};
+                    if (err && err_cap) snprintf(keep, sizeof keep, "%s", err);
+                    if (LitProg* v = lit_variant(k, sec)) return v;
+                    if (gate && gate->deferred) return nullptr;
+                    warn_material(k.hook ? path : "(the textured lit shader)", err);
+                    if (err && err_cap) snprintf(err, (size_t)err_cap, "%s", keep);
+                    bad_lit[bad_lit_next++ % 16] = k;
+                }
+                // The hook alone may still fit without the texture.
+                if (!(k.tex && k.hook)) break;
+                k.tex = false;
+            }
+            if (!base_lit) base_lit = lit_variant(key);
+            return base_lit;
+        };
 
         set_target(dst.color, dst.depth ? dst.depth : main_depth);
-        if (lit) {
-            if (use_shadow) bind_tex(lit->sh, "u_shadow", shadow, FGL_TEXTURE_CLAMP);
-            if (use_ao) {
-                // Filtered in the shader (by depth), so the texels are read as they are.
-                bind_tex(lit->sh, "u_ao", ao_a, FGL_TEXTURE_CLAMP);
-                Cam ac = read_camera(s.camera);
-                const Mat4& vw = s.camera.view;
-                u4(lit->sh, "u_aos", 1.0f / (float)ao_a.w, 1.0f / (float)ao_a.h, (float)ao_a.w, (float)ao_a.h);
-                u4(lit->sh, "u_aof", -vw.m[2], -vw.m[6], -vw.m[10], fminf_(ac.f, 1000.0f));
-            }
-            if (ls.nps + ls.nss > 0) bind_tex(lit->sh, "u_atlas", atlas, FGL_TEXTURE_CLAMP);
-            if (host.gi_on) fglUniformTexture(gl, lit->sh, fglUniformLocation(lit->sh, "u_gi"), host.gi_texture, FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
-        }
         fglClearColor(gl, 0, 0, 0);
         fglClear(gl, FGL_COLOR_BUFFER_BIT | FGL_DEPTH_BUFFER_BIT);
         fglSetProjection(gl, to_fgl(cur_proj));
         fglSetView(gl, to_fgl(s.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         bool failed = false;
+        FGLShader* cur = nullptr;
         for (int i = 0; i < s.item_count && !failed; i++) {
             const DrawItem& it = s.items[i];
-            if (it.unlit) {
-                fglUseShader(gl, unlit);
-                u4(unlit, "u_mat", it.color.x, it.color.y, it.color.z, it.roughness);
+            const ShaderSections* sec = item_sections(it);
+            const bool tex = item_textured(it);
+            FGLShader* p = nullptr;
+            LitProg* lp = nullptr;
+            UnlitProg* up = nullptr;
+            bool full = false;
+            if (sec && !sec->hooks() && sec->full()) {
+                // A full custom shader: drawn as it is (its own look; the other passes use the built-in programs).
+                p = full_prog(it, sec, hdr);
+                if (!p && gate && gate->deferred) return false;
+                full = p != nullptr;
+            }
+            if (!p && it.unlit) {
+                if (tex || (sec && sec->hooks())) {
+                    up = unlit_material(ui, tex, sec);
+                    if (!up && gate && gate->deferred) return false;
+                }
+                p = up ? up->sh : unlit;
+            } else if (!p) {
+                lp = lit_for(tex, sec, it.shader_path);
+                if (!lp) return false;
+                p = lp->sh;
+            }
+            if (p != cur) {
+                fglUseShader(gl, p);
+                if (lp) { setup_lit(lp); bind_lit(lp); set_time(p, lp->time); }
+                else if (up) { if (up->setup != frame) { setup_unlit(up->sh); up->setup = frame; } set_time(p); }
+                else if (full) set_time(p);
+                cur = p;
+            }
+            if (lp) {
+                fglUniform4f(p, lp->mat, it.color.x, it.color.y, it.color.z, it.roughness);
+                fglUniform4f(p, lp->pbr, fclamp(it.metallic, 0.0f, 1.0f), 0, 0, 0);
+                if (lp->tex >= 0 && host.texture)
+                    fglUniformTexture(gl, p, lp->tex, host.texture(host.user, it.texture_path, s), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             } else {
-                fglUseShader(gl, lit->sh);
-                fglUniform4f(lit->sh, lit->mat, it.color.x, it.color.y, it.color.z, it.roughness);
-                fglUniform4f(lit->sh, lit->pbr, fclamp(it.metallic, 0.0f, 1.0f), 0, 0, 0);
+                u4(p, "u_mat", it.color.x, it.color.y, it.color.z, it.roughness);
+                int tl = fglUniformLocation(p, "u_texture");
+                if (tl >= 0 && host.texture) fglUniformTexture(gl, p, tl, host.texture(host.user, it.texture_path, s), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             }
             host.draw_mesh(host.user, it, true, &failed);
         }
@@ -1328,8 +1695,8 @@ struct GpuTier::Impl {
         fglSetView(gl, to_fgl(s.camera.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         u4(depth_p, "u_pp", 1.0f / far_m, 0, 0, 0);
-        fglUseShader(gl, depth_p);
-        for (int i = 0; i < s.item_count && !failed; i++) host.draw_mesh(host.user, s.items[i], false, &failed);
+        failed = !draw_geometry(s.items, s.item_count, depth_p, HP_DEPTH, [&](FGLShader* p) { u4(p, "u_pp", 1.0f / far_m, 0, 0, 0); },
+                                [](FGLShader*, const DrawItem&) {}, [](const DrawItem&) { return true; });
         if (failed) return false;
         // reprojection: previous view-projection * inverse(current), both unjittered
         Mat4 vp = s.camera.proj * s.camera.view, inv, rep = Mat4::identity();
@@ -1491,6 +1858,10 @@ struct GpuTier::Impl {
     bool run(const RenderScene& s, const PackedLights& ls, const GraphicsSettings& gs, const GpuPlan& plan,
              const PassHost& host, int w, int h) {
         if (!make_tri()) return false;
+        hp = &host;
+        sp = &s;
+        gsp = &gs;
+        // (Full shader programs are found by their sections' pointer and path, hook programs by the hooks' hash.)
 
         // shadow: the strongest directional light with shadows, found again in the packed lights
         CascadeSet cs;
@@ -1599,7 +1970,11 @@ struct GpuTier::Impl {
         for (FGLShader*& s : unlit_p) drop(&s);
         for (FGLShader*& s : sky_p) drop(&s);
         for (LitProg& v : lit_p) { drop(&v.sh); v = LitProg(); }
-        free_target(shadow); free_target(atlas); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
+        for (HookProgs& h : hook_p) { for (FGLShader*& p : h.sh) drop(&p); h = HookProgs(); }
+        for (FullProg& f : full_p) { drop(&f.sh[0]); drop(&f.sh[1]); f = FullProg(); }
+        for (UnlitProg& u : unlit_m) { drop(&u.sh); u = UnlitProg(); }
+        free_target(shadow); free_target(shadow_static); free_target(atlas);
+        drop(&shadow_over_p); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
         free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t); free_target(ssr_b);
         free_target(scene); free_target(ldr);
         for (Target& t : bl_down) free_target(t);

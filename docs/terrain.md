@@ -151,8 +151,24 @@ how to flip it). Instances are merged into one mesh per block, so the hook
 sees terrain space positions; the sample uses them to give neighbours
 different phases.
 
-A swaying layer's shadows are redrawn every frame (a still layer's cascades
-are cached), and its batches are not used as occluders.
+The sample also gives the bent blades leaning normals (`displace_normal`),
+so their lighting changes as they sway.
+
+### Foliage shadows
+
+- **Density.** **Settings > Graphics > Shadows > Foliage**
+  (`foliage_shadow_density`) draws that share of each batch's instances into
+  the shadow maps. The instances are in random order, so the shadow thins
+  evenly. At 0 foliage casts no shadow.
+- **Cascades.** **Foliage cascades** (`foliage_shadow_cascades`) limits
+  foliage to the nearest sun cascades. Grass shadows are too small to see in
+  the far ones.
+- **Swaying layers.** A layer's own **Shadows** switch still decides whether
+  it casts at all. A swaying layer is drawn into the sun's cascades every
+  frame, but the rest of the scene is not: each cascade starts from a cached
+  copy of its static casters (docs/graphics.md, Cascaded sun shadows). The
+  Profiler shows these as "swaying only".
+- **Occlusion.** Swaying batches are not used as occluders.
 
 ### How millions of instances are drawn
 

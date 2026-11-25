@@ -64,12 +64,12 @@ struct LitProg {
 // The geometry passes' programs of one hook set (a .fshader's @displace, ShaderSections::hook_id): the same
 // passes as the built-in programs with the vertex moved by the hook. `bad`: one did not compile (the items
 // are drawn without the hook in that pass).
-enum HookPass { HP_SHADOW, HP_LOCAL, HP_DEPTH, HP_NORMAL, HP_MATERIAL, HP_COUNT };
+enum HookPass { HP_SHADOW, HP_LOCAL, HP_DEPTH, HP_NORMAL, HP_MATERIAL, HP_SHADOW_OVER, HP_COUNT };
 struct HookProgs {
     uint64_t id = 0;
     FGLShader* sh[HP_COUNT] = {};
     bool bad[HP_COUNT] = {};
-    int time[HP_COUNT] = { -1, -1, -1, -1, -1 };
+    int time[HP_COUNT] = { -1, -1, -1, -1, -1, -1 };
     uint64_t last = 0;
 };
 
@@ -149,6 +149,9 @@ struct CascadeState {
     ShadowFit held;
     uint64_t fit_key = 0;                   // everything but the camera position the fit depends on
     uint64_t hash = 0;                      // the fit and the casters the tile was drawn with (0: not cacheable)
+    // Moving (displaced) casters: the tile holds the static casters' hash `hash` plus them (`dyn`), and the
+    // static casters alone are kept in shadow_static's tile (`static_copy`) to start the next frame from.
+    bool dyn = false, static_copy = false;
     uint64_t fitted_frame = 0;
     Vec3 fitted_at;                         // the camera position of the fit
 };
@@ -202,6 +205,9 @@ struct GpuTier::Impl {
     bool lit_is_bad(const shaders::HqLitKey& k) const { for (const shaders::HqLitKey& b : bad_lit) if ((b.tex || b.hook) && b == k) return true; return false; }
     const PassHost* hp = nullptr;           // this frame's host and scene (materials)
     const RenderScene* sp = nullptr;
+    const GraphicsSettings* gsp = nullptr;  // this frame's settings (foliage shadows)
+    Target shadow_static;                   // the cascades' static casters alone (CascadeState::static_copy)
+    FGLShader* shadow_over_p = nullptr;     // casters drawn over that copy (hq_shadow_over_fragment)
     // targets
     Target shadow, gdepth, gnormal, ao_a, ao_b, scene, ldr;
     Target gmat, ao_c, ao_hist, ssr_t, ssr_b;   // roughness / metal G-buffer, GTAO raw and history, the SSR result (+ blur scratch)
@@ -692,6 +698,7 @@ struct GpuTier::Impl {
         case HP_LOCAL: shaders::hq_local_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_local_shadow_fragment(fs, shaders::kHqSourceBytes); break;
         case HP_DEPTH: shaders::hq_depth_vertex(vs, shaders::kHqSourceBytes); shaders::hq_depth_fragment(fs, shaders::kHqSourceBytes); break;
         case HP_NORMAL: shaders::hq_normal_vertex(vs, shaders::kHqSourceBytes); shaders::hq_normal_fragment(fs, shaders::kHqSourceBytes); break;
+        case HP_SHADOW_OVER: shaders::hq_shadow_vertex(vs, shaders::kHqSourceBytes); shaders::hq_shadow_over_fragment(fs, shaders::kHqSourceBytes); break;
         default: shaders::hq_material_vertex(vs, shaders::kHqSourceBytes); shaders::hq_material_fragment(fs, shaders::kHqSourceBytes); break;
         }
         bool ok = hook_vertex(vs, shaders::kHqSourceBytes, sec->displace, false);
@@ -727,26 +734,52 @@ struct GpuTier::Impl {
 
     // Draws a geometry pass's items: the built-in program, or the hook's where an item has one. `prep` sets
     // a program's pass uniforms when the pass switches to it; `per_item` (optional) sets per item ones.
+    // Foliage in a shadow map (`cascade`: the sun cascade, -1 for point / spot shadows): false when it casts
+    // none there, else *out is the item with a shorter prefix of its instances
+    // (GraphicsSettings::foliage_shadow_density / foliage_shadow_cascades). Other items are kept as they are.
+    bool shadow_caster(const DrawItem& it, int cascade, DrawItem* out) const {
+        *out = it;
+        if (!it.foliage || !gsp) return true;
+        if (cascade >= 0 && cascade >= gsp->foliage_shadow_cascades) return false;
+        float d = fclamp(gsp->foliage_shadow_density, 0.0f, 1.0f);
+        if (d <= 0.0f) return false;
+        uint32_t unit = it.mesh.instance_vertices;
+        if (!unit || d >= 1.0f) return true;
+        uint32_t all = (it.mesh.draw_count ? it.mesh.draw_count : it.mesh.vertex_count) / unit;
+        uint32_t keep = (uint32_t)((float)all * d + 0.5f);
+        if (!keep) return false;
+        out->mesh.draw_count = keep * unit;
+        return true;
+    }
+
+    // Draws a geometry pass's items: the built-in program, or the hook's where an item has one. `prep` sets
+    // a program's pass uniforms and textures whenever the pass switches to it; `per_item` sets per item ones.
+    // `want` picks the items; `shadow` >= -1 makes it a shadow map pass (shadow_caster, with that cascade).
     template <class Prep, class PerItem, class Want>
-    bool draw_geometry(const DrawItem* items, int n, FGLShader* base, HookPass pass, Prep prep, PerItem per_item, Want want) {
+    bool draw_geometry(const DrawItem* items, int n, FGLShader* base, HookPass pass, Prep prep, PerItem per_item, Want want,
+                       int shadow = -2) {
         FGLShader* cur = nullptr;
         bool failed = false;
+        DrawItem thin;
         for (int i = 0; i < n && !failed; i++) {
-            const DrawItem& it = items[i];
-            if (!want(it)) continue;
+            const DrawItem* it = &items[i];
+            if (!want(*it)) continue;
+            if (shadow >= -1) {
+                if (!shadow_caster(*it, shadow, &thin)) continue;
+                it = &thin;
+            }
             FGLShader* p = base;
-            if (FGLShader* h = hook_prog(it, pass)) p = h;
+            if (FGLShader* h = hook_prog(*it, pass)) p = h;
             else if (gate && gate->deferred) return false;
             if (p != cur) {
                 fglUseShader(gl, p);
-                if (p != base) {
-                    prep(p);
+                prep(p);
+                if (p != base)
                     for (HookProgs& hs : hook_p) for (int k = 0; k < HP_COUNT; k++) if (hs.sh[k] == p) set_time(p, hs.time[k]);
-                }
                 cur = p;
             }
-            per_item(p, it);
-            hp->draw_mesh(hp->user, it, false, &failed);
+            per_item(p, *it);
+            hp->draw_mesh(hp->user, *it, false, &failed);
         }
         return !failed;
     }
@@ -823,41 +856,85 @@ struct GpuTier::Impl {
     }
 
     // The casters that reach cascade `f`, with a hash of them (0 when one has no mesh key: not cacheable).
-    uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int* count) {
+    // The casters that reach cascade `c` (fit `f`), with a hash of the static ones (0 when one has no mesh key:
+    // not cacheable). *dyn: some are moved by a @displace hook every frame (they are drawn every frame, over
+    // a copy of the static ones; see cascades_pass).
+    uint64_t cascade_casters(const RenderScene& s, const ShadowFit& f, int c, int* count, bool* dyn) {
         uint64_t hash = 1469598103934665603ull;
         bool cacheable = true;
         int n = 0, nc = 0;
+        *dyn = false;
         const DrawItem* cast_items = casters(s, &nc);
+        DrawItem thin;
         for (int i = 0; i < nc; i++) {
             const DrawItem& it = cast_items[i];
-            if (!it.cast_shadows || !in_cascade(item_bounds(it), f)) continue;
+            if (!it.cast_shadows || !in_cascade(item_bounds(it), f) || !shadow_caster(it, c, &thin)) continue;
+            n++;
+            if (item_displaced(it)) { *dyn = true; continue; }
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
-            if (!it.mesh.key || item_displaced(it)) cacheable = false;      // a hook moves it every frame
-            n++;
+            hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
+            if (!it.mesh.key) cacheable = false;
         }
         *count = n;
         return cacheable ? hash : 0;
     }
 
-    // Redraws one cascade's tile: depth is cleared (the whole surface; it is scratch), the tile is filled
-    // white by a full screen triangle under its viewport, and the casters are drawn into it.
-    bool draw_cascade(const RenderScene& s, const PassHost& host, const ShadowFit& fit, const CascadeSet& cs, int c) {
+    // Copies cascade c's tile between the shadow map and its static copy (to_static: map -> copy), as a full
+    // screen pass under the tile's viewport. Leaves the shadow map bound.
+    bool copy_tile(const PassHost& host, const CascadeSet& cs, int c, bool to_static) {
+        if (!make(&copy_p, shaders::pp_vertex, shaders::pp_copy_fragment, "copy")) return false;
         const int T = cs.tile;
+        if (to_static) set_target(shadow_static.color, 0);
         host.set_viewport(host.user, (c % cs.grid) * T, (c / cs.grid) * T, T, T);
-        fglClear(gl, FGL_DEPTH_BUFFER_BIT);
         fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
-        fglUseShader(gl, white_p);
+        fglUseShader(gl, copy_p);
+        u4(copy_p, "u_p", 1.0f / (float)shadow.w, 1.0f / (float)shadow.h, 0, 0);
+        bind_tex(copy_p, "u_src", to_static ? shadow : shadow_static, FGL_TEXTURE_CLAMP);
         fglSetModel(gl, to_fgl(Mat4::identity()));
         fglDraw(gl, tri, 0, 3);
+        host.set_viewport(host.user, 0, 0, 0, 0);
+        if (to_static) set_target(shadow.color, shadow.depth);
+        return true;
+    }
+
+    // Redraws one cascade's tile: depth is cleared (the whole surface; it is scratch), the tile is filled
+    // white by a full screen triangle under its viewport, and the casters are drawn into it.
+    // What draw_cascade draws: every caster from a white tile, the static ones from a white tile, the moving
+    // ones on top of what the tile and its depth hold, or the moving ones over the restored static copy.
+    enum CascadeDraw { CD_ALL, CD_STATIC, CD_MOVING, CD_MOVING_OVER };
+
+    bool draw_cascade(const RenderScene& s, const PassHost& host, const ShadowFit& fit, const CascadeSet& cs, int c, CascadeDraw what = CD_ALL) {
+        const int T = cs.tile;
+        if (what == CD_MOVING_OVER && !copy_tile(host, cs, c, false)) return false;
+        host.set_viewport(host.user, (c % cs.grid) * T, (c / cs.grid) * T, T, T);
+        if (what != CD_MOVING) fglClear(gl, FGL_DEPTH_BUFFER_BIT);
+        if (what == CD_ALL || what == CD_STATIC) {
+            fglDisable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
+            fglUseShader(gl, white_p);
+            fglSetModel(gl, to_fgl(Mat4::identity()));
+            fglDraw(gl, tri, 0, 3);
+        }
         fglSetProjection(gl, to_fgl(fit.proj));
         fglSetView(gl, to_fgl(fit.view));
         fglEnable(gl, FGL_DEPTH_TEST | FGL_CULL_FACE);
         int nc = 0;
         const DrawItem* cast_items = casters(s, &nc);
-        bool ok = draw_geometry(cast_items, nc, shadow_p, HP_SHADOW, [](FGLShader*) {}, [](FGLShader*, const DrawItem&) {},
-                                [&](const DrawItem& it) { return it.cast_shadows && in_cascade(item_bounds(it), fit); });
+        const bool over = what == CD_MOVING_OVER;
+        if (over && !make(&shadow_over_p, shaders::hq_shadow_vertex, shaders::hq_shadow_over_fragment, "shadow over")) return false;
+        bool ok = draw_geometry(cast_items, nc, over ? shadow_over_p : shadow_p, over ? HP_SHADOW_OVER : HP_SHADOW,
+            [&](FGLShader* p) {
+                if (!over) return;
+                bind_tex(p, "u_static", shadow_static, FGL_TEXTURE_CLAMP);
+                u4(p, "u_sp", 1.0f / (float)shadow_static.w, 1.0f / (float)shadow_static.h, 0, 0);
+            },
+            [](FGLShader*, const DrawItem&) {},
+            [&](const DrawItem& it) {
+                if (!it.cast_shadows || !in_cascade(item_bounds(it), fit)) return false;
+                if (what == CD_ALL) return true;
+                return item_displaced(it) == (what != CD_STATIC);
+            }, c);
         host.set_viewport(host.user, 0, 0, 0, 0);
         return ok;
     }
@@ -903,7 +980,7 @@ struct GpuTier::Impl {
         cs->grid = grid;
         cs->tile = tile;
         stats.cascades = nc;
-        int drawn = 0, reused = 0;
+        int drawn = 0, reused = 0, dynamic = 0;
         double t0 = now_ms();
         bool began = false;
         for (int k = 0; k < nc; k++) {
@@ -939,13 +1016,33 @@ struct GpuTier::Impl {
             cs->fit[k] = fit;
             stats.cascade_texel[k] = fit.meters_per_uv / (float)tile;
             int n_casters = 0;
-            uint64_t hash = cascade_casters(s, fit, &n_casters);
+            bool dyn = false;
+            uint64_t hash = cascade_casters(s, fit, k, &n_casters, &dyn);
             if (hash) { hash = fnv(hash, fit.viewproj.m, sizeof fit.viewproj.m); hash = fnv(hash, &tile, sizeof tile); }
             st.valid = true;
-            if (hash && hash == st.hash) { reused++; continue; }
+            const bool same = hash && hash == st.hash;
+            // Nothing moves and nothing changed: the tile is right as it is.
+            if (!dyn && same && !st.dyn) { reused++; continue; }
             if (!began) { set_target(shadow.color, shadow.depth); began = true; }
-            if (!draw_cascade(s, host, fit, *cs, k)) return false;
+            if (same && st.static_copy) {
+                // The static casters are unchanged: start from their copy and draw only the moving ones over it.
+                if (dyn ? !draw_cascade(s, host, fit, *cs, k, CD_MOVING_OVER) : !copy_tile(host, *cs, k, false)) return false;
+                st.dyn = dyn;
+                if (dyn) dynamic++; else reused++;
+                continue;
+            }
+            if (!dyn) {
+                if (!draw_cascade(s, host, fit, *cs, k, CD_ALL)) return false;
+                st.static_copy = false;
+            } else {
+                // Static casters, a copy of them for the next frames, then the moving ones on top.
+                if (!ensure(shadow_static, size, size, false)) return false;
+                if (!draw_cascade(s, host, fit, *cs, k, CD_STATIC)) return false;
+                st.static_copy = hash != 0 && copy_tile(host, *cs, k, true);
+                if (!draw_cascade(s, host, fit, *cs, k, CD_MOVING)) return false;
+            }
             st.hash = hash;
+            st.dyn = dyn;
             drawn++;
         }
         cs->to_light = cs->fit[0].to_light;
@@ -953,7 +1050,8 @@ struct GpuTier::Impl {
         cs->up = cs->fit[0].up;
         stats.cascades_drawn = drawn;
         stats.cascades_reused = reused;
-        stats.shadow_reused = drawn == 0;
+        stats.cascades_dynamic = dynamic;
+        stats.shadow_reused = drawn == 0 && dynamic == 0;
         if (began) return end_pass(t0, &stats.shadow_ms);
         return true;
     }
@@ -1024,10 +1122,12 @@ struct GpuTier::Impl {
         const DrawItem* cast_items = casters(s, &ncast);
         for (int i = 0; i < ncast; i++) {
             const DrawItem& it = cast_items[i];
-            if (!it.cast_shadows) continue;
+            DrawItem thin;
+            if (!it.cast_shadows || !shadow_caster(it, -1, &thin)) continue;
             hash = fnv(hash, it.model.m, sizeof it.model.m);
             hash = fnv(hash, &it.mesh.key, sizeof it.mesh.key);
             hash = fnv(hash, &it.mesh.vertex_count, sizeof it.mesh.vertex_count);
+            hash = fnv(hash, &thin.mesh.draw_count, sizeof thin.mesh.draw_count);
             if (!it.mesh.key || item_displaced(it)) cacheable = false;
         }
         hash = fnv(hash, &size, sizeof size);
@@ -1073,7 +1173,7 @@ struct GpuTier::Impl {
                         Vec3 c = vmax(b.lo, vmin(l.position, b.hi));
                         Vec3 dd = c - l.position;
                         return dot(dd, dd) <= range * range;
-                    });
+                    }, -1);
             }
         }
         host.set_viewport(host.user, 0, 0, 0, 0);
@@ -1760,6 +1860,7 @@ struct GpuTier::Impl {
         if (!make_tri()) return false;
         hp = &host;
         sp = &s;
+        gsp = &gs;
         // (Full shader programs are found by their sections' pointer and path, hook programs by the hooks' hash.)
 
         // shadow: the strongest directional light with shadows, found again in the packed lights
@@ -1872,7 +1973,8 @@ struct GpuTier::Impl {
         for (HookProgs& h : hook_p) { for (FGLShader*& p : h.sh) drop(&p); h = HookProgs(); }
         for (FullProg& f : full_p) { drop(&f.sh[0]); drop(&f.sh[1]); f = FullProg(); }
         for (UnlitProg& u : unlit_m) { drop(&u.sh); u = UnlitProg(); }
-        free_target(shadow); free_target(atlas); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
+        free_target(shadow); free_target(shadow_static); free_target(atlas);
+        drop(&shadow_over_p); free_target(gdepth); free_target(gnormal); free_target(ao_a); free_target(ao_b);
         free_target(gmat); free_target(ao_c); free_target(ao_hist); free_target(ssr_t); free_target(ssr_b);
         free_target(scene); free_target(ldr);
         for (Target& t : bl_down) free_target(t);

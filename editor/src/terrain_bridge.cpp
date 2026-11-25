@@ -645,6 +645,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                             it->mesh.uvs = fp.uv;
                             it->mesh.vertex_count = fp.per * (uint32_t)gr.built;
                             it->mesh.draw_count = fp.per * (uint32_t)draw;
+                            it->mesh.instance_vertices = fp.per;
                             it->mesh.key = mix64(mix64(mix64(mix64(td->serial ^ 0xF011A6Eull, bid), (uint64_t)p), b.settings ^ fver), (uint64_t)gr.built) | 1ull;
                             it->mesh.has_bounds = true;
                             it->mesh.bounds_min = gr.lo;

@@ -73,6 +73,9 @@ void hq_sky_fragment(char* out, size_t cap, bool hdr, const PostKey& post, Cloud
 // linear depth for SSAO (u_pp.x = 1 / far).
 void hq_shadow_vertex(char* out, size_t cap);
 void hq_shadow_fragment(char* out, size_t cap);
+// The same, drawn over a copy of the static casters' map (sampler u_static, u_sp.xy = 1 / its size): a
+// fragment behind what the copy holds is discarded, so the tile ends up with the nearer of the two.
+void hq_shadow_over_fragment(char* out, size_t cap);
 void pp_white_fragment(char* out, size_t cap);                 // fills with white (clears a shadow tile)
 // Point and spot shadow casters into the atlas: radial distance to the light
 // (u_lp: xyz light position, w 1 / range), packed in 24 bits.

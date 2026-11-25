@@ -578,6 +578,18 @@ void hq_shadow_fragment(char* out, size_t cap) {
           "}\n");
 }
 
+void hq_shadow_over_fragment(char* out, size_t cap) {
+    Text t(out, cap);
+    t.add("uniform sampler2D u_static;\n"
+          "uniform vec4 u_sp;\n"
+          "varying float v_d;\n");
+    t.add(kPack);
+    t.add("void main() {\n"
+          "    if (v_d > unpack24(texture(u_static, gl_FragCoord.xy * u_sp.xy).rgb)) discard;\n"
+          "    gl_FragColor = vec4(pack24(v_d), 1.0);\n"
+          "}\n");
+}
+
 void pp_white_fragment(char* out, size_t cap) {
     Text t(out, cap);
     t.add("void main() {\n"

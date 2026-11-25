@@ -50,6 +50,12 @@ void check(const char* what, size_t cap) {
 // Materials (shader_file.h): the sway sample's displace hook and a surface hook that does some work, spliced
 // into the generated shaders the way the renderers do.
 char* g_sway = nullptr;
+// A displace hook without displace_normal: the renderer works the normal out from it (two more calls).
+const char* const kWave =
+    "uniform vec4 u_time;\n"
+    "vec3 displace(vec3 p, vec3 n, vec2 uv) {\n"
+    "    return p + n * (0.05 * sin(p.x * 3.0 + u_time.x) * cos(p.z * 2.0));\n"
+    "}\n";
 const char* const kSurface =
     "uniform vec4 u_time;\n"
     "vec3 surface(vec3 albedo, vec2 uv) {\n"
@@ -58,8 +64,8 @@ const char* const kSurface =
     "}\n";
 
 // Splices hooks into g_vs / g_fs: displace (the sway), surface, texture. False: it does not fit.
-bool splice(size_t cap, bool displace, bool surface, bool tex) {
-    return fe::gfx::hook_vertex(g_vs, cap, displace ? g_sway : nullptr, tex || surface) &&
+bool splice(size_t cap, bool displace, bool surface, bool tex, bool wave = false) {
+    return fe::gfx::hook_vertex(g_vs, cap, wave ? kWave : (displace ? g_sway : nullptr), tex || surface) &&
            fe::gfx::hook_fragment(g_fs, cap, surface ? kSurface : nullptr, tex);
 }
 
@@ -184,6 +190,11 @@ void gpu_tier_lit(const PostKey* posts, int np) {
                                 snprintf(w2, sizeof w2, "%s%s%s%s", what, mt[0] ? " +displace" : "", mt[1] ? " +surface" : "", mt[2] ? " +texture" : "");
                                 if (splice(kHqSourceBytes, mt[0], mt[1], mt[2])) check(w2, kHqSourceBytes); else fail_splice(w2);
                             }
+                            hq_lit_vertex(g_vs, kHqSourceBytes, c);
+                            hq_lit_fragment(g_fs, kHqSourceBytes, k);
+                            char w3[448];
+                            snprintf(w3, sizeof w3, "%s +displace (normals worked out) +texture", what);
+                            if (splice(kHqSourceBytes, true, false, true, true)) check(w3, kHqSourceBytes); else fail_splice(w3);
                         }
                     }
                 }
@@ -204,7 +215,17 @@ void gpu_tier_rest(const PostKey* posts, int np) {
             fg[i](g_fs, kHqSourceBytes);
             snprintf(what, sizeof what, "hq %s +displace", names[i]);
             if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, g_sway, false)) check(what, kHqSourceBytes); else fail_splice(what);
+            vg[i](g_vs, kHqSourceBytes);
+            fg[i](g_fs, kHqSourceBytes);
+            snprintf(what, sizeof what, "hq %s +displace (normals worked out)", names[i]);
+            if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, kWave, false)) check(what, kHqSourceBytes); else fail_splice(what);
         }
+        hq_shadow_vertex(g_vs, kHqSourceBytes);
+        hq_shadow_over_fragment(g_fs, kHqSourceBytes);
+        check("hq shadow over", kHqSourceBytes);
+        hq_shadow_vertex(g_vs, kHqSourceBytes);
+        hq_shadow_over_fragment(g_fs, kHqSourceBytes);
+        if (fe::gfx::hook_vertex(g_vs, kHqSourceBytes, g_sway, false)) check("hq shadow over +displace", kHqSourceBytes); else fail_splice("hq shadow over +displace");
     }
     for (int pi = 0; pi < np; pi++) {
         name_post(pn, sizeof pn, posts[pi]);

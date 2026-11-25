@@ -37,6 +37,9 @@ struct RenderMesh {
     // Draw only the first draw_count vertices (0 = all; rounded down to whole triangles). The whole mesh is
     // still uploaded once per key: foliage draws fewer of a chunk's instances as it gets further away.
     uint32_t draw_count = 0;
+    // Vertices per instance of such a batch (its instances in random order): shadow maps draw a shorter
+    // prefix of it (GraphicsSettings::foliage_shadow_density). 0 = not a batch.
+    uint32_t instance_vertices = 0;
     // Optional triangles for occlusion culling (object space) that never stick out of the real surface,
     // e.g. a terrain chunk's coarse mesh. Without them small meshes occlude with their own triangles.
     const Vec3* occluder_positions = nullptr;
@@ -162,6 +165,8 @@ struct GpuTierStats {
     int passes = 0;                         // render passes of the frame
     bool shadow_reused = false;             // every sun cascade of the last frame was still valid
     int cascades = 0, cascades_drawn = 0, cascades_reused = 0;   // the sun's cascades and what the frame did with them
+    // Cascades whose static casters came from their cached copy, with only the moving (displaced) casters drawn.
+    int cascades_dynamic = 0;
     float cascade_texel[3] = {};            // meters per shadow texel of each cascade
     int local_shadows = 0;                  // point / spot lights that got an atlas shadow
     bool atlas_reused = false;              // the atlas of the last frame was still valid

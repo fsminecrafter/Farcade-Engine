@@ -269,20 +269,40 @@ bool hook_vertex(char* src, size_t cap, const char* displace, bool uv) {
     char* m = nullptr;
     const char* body = nullptr;
     if (!find_main(src, &m, &body)) return false;
+    // The normal follows the displacement where the shader uses it: the hook's displace_normal, else worked
+    // out from displace itself (two more calls, a little way along the surface; the cross product of the
+    // moved tangents).
+    const bool normals = displace && strstr(body, "vec4(normal, 0.0)") != nullptr;
+    const bool own_normal = displace && strstr(displace, "displace_normal(") != nullptr;
     Buf b(cap);
     b.add(src, (size_t)(m - src));
     if (displace && !strstr(src, "attribute vec3 normal;")) b.add("attribute vec3 normal;\n");
     if ((displace || uv) && !strstr(src, "attribute vec2 texcoord;")) b.add("attribute vec2 texcoord;\n");
     if (uv && !strstr(src, "varying vec2 v_uv;")) b.add("varying vec2 v_uv;\n");
     if (displace) add_hook(b, src, displace);
+    if (normals && !own_normal)
+        b.add("vec3 fe_normal(vec3 p, vec3 n, vec2 uv, vec3 d) {\n"
+              "    vec3 t = normalize(cross(n, abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));\n"
+              "    vec3 bt = cross(n, t);\n"
+              "    vec3 r = cross(displace(p + t * 0.02, n, uv) - d, displace(p + bt * 0.02, n, uv) - d);\n"
+              "    return dot(r, r) > 0.0000000001 ? normalize(r) : n;\n"
+              "}\n");
     b.add(kMainLine);
     if (displace) b.add("    vec3 fe_p = displace(position, normal, texcoord);\n");
+    if (normals) b.add(own_normal ? "    vec3 fe_n = displace_normal(position, normal, texcoord);\n"
+                                  : "    vec3 fe_n = fe_normal(position, normal, texcoord, fe_p);\n");
     if (uv && !strstr(body, "v_uv = texcoord;")) b.add("    v_uv = texcoord;\n");
     if (displace) {
-        Buf tmp(cap);
+        Buf tmp(cap), tmp2(cap);
         add_replaced(tmp, body, "vec4(position, 1.0)", "vec4(fe_p, 1.0)");
         if (!tmp.ok) return false;
-        b.add(tmp.p, tmp.n);
+        if (normals) {
+            add_replaced(tmp2, tmp.p, "vec4(normal, 0.0)", "vec4(fe_n, 0.0)");
+            if (!tmp2.ok) return false;
+            b.add(tmp2.p, tmp2.n);
+        } else {
+            b.add(tmp.p, tmp.n);
+        }
     } else {
         b.add(body);
     }

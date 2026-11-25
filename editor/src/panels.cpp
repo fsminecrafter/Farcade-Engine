@@ -1194,6 +1194,13 @@ void Editor::settings_graphics() {
             changed |= ImGui::SliderFloat("##sdist", &g.shadow_distance, 5.0f, 200.0f, "%.0f m");
             prop_label("  Soft");
             changed |= toggle_switch("##soft", &g.soft_shadows);
+            prop_label("  Foliage");
+            changed |= ImGui::SliderFloat("##fshd", &g.foliage_shadow_density, 0.0f, 1.0f, "%.2f of the instances");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Foliage instances drawn into shadow maps: fewer is cheaper, the shadow gets thinner");
+            if (g.shadow_cascades >= 2) {
+                prop_label("  Foliage cascades");
+                changed |= ImGui::SliderInt("##fshc", &g.foliage_shadow_cascades, 1, g.shadow_cascades);
+            }
         }
         prop_label("Point / spot shadows");
         changed |= toggle_switch("##lshadows", &g.local_shadows);
@@ -2259,8 +2266,8 @@ void Editor::panel_profiler() {
     }
     if (t.cascades) {
         char line[128];
-        snprintf(line, sizeof line, "Sun cascades: %d drawn, %d reused. Light shadows: %s.", t.cascades_drawn,
-                 t.cascades_reused, t.atlas_reused ? "reused" : (t.local_shadows ? "drawn" : "none"));
+        snprintf(line, sizeof line, "Sun cascades: %d drawn, %d reused, %d swaying only. Light shadows: %s.", t.cascades_drawn,
+                 t.cascades_reused, t.cascades_dynamic, t.atlas_reused ? "reused" : (t.local_shadows ? "drawn" : "none"));
         faint(line);
     }
     // The graphics card (Minimal-OS): busy share of each engine since the last sample.

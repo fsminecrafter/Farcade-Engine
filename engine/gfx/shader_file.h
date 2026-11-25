@@ -18,7 +18,9 @@ bool parse_shader_file(const char* source, size_t size,
 // Every section of a .fshader. Each string is malloc'd (null when the section is absent); free with
 // free_shader_sections. The hooks:
 //   // @displace   declarations plus  vec3 displace(vec3 p, vec3 n, vec2 uv)  : moves a vertex (mesh space),
-//                  run in every pass that draws the mesh (shadows, depth, normals, lighting) so they agree
+//                  run in every pass that draws the mesh (shadows, depth, normals, lighting) so they agree.
+//                  The normal follows: an optional  vec3 displace_normal(vec3 p, vec3 n, vec2 uv)  returns it,
+//                  else it is worked out from displace (finite differences along the surface)
 //   // @surface    declarations plus  vec3 surface(vec3 albedo, vec2 uv)  : the linear albedo (material colour
 //                  times the texture) in, the albedo to light out
 // Either may use u_time (x seconds, y delta, z frame) and u_texture by declaring them.
@@ -42,7 +44,9 @@ void free_shader_sections(ShaderSections* s);
 // hook_vertex: declares what is missing (attributes normal and texcoord, the varying v_uv when `uv`), adds the
 // displace hook's declarations (lines the shader already has are left out), computes
 // `vec3 fe_p = displace(position, normal, texcoord);` first in main and uses it for every
-// `vec4(position, 1.0)`. `uv`: also writes v_uv = texcoord (for a texture or a surface hook).
+// `vec4(position, 1.0)`; where the shader reads `vec4(normal, 0.0)` it reads the displaced normal fe_n
+// (displace_normal, or finite differences of displace). `uv`: also writes v_uv = texcoord (for a texture
+// or a surface hook).
 bool hook_vertex(char* src, size_t cap, const char* displace, bool uv);
 // hook_fragment: the albedo the shader reads from the varying v_alb becomes
 // `fe_alb = surface(v_alb * texture, v_uv)` (the texture when `tex`, the call when `surface`). A shader that

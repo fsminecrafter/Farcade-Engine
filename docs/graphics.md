@@ -41,7 +41,16 @@ vec3 surface(vec3 albedo, vec2 uv) {
 - `displace` gets the vertex position `p` and normal `n` in the mesh's own
   space (before the object's transform) and the texture coordinate `uv`, and
   returns the new position. Because every pass runs it, the shadows and the
-  AO follow the moved mesh. The normal is not changed.
+  AO follow the moved mesh.
+- The normal follows the displacement. By default the renderer works it out
+  from `displace` itself: it moves two points a little way along the surface
+  and takes the cross product of the moved tangents (two more calls, in the
+  passes that use normals). That is right for displacement that depends on
+  the position (waves, wobble, a shear). For displacement driven by `uv` or
+  anything else it cannot see, define
+  `vec3 displace_normal(vec3 p, vec3 n, vec2 uv)` in the `@displace` section
+  and return the normal yourself (`return n;` keeps the mesh's normals). The
+  sway sample does this.
 - `surface` changes the colour that is lit. It runs in the lit pass only.
 - A file may have either hook or both. Declare the uniforms a hook uses:
   `u_time` (x: seconds rendered, y: the frame's delta, z: the frame number)
@@ -297,6 +306,7 @@ before. Names and allowed values:
 | `render_scale` | 0.25 to 1; `dynamic_resolution` bool; `target_frame_ms` 8 to 100; `min_render_scale` 0.25 to 1 |
 | `shadows` | off, single (one map), cascades; `shadow_cascades` 2 or 3 (with cascades) |
 | `shadow_resolution` | 512, 1024, 2048, 4096; `shadow_distance` 1 to 2000 m; `soft_shadows`, `cascade_cache` bool |
+| `foliage_shadow_density` | 0 to 1: the share of foliage instances in shadow maps; `foliage_shadow_cascades` 1 to 3 |
 | `local_shadows` | bool; `local_shadow_lights` 1 to 4; `local_shadow_resolution` 512 to 4096 |
 | `ao` | off, ssao, gtao; `ao_radius` 0.05 to 5; `ao_strength` 0 to 2; `ssr` off, on |
 | `aa` | off, fxaa, smaa, taa |
@@ -408,8 +418,21 @@ that reach it changed (a far object moving does not redraw the near cascade). Wi
 cascades also keep their fit for 2 / 4 frames while the camera stays inside it (moving casters in them lag up
 to 3 frames). The lit shader picks the finest cascade that contains the pixel (|ndc xy| < 0.97, z < 0.97)
 and reads that tile with its own bias, PCF radius and normal offset (`kCascadeBase` in shaders_hq.h lists the
-frame data layout). `GpuTierStats` reports `cascades`, `cascades_drawn`, `cascades_reused` and
-`cascade_texel` (meters per texel). The point / spot atlas is unchanged. There is no scissor yet, so a tile is
+frame data layout). `GpuTierStats` reports `cascades`, `cascades_drawn`, `cascades_reused`,
+`cascades_dynamic` and `cascade_texel` (meters per texel).
+
+Casters moved by a `@displace` hook change every frame, so a tile they reach cannot simply be kept. Instead
+the tile is drawn in two steps: the static casters, then a copy of the tile into a second map
+(`shadow_static`), then the moving casters on top. On the next frames, while the static casters and the fit
+stay the same, the tile starts from that copy and only the moving casters are drawn, with a shader that
+discards a fragment behind the copy's depth (`hq_shadow_over_fragment`), so the tile ends up with the nearer
+of the two (`cascades_dynamic` counts these tiles). A swaying field then costs its own casters per frame, not
+the whole scene's.
+
+Foliage batches (terrain foliage) cast with two settings: `foliage_shadow_density` (0..1) draws that share of
+each batch's instances into the shadow maps (they are in random order, so the shadow thins evenly; 0 casts
+none), and `foliage_shadow_cascades` (1..3) limits foliage to the nearest sun cascades. Presets: Medium 0.35
+and 1, High 0.5 and 1, Ultra 0.75 and 2. Point and spot shadows use the density too. The point / spot atlas is unchanged. There is no scissor yet, so a tile is
 cleared by a full screen triangle under its viewport (depth: whole surface, it is scratch).
 
 ## Materials

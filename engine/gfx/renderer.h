@@ -62,6 +62,11 @@ struct DrawItem {
     // shadow maps and depth); 0 = opaque. double_sided: no back face culling, back faces lit from their side.
     float alpha_cut = 0.0f;
     bool double_sided = false;
+    // A tiling detail texture multiplied over the texture (terrain ground grain under a colour map): repeated
+    // detail_repeats times per texture repeat; strength 0..1. Null = none.
+    const char* detail_path = nullptr;
+    float detail_repeats = 1.0f;
+    float detail_strength = 1.0f;
 };
 
 // A light in world space (filled from a Light module and its object).
@@ -158,6 +163,7 @@ struct RendererStats {
     int items_in = 0, culled_frustum = 0, culled_occlusion = 0, occluders = 0, occluder_triangles = 0;
     double cull_ms = 0;
     int cloud_quality = 0;                  // clouds drawn: 0 none, 1 low, 2 medium, 3 ultra (after the caps)
+    int meshes_dropped = 0;                 // items left out: the mesh cache was full of meshes this frame uses
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

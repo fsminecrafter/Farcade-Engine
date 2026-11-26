@@ -58,7 +58,7 @@ struct LitProg {
     shaders::HqLitKey key;
     uint64_t last = 0;
     uint64_t setup = 0;                     // the frame its frame uniforms were set for
-    int mat = -1, pbr = -1, tex = -1, time = -1, cut = -1;
+    int mat = -1, pbr = -1, tex = -1, time = -1, cut = -1, detail = -1, det = -1;
 };
 
 // The geometry passes' programs of one hook set (a .fshader's @displace, ShaderSections::hook_id): the same
@@ -641,7 +641,7 @@ struct GpuTier::Impl {
         const char* disp = key.hook && hk ? hk->displace : nullptr;
         const char* surf = key.hook && hk ? hk->surface : nullptr;
         if ((disp || surf || key.tex || key.mat) &&
-            (!hook_vertex(vs, shaders::kHqSourceBytes, disp, key.tex || surf) || !hook_fragment(fs, shaders::kHqSourceBytes, surf, key.tex) ||
+            (!hook_vertex(vs, shaders::kHqSourceBytes, disp, key.tex || surf || (key.mat & 4)) || !hook_fragment(fs, shaders::kHqSourceBytes, surf, key.tex, (key.mat & 4) != 0) ||
              !hook_material(fs, shaders::kHqSourceBytes, (key.mat & 1) != 0, (key.mat & 2) != 0))) {
             free(vs); free(fs);
             fail("FarcadeGL: a shader hook does not fit in the lit shader");
@@ -660,6 +660,8 @@ struct GpuTier::Impl {
         slot->tex = fglUniformLocation(sh, "u_texture");
         slot->time = fglUniformLocation(sh, "u_time");
         slot->cut = fglUniformLocation(sh, "u_cut");
+        slot->detail = fglUniformLocation(sh, "u_detail");
+        slot->det = fglUniformLocation(sh, "u_det");
         slot->setup = 0;
         return slot;
     }
@@ -681,7 +683,8 @@ struct GpuTier::Impl {
     // built-in program is used).
     // An item's material bits in the geometry passes: 1 alpha cut-out (needs its texture), 2 two-sided.
     static uint8_t item_mat(const DrawItem& it) {
-        return (uint8_t)((it.alpha_cut > 0.0f && item_textured(it) ? 1 : 0) | (it.double_sided ? 2 : 0));
+        return (uint8_t)((it.alpha_cut > 0.0f && item_textured(it) ? 1 : 0) | (it.double_sided ? 2 : 0) |
+                         (it.detail_path && it.detail_path[0] ? 4 : 0));
     }
 
     // The geometry pass program of an item with a @displace hook, an alpha cut-out or (the normal pass) two
@@ -690,7 +693,7 @@ struct GpuTier::Impl {
         const ShaderSections* sec = item_sections(it);
         const char* disp = sec ? sec->displace : nullptr;
         uint8_t mat = item_mat(it);
-        if (pass != HP_NORMAL) mat &= 1;                    // two sides only change the normals
+        mat &= pass == HP_NORMAL ? 3 : 1;                   // two sides only change the normals; detail only the colour
         if (!disp && !mat) return nullptr;
         uint64_t id = (disp ? sec->hook_id : 0x5bd1e995ull) * 31u + mat;
         HookProgs* hs = nullptr;
@@ -1597,6 +1600,10 @@ struct GpuTier::Impl {
                 fglUniform4f(p, lp->mat, it.color.x, it.color.y, it.color.z, it.roughness);
                 fglUniform4f(p, lp->pbr, fclamp(it.metallic, 0.0f, 1.0f), 0, 0, 0);
                 if (lp->cut >= 0) fglUniform4f(p, lp->cut, it.alpha_cut, 0, 0, 0);
+                if (lp->detail >= 0 && host.texture) {
+                    fglUniformTexture(gl, p, lp->detail, host.texture(host.user, it.detail_path, s), FGL_TEXTURE_LINEAR);
+                    fglUniform4f(p, lp->det, it.detail_repeats, it.detail_strength, 0, 0);
+                }
                 if (lp->tex >= 0 && host.texture)
                     fglUniformTexture(gl, p, lp->tex, host.texture(host.user, it.texture_path, s), FGL_TEXTURE_LINEAR | FGL_TEXTURE_CLAMP);
             } else {

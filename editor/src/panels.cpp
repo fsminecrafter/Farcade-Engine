@@ -641,7 +641,7 @@ bool Editor::module_section(Object* o, ModuleKind kind) {
             case FieldType::Path:
                 // The kind of file from the field's name: shaders and images get their own filter and icon.
                 if (!strncmp(f.name, "shader", 6)) slot_field(f.label, (char*)fp, kPathMax, this, path_is_shader, Icon::Wand);
-                else if (!strcmp(f.name, "texture")) slot_field(f.label, (char*)fp, kPathMax, this, path_is_image, Icon::Image);
+                else if (strstr(f.name, "texture")) slot_field(f.label, (char*)fp, kPathMax, this, path_is_image, Icon::Image);
                 else slot_field(f.label, (char*)fp, kPathMax, this, path_any, Icon::Wave);
                 break;
             case FieldType::Bits: {
@@ -1708,8 +1708,19 @@ void Editor::terrain_section(Object* o) {
             if (td) ImGui::OpenPopup("Replace terrain?");
             else generate_terrain(o, terrain_gen_level, ncx * cs, ncz * cs, cs, cells, true);
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Import heightmap...")) {
+            heightmap_pick_object_ = o->id;
+            open_file_dialog(PickFor::Heightmap, PickRoot, "Import heightmap", false, project_dir, nullptr);
+        }
+        track("terrain:heightmap");
         ImGui::EndDisabled();
         track("terrain:generate");
+        prop_label("Heightmap range");
+        ImGui::DragFloat2("##hmr", &terrain_import_low, 0.5f, -10000.0f, 10000.0f, "%.1f m");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("World y of black and white in a grey heightmap. An RGB image is read as Terrarium elevation\n"
+                              "(the free AWS terrain tiles), its lowest point at the Y level.");
         if (ImGui::BeginPopupModal("Replace terrain?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextUnformatted("Generate replaces the heights, holes and foliage with a flat map.");
             ImGui::TextUnformatted("Undo (Ctrl+Z) brings the old one back.");
@@ -1806,8 +1817,13 @@ void Editor::terrain_section(Object* o) {
                 if (ImGui::DragFloat2("##s", sc, 0.01f, 0.01f, 100.0f, "%.2f")) { fl.scale_min = sc[0]; fl.scale_max = sc[1] < sc[0] ? sc[0] : sc[1]; }
                 track("terrain:fscale");
                 prop_label("Distance");
-                ImGui::DragFloat("##r", &fl.distance, 0.5f, 1.0f, 2000.0f, "%.0f m");
+                ImGui::DragFloat("##r", &fl.distance, 0.5f, 1.0f, 5000.0f, "%.0f m");
                 track("terrain:fdist");
+                prop_label("LOD distance");
+                ImGui::DragFloat("##lod", &fl.lod_distance, 0.5f, 0.0f, 5000.0f, fl.lod_distance > 0.0f ? "%.0f m" : "off");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Beyond this a block draws x_lod1.mof, beyond twice it x_lod2.mof (made by mofconv --lods)");
+                track("terrain:flod");
                 prop_label("Max slope");
                 ImGui::SliderFloat("##sl", &fl.max_slope, 0.0f, 90.0f, "%.0f deg");
                 track("terrain:fslope");
@@ -2217,6 +2233,9 @@ void Editor::panel_profiler() {
     ImGui::Text("Culling: %d items, %d outside the view, %d hidden by %d occluders (%d triangles), %.2f ms%s", st.items_in,
                 st.culled_frustum, st.culled_occlusion, st.occluders, st.occluder_triangles, st.cull_ms,
                 settings.graphics.occlusion_culling ? "" : "  (occlusion culling off)");
+    if (st.meshes_dropped > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%d meshes left out: the mesh cache or GPU memory is full (fewer chunks, foliage variants or distance)",
+                           st.meshes_dropped);
     if (terrain_stats_.terrains > 0) {
         const TerrainViewStats& ts = terrain_stats_;
         ImGui::Text("Terrain: %d of %d chunks drawn (detail %d / %d / %d / %d), %d unloaded, %d objects unloaded", ts.chunks_drawn, ts.chunks,

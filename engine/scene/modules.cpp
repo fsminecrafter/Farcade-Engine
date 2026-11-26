@@ -292,7 +292,8 @@ const FieldInfo kPost[] = {
     { "foliage" #n "_density", "Foliage " #n " density", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].density), 0, 50, nullptr }, \
     { "foliage" #n "_scale_min", "Foliage " #n " min scale", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].scale_min), 0.01f, 100, nullptr }, \
     { "foliage" #n "_scale_max", "Foliage " #n " max scale", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].scale_max), 0.01f, 100, nullptr }, \
-    { "foliage" #n "_distance", "Foliage " #n " distance", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].distance), 1, 2000, nullptr }, \
+    { "foliage" #n "_distance", "Foliage " #n " distance", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].distance), 1, 5000, nullptr }, \
+    { "foliage" #n "_lod_distance", "Foliage " #n " LOD distance", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].lod_distance), 0, 5000, nullptr }, \
     { "foliage" #n "_max_slope", "Foliage " #n " max slope", FieldType::Float, (uint16_t)offsetof(Terrain, foliage[n - 1].max_slope), 0, 90, nullptr }, \
     { "foliage" #n "_align", "Foliage " #n " align to slope", FieldType::Bool, (uint16_t)offsetof(Terrain, foliage[n - 1].align_to_slope), 0, 0, nullptr }, \
     { "foliage" #n "_shadows", "Foliage " #n " shadows", FieldType::Bool, (uint16_t)offsetof(Terrain, foliage[n - 1].cast_shadows), 0, 0, nullptr }, \
@@ -306,14 +307,18 @@ const FieldInfo kTerrain[] = {
     FE_F(Terrain, texture, "Texture", Path, 0, 0, nullptr),
     FE_F(Terrain, color, "Color", Color, 0, 0, nullptr),
     FE_F(Terrain, roughness, "Roughness", Float, 0, 1, nullptr),
-    FE_F(Terrain, uv_scale, "Texture size", Float, 0.01f, 1000, nullptr),
+    FE_F(Terrain, uv_scale, "Texture size", Float, 0.01f, 100000, nullptr),
+    FE_F(Terrain, detail_texture, "Detail texture", Path, 0, 0, nullptr),
+    FE_F(Terrain, detail_scale, "Detail size", Float, 0.01f, 1000, nullptr),
+    FE_F(Terrain, detail_strength, "Detail strength", Float, 0, 1, nullptr),
     FE_F(Terrain, cast_shadows, "Cast shadows", Bool, 0, 0, nullptr),
     FE_F(Terrain, friction, "Friction", Float, 0, 1, nullptr),
     FE_F(Terrain, layer, "Layers", Bits, 0, 0, nullptr),
     FE_F(Terrain, revision, "Revision", Int, 0, 0, nullptr),
-    FE_FOLIAGE(1), FE_FOLIAGE(2), FE_FOLIAGE(3), FE_FOLIAGE(4),
+    FE_FOLIAGE(1), FE_FOLIAGE(2), FE_FOLIAGE(3), FE_FOLIAGE(4), FE_FOLIAGE(5), FE_FOLIAGE(6), FE_FOLIAGE(7), FE_FOLIAGE(8),
 };
-static_assert(kFoliageLayers == 4, "kTerrain lists four foliage layers");
+static_assert(kFoliageLayers == 8, "kTerrain lists eight foliage layers");
+static_assert(sizeof(Terrain) < 65536, "FieldInfo offsets are 16 bit");
 
 const FieldInfo kClouds[] = {
     FE_F(Clouds, current, "Current", Bool, 0, 0, nullptr),

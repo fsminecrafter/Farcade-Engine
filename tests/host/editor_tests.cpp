@@ -2086,6 +2086,56 @@ int main() {
             CHECK(far_n < near_n && far_n > 0, "fewer instances far away (%ld < %ld)", far_n, near_n);
             rb.build(ed.scene, view, proj, Vec3(0, 20, 800), 0.1f, 1000.0f);
             CHECK(rb.terrain.stats().foliage_instances == 0, "none past the distance");
+            // Model LOD: past lod_distance a block draws grass_lod1.mof (another model: other vertices per instance).
+            {
+                size_t n3 = 0;
+                void* m3 = platform::read_file("assets/samples/skinned_bar.mof", &n3);
+                char lp[600];
+                snprintf(lp, sizeof lp, "%s/grass_lod1.mof", ed.project_dir);
+                if (m3) platform::write_file(lp, m3, n3);
+                free(m3);
+                to->modules.terrain.foliage[0].lod_distance = 60.0f;
+                auto per_instance = [&](Vec3 eye) {
+                    rb.build(ed.scene, Mat4::look_at(eye, Vec3(0, 0, 0), Vec3(0, 1, 0)), proj, eye, 0.1f, 1000.0f);
+                    uint32_t near_v = 0, far_v = 0;
+                    for (int i = 0; i < rb.scene.item_count; i++)
+                        if (rb.scene.items[i].foliage) { (near_v ? far_v : near_v) = rb.scene.items[i].mesh.instance_vertices; }
+                    return near_v;
+                };
+                uint32_t v_near = per_instance(Vec3(0, 20, 40)), v_far = per_instance(Vec3(0, 20, 300));
+                CHECK(v_near && v_far && v_near != v_far, "a far block draws the LOD model (%u vs %u vertices per instance)", v_far, v_near);
+                to->modules.terrain.foliage[0].lod_distance = 0.0f;
+                CHECK(per_instance(Vec3(0, 20, 300)) == v_near, "LOD distance 0: the full model everywhere");
+            }
+            // The eighth layer is saved and read back with the scene; a heightmap (8 bit grey PGM) imports.
+            {
+                snprintf(to->modules.terrain.foliage[7].name, kPathMax, "rocks");
+                to->modules.terrain.foliage[7].lod_distance = 120.0f;
+                size_t tn = 0;
+                char* text = save_scene_text(ed.scene, ed.project_dir, &tn);
+                Scene back;
+                SceneLoadReport rep;
+                Object* bt = text && load_scene_text(back, text, tn, &rep) ? back.get(t) : nullptr;
+                CHECK(bt && !strcmp(bt->modules.terrain.foliage[7].name, "rocks") && bt->modules.terrain.foliage[7].lod_distance == 120.0f &&
+                      rep.skipped == 0, "foliage layer 8 round trips");
+                free(text);
+                const unsigned char pgm[] = { 'P', '5', '\n', '2', ' ', '2', '\n', '2', '5', '5', '\n', 0, 255, 0, 255 };
+                char hp[600];
+                snprintf(hp, sizeof hp, "%s/hm.pgm", ed.project_dir);
+                platform::write_file(hp, pgm, sizeof pgm);
+                ed.terrain_import_low = 10.0f;
+                ed.terrain_import_high = 30.0f;
+                TerrainData* hd = terrain_data(*ed.scene.get(t));
+                int rev = hd ? hd->revision : 0;
+                CHECK(ed.import_heightmap(t, hp), "Import heightmap");
+                Vec3 org = terrain_origin(ed.scene, *ed.scene.get(t));
+                CHECK(hd && absf_(hd->height_at(0, 5) + org.y - 10.0f) < 0.05f && absf_(hd->height_at(hd->size_x(), 5) + org.y - 30.0f) < 0.05f,
+                      "black at the low height, white at the high one (%.2f, %.2f)", hd ? hd->height_at(0, 5) + org.y : 0.0f,
+                      hd ? hd->height_at(hd->size_x(), 5) + org.y : 0.0f);
+                CHECK(hd && hd->goto_revision(rev), "and it is one undo step");
+                ed.scene.get(t)->modules.terrain.revision = rev;
+                snprintf(to->modules.terrain.foliage[7].name, kPathMax, "%s", "");
+            }
             // Streaming: chunks within the load distance, Dynamic objects with them.
             ObjectId near_c = ed.create_object("Near", MeshKind::Cube, Vec3(0, 3, 0));
             ObjectId far_c = ed.create_object("Far", MeshKind::Cube, Vec3(120, 3, 120));

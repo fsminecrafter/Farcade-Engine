@@ -10,6 +10,7 @@
 #include "mof/mof.h"
 #include "mof/mof_import.h"
 #include "mof_check.h"
+#include "mof/simplify.h"
 #include "stb/stb_image_write.h"
 
 static const char* kTmp = "build/mof-test-tmp";
@@ -435,8 +436,80 @@ static void test_generators() {
     (void)zero;
 }
 
+// Triangle reduction (mof/simplify.h): a 64 x 64 grid bent into a hill, and 300 separate small cards.
+static void test_simplify() {
+    const int G = 64;
+    static float pos[(G + 1) * (G + 1) * 3], uv[(G + 1) * (G + 1) * 2];
+    static uint32_t idx[G * G * 6 + 300 * 6];
+    for (int z = 0; z <= G; z++)
+        for (int x = 0; x <= G; x++) {
+            int v = z * (G + 1) + x;
+            float fx = (float)x / G - 0.5f, fz = (float)z / G - 0.5f;
+            pos[v * 3] = fx; pos[v * 3 + 1] = 0.3f * (1.0f - 4.0f * (fx * fx + fz * fz)); pos[v * 3 + 2] = fz;
+            uv[v * 2] = (float)x / G; uv[v * 2 + 1] = (float)z / G;
+        }
+    uint32_t n = 0;
+    for (int z = 0; z < G; z++)
+        for (int x = 0; x < G; x++) {
+            uint32_t a = z * (G + 1) + x, b = a + 1, c = a + G + 1, d = c + 1;
+            idx[n++] = a; idx[n++] = c; idx[n++] = b; idx[n++] = b; idx[n++] = c; idx[n++] = d;
+        }
+    mof_wmesh m;
+    mof_wmesh_default(&m);
+    m.vertex_count = (G + 1) * (G + 1);
+    m.positions = pos;
+    m.uv0 = uv;
+    m.indices = idx;
+    m.index_count = n;
+    mof_wdesc d;
+    memset(&d, 0, sizeof d);
+    d.alloc = mof_libc_alloc();
+    d.mesh_count = 1;
+    d.meshes = &m;
+    CHECK(mof_desc_triangles(&d) == (uint64_t)G * G * 2);
+    mof_simplified s;
+    char err[128];
+    CHECK(mof_simplify(&d, 0.1f, &s, err, sizeof err));
+    uint64_t want = (uint64_t)G * G * 2 / 10;
+    CHECK(s.triangles_after <= want + want / 3 && s.triangles_after >= want / 3);
+    const mof_wmesh& r = s.desc.meshes[0];
+    CHECK(r.vertex_count < m.vertex_count / 3);          // unused vertices dropped
+    float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
+    bool idx_ok = true;
+    for (uint32_t i = 0; i < r.index_count; i++) idx_ok &= r.indices[i] < r.vertex_count;
+    for (uint32_t v = 0; v < r.vertex_count; v++)
+        for (int k = 0; k < 3; k++) { lo[k] = fminf(lo[k], r.positions[v * 3 + k]); hi[k] = fmaxf(hi[k], r.positions[v * 3 + k]); }
+    CHECK(idx_ok && r.uv0 != nullptr);
+    CHECK(lo[0] < -0.49f && hi[0] > 0.49f && lo[2] < -0.49f && hi[2] > 0.49f);   // the outline is kept
+    mof_buffer buf;
+    CHECK(mof_write(&s.desc, &buf, err, sizeof err));           // a valid file
+    mof_buffer_free(&buf);
+    mof_simplified_free(&s);
+    // 300 separate cards (leaves): the sloppy pass merges them to reach the target.
+    static float cp[300 * 4 * 3];
+    static uint32_t ci[300 * 6];
+    for (int c = 0; c < 300; c++) {
+        float ox = (float)(c % 20) * 0.1f, oz = (float)(c / 20) * 0.1f;
+        const float q[4][3] = { { ox, 0, oz }, { ox + 0.05f, 0, oz }, { ox + 0.05f, 0.05f, oz }, { ox, 0.05f, oz } };
+        memcpy(cp + c * 12, q, sizeof q);
+        const uint32_t t[6] = { 0, 1, 2, 0, 2, 3 };
+        for (int k = 0; k < 6; k++) ci[c * 6 + k] = (uint32_t)(c * 4) + t[k];
+    }
+    mof_wmesh mc;
+    mof_wmesh_default(&mc);
+    mc.vertex_count = 1200;
+    mc.positions = cp;
+    mc.indices = ci;
+    mc.index_count = 1800;
+    d.meshes = &mc;
+    CHECK(mof_simplify(&d, 0.2f, &s, err, sizeof err));
+    CHECK(s.triangles_after <= 160 && s.triangles_after > 0);
+    mof_simplified_free(&s);
+}
+
 int main() {
     printf("mof_import_tests\n");
+    test_simplify();
     mkdir("build", 0777);
     mkdir(kTmp, 0777);
     make_images();

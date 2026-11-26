@@ -11,13 +11,18 @@ MOF_CORE_SRCS := engine/mof/mof_read.cpp engine/mof/mof_write.cpp
 MOF_IMPORT_SRCS := engine/mof/import_common.cpp engine/mof/import_gltf.cpp engine/mof/import_obj.cpp
 MOF_IMPORT_CSRCS := engine/mof/mof_ext_impl.c engine/gfx/stb_image_impl.c external/fast_obj/fast_obj.c
 MOF_TOOL_SRCS := tools/mofconv/mof_info.cpp tools/mofconv/samples.cpp
+# Triangle reduction (mofconv --max-triangles / --lods): meshoptimizer's simplifier (external/meshoptimizer).
+MOF_SIMPLIFY_SRCS := engine/mof/simplify.cpp external/meshoptimizer/simplifier.cpp external/meshoptimizer/allocator.cpp
+MOF_SIMPLIFY_OBJS := $(call host_objs,$(MOF_SIMPLIFY_SRCS))
+$(BUILD)/host/external/meshoptimizer/%.cpp.o: HOST_EXTRA_FLAGS += -w
+$(BUILD)/host/tools/mofconv/main.cpp.o: HOST_EXTRA_FLAGS += -Wno-unused-function     # static stb_image_write
 
 MOF_CORE_OBJS   := $(call host_objs,$(MOF_CORE_SRCS))
 MOF_IMPORT_OBJS := $(call host_objs,$(MOF_IMPORT_SRCS) $(MOF_IMPORT_CSRCS))
 MOF_TOOL_OBJS   := $(call host_objs,$(MOF_TOOL_SRCS))
 MOF_BIN         := $(BUILD)/host/bin
 
-$(MOF_BIN)/mofconv: $(call host_objs,tools/mofconv/main.cpp) $(MOF_TOOL_OBJS) $(MOF_CORE_OBJS) $(MOF_IMPORT_OBJS)
+$(MOF_BIN)/mofconv: $(call host_objs,tools/mofconv/main.cpp) $(MOF_TOOL_OBJS) $(MOF_CORE_OBJS) $(MOF_IMPORT_OBJS) $(MOF_SIMPLIFY_OBJS)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(HOST_EXTRA_FLAGS) -o $@ $^ -lm
 
@@ -29,7 +34,7 @@ $(MOF_BIN)/mof_tests: $(call host_objs,tests/host/mof_tests.cpp) $(MOF_TOOL_OBJS
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(HOST_EXTRA_FLAGS) -o $@ $^ -lm
 
-$(MOF_BIN)/mof_import_tests: $(call host_objs,tests/host/mof_import_tests.cpp) $(MOF_TOOL_OBJS) $(MOF_CORE_OBJS) $(MOF_IMPORT_OBJS)
+$(MOF_BIN)/mof_import_tests: $(call host_objs,tests/host/mof_import_tests.cpp) $(MOF_TOOL_OBJS) $(MOF_CORE_OBJS) $(MOF_IMPORT_OBJS) $(MOF_SIMPLIFY_OBJS)
 	@mkdir -p $(dir $@)
 	$(HOST_CXX) $(HOST_EXTRA_FLAGS) -o $@ $^ -lm
 

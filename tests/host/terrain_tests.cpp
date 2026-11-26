@@ -15,7 +15,22 @@ static float absf_(float x) { return x < 0 ? -x : x; }
 
 static uint32_t chunk_version(const TerrainData& t, int cx, int cz) { return t.chunk_info[cz * t.chunks_x + cx].version; }
 
+// Heights from a grid of samples (an imported heightmap), one undo step.
+static void check_import() {
+    TerrainData t;
+    CHECK(t.generate(2, 2, 16, 32.0f, 1.0f), "generate");
+    int rev0 = t.revision;
+    const float s[4] = { 0, 1, 2, 3 };                 // 2 x 2: x grows by 1, z by 2
+    CHECK(t.import_heights(s, 2, 2, 10.0f, 5.0f), "import");
+    CHECK(absf_(t.height_at(0, 0) - 5.0f) < 1e-3f, "corner (%.3f)", t.height_at(0, 0));
+    CHECK(absf_(t.height_at(64, 64) - 35.0f) < 1e-3f, "far corner (%.3f)", t.height_at(64, 64));
+    CHECK(absf_(t.height_at(32, 32) - 20.0f) < 1e-3f, "bilinear middle (%.3f)", t.height_at(32, 32));
+    CHECK(t.revision != rev0 && t.goto_revision(rev0) && absf_(t.height_at(32, 32) - 1.0f) < 1e-4f, "undo brings the flat map back");
+    CHECK(!t.import_heights(s, 1, 2, 1.0f, 0.0f), "too few samples");
+}
+
 int main() {
+    check_import();
     // ---- generate and sample
     TerrainData t;
     CHECK(t.generate(4, 3, 16, 32.0f, 5.0f), "generate");

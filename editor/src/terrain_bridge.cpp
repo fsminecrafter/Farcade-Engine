@@ -179,9 +179,9 @@ Vec3 terrain_origin(Scene& sc, const Object& o) {
 
 namespace {
 
-constexpr int kMaxParts = 4;                // parts drawn of each foliage model
+constexpr int kMaxParts = 8;                // parts drawn of each foliage model (variants x materials)
 constexpr int kMaxLayerModels = 64;         // models in one foliage layer's list
-constexpr int kMaxInstances = 65536;        // per chunk and layer
+constexpr int kMaxInstances = 262144;       // per chunk and layer (an even thinning beyond it)
 constexpr uint32_t kMaxBatchVertices = 1u << 21;
 
 struct ChunkMesh {
@@ -215,6 +215,7 @@ struct FoliageGroup {
     FoliageInstance* inst = nullptr;
     int total = 0;
     int built = 0;                          // instances in the geometry (a prefix)
+    int lod = 0;                            // the model LOD the geometry is of (0 = x.mof, 1 = x_lod1.mof ...)
     FoliagePart parts[kMaxParts];
     int part_count = 0;
     Vec3 lo, hi;                            // terrain local bounds of the built instances
@@ -334,6 +335,11 @@ gfx::DrawItem* TerrainView::push(ObjectId id) {
     return d;
 }
 
+namespace {
+double g_budget_override = 0;
+}
+void terrain_build_budget_override(double ms) { g_budget_override = ms; }
+
 void TerrainView::evict(size_t budget) {
     for (;;) {
         size_t total = 0;
@@ -359,6 +365,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
     item_count_ = 0;
     stats_ = TerrainViewStats();
     double t_start = clock_ms();
+    const double budget_ms = g_budget_override > 0 ? g_budget_override : build_budget_ms;
     bool budget_left = true;
     for (int i = 0; i < sc.count(); i++) {
         Object& o = sc.at(i);
@@ -411,6 +418,8 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
         float lod_d = ts.lod_distance > 1.0f ? ts.lod_distance : 1.0f;
         // Foliage models of the layers: each layer's list, the ones that load (an instance picks one of them).
         const Model* models[kFoliageLayers][kMaxLayerModels] = {};
+        // [l][k][1], [2]: x_lod1.mof / x_lod2.mof next to model k, when they exist (cached misses: cheap).
+        static const Model* lods[kFoliageLayers][kMaxLayerModels][3];
         int model_count[kFoliageLayers] = {};
         uint64_t lhash[kFoliageLayers] = {};
         for (int l = 0; l < kFoliageLayers; l++) {
@@ -420,7 +429,22 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
             for (const char* at = path_list_next(fl.model, one, kPathMax); at && model_count[l] < kMaxLayerModels;
                  at = path_list_next(at, one, kPathMax)) {
                 const Model* m = model_load(one);
-                if (m && m->part_count > 0) models[l][model_count[l]++] = m;
+                if (!m || m->part_count <= 0) continue;
+                int k2 = model_count[l]++;
+                models[l][k2] = m;
+                lods[l][k2][0] = m;
+                lods[l][k2][1] = lods[l][k2][2] = nullptr;
+                if (fl.lod_distance > 0.0f) {
+                    size_t n = strlen(one);
+                    if (n > 4 && !strcmp(one + n - 4, ".mof")) {
+                        char lp[kPathMax + 8];
+                        for (int L = 1; L <= 2; L++) {
+                            snprintf(lp, sizeof lp, "%.*s_lod%d.mof", (int)(n - 4), one, L);
+                            const Model* lm = model_load(lp);
+                            lods[l][k2][L] = lm && lm->part_count > 0 ? lm : nullptr;
+                        }
+                    }
+                }
             }
             lhash[l] = layer_hash(fl, models[l], model_count[l]);
         }
@@ -480,6 +504,11 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                     it->mesh.occluder_count = cm.occ_n;
                     it->model = model;
                     it->texture_path = ts.texture[0] ? ts.texture : nullptr;
+                    if (ts.detail_texture[0] && ts.detail_strength > 0.0f) {
+                        it->detail_path = ts.detail_texture;
+                        it->detail_repeats = ts.uv_scale / (ts.detail_scale > 0.01f ? ts.detail_scale : 0.01f);
+                        it->detail_strength = ts.detail_strength;
+                    }
                     it->color = ts.color;
                     it->roughness = ts.roughness;
                     it->cast_shadows = ts.cast_shadows;
@@ -553,7 +582,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                     }
                     free(counts);
                     free(all);
-                    if (clock_ms() - t_start > build_budget_ms) budget_left = false;
+                    if (clock_ms() - t_start > budget_ms) budget_left = false;
                 }
                 float smax = fl.scale_max > fl.scale_min ? fl.scale_max : fl.scale_min;
                 for (int q = 0; q < S2; q++) {
@@ -561,18 +590,23 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                     if (!b.group_count) continue;
                     Vec3 qlo(lo.x + (float)(q % S) * bsize, lo.y, lo.z + (float)(q / S) * bsize);
                     Vec3 qhi(qlo.x + bsize, hi.y, qlo.z + bsize);
-                    float share = foliage_share(box_distance(local_eye, qlo, qhi), fl.distance);
+                    float qd = box_distance(local_eye, qlo, qhi);
+                    float share = foliage_share(qd, fl.distance);
                     if (share <= 0) continue;
+                    // Model LOD of the block: lod_distance, twice it.
+                    int want_lod = fl.lod_distance > 0.0f ? (qd > 2.0f * fl.lod_distance ? 2 : (qd > fl.lod_distance ? 1 : 0)) : 0;
                     bool drawn = false;
                     for (int gi = 0; gi < b.group_count; gi++) {
                         FoliageGroup& gr = b.groups[gi];
-                        const Model* m = models[l][gr.model];
+                        int glod = want_lod;
+                        while (glod > 0 && !lods[l][gr.model][glod]) glod--;
+                        const Model* m = glod ? lods[l][gr.model][glod] : models[l][gr.model];
                         if (gr.total <= 0 || !m) continue;
                         int need = (int)((float)gr.total * share + 0.999f);
                         if (need < 1) need = 1;
                         if (need > gr.total) need = gr.total;
                         // Geometry for a power-of-two share of the instances that covers `need`.
-                        if (need > gr.built || (gr.built > 4 * need && gr.built > 256)) {
+                        if (need > gr.built || (gr.built > 4 * need && gr.built > 256) || (gr.built > 0 && gr.lod != glod)) {
                             if (!budget_left) { stats_.pending = true; if (gr.built <= 0) continue; }
                             else {
                                 int target = gr.total;
@@ -631,9 +665,10 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                                 }
                                 if (!ok) { gr.free_geometry(); continue; }
                                 gr.built = target;
+                                gr.lod = glod;
                                 b.sum();
                                 stats_.foliage_built++;
-                                if (clock_ms() - t_start > build_budget_ms) budget_left = false;
+                                if (clock_ms() - t_start > budget_ms) budget_left = false;
                             }
                         }
                         if (gr.built <= 0) continue;
@@ -650,7 +685,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                             it->mesh.vertex_count = fp.per * (uint32_t)gr.built;
                             it->mesh.draw_count = fp.per * (uint32_t)draw;
                             it->mesh.instance_vertices = fp.per;
-                            it->mesh.key = mix64(mix64(mix64(mix64(td->serial ^ 0xF011A6Eull, bid), (uint64_t)p), b.settings ^ fver), (uint64_t)gr.built) | 1ull;
+                            it->mesh.key = mix64(mix64(mix64(mix64(td->serial ^ 0xF011A6Eull, bid), (uint64_t)p), b.settings ^ fver), (uint64_t)gr.built * 4u + (uint64_t)gr.lod) | 1ull;
                             it->mesh.has_bounds = true;
                             it->mesh.bounds_min = gr.lo;
                             it->mesh.bounds_max = gr.hi;

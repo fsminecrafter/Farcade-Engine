@@ -392,6 +392,34 @@ void TerrainData::bump(int ix0, int iz0, int ix1, int iz1, bool mesh, bool folia
         }
 }
 
+bool TerrainData::import_heights(const float* samples, int w, int h, float scale, float offset) {
+    if (!valid() || !samples || w < 2 || h < 2) return false;
+    bool own_stroke = !in_stroke();
+    if (own_stroke) begin_stroke();
+    snapshot(0, 0, side_x(), side_z());
+    const int sx = side_x(), sz = side_z();
+    for (int z = 0; z <= sz; z++) {
+        float fz = (float)z / (float)sz * (float)(h - 1);
+        int z0 = (int)fz;
+        if (z0 > h - 2) z0 = h - 2;
+        float tz = fz - (float)z0;
+        for (int x = 0; x <= sx; x++) {
+            float fx = (float)x / (float)sx * (float)(w - 1);
+            int x0 = (int)fx;
+            if (x0 > w - 2) x0 = w - 2;
+            float tx = fx - (float)x0;
+            const float* r0 = samples + (size_t)z0 * (size_t)w + (size_t)x0;
+            const float* r1 = r0 + w;
+            float a = r0[0] + (r0[1] - r0[0]) * tx, b = r1[0] + (r1[1] - r1[0]) * tx;
+            heights[(size_t)z * (size_t)(sx + 1) + (size_t)x] = offset + (a + (b - a) * tz) * scale;
+        }
+    }
+    bump(0, 0, sx, sz, true, true);
+    if (hist_ && hist_->stroking) hist_->changed = true;
+    if (own_stroke) end_stroke();
+    return true;
+}
+
 void TerrainData::touch_cells(int x0, int z0, int x1, int z1, bool mesh) {
     if (mesh) { bump(x0, z0, x1 + 1, z1 + 1, true, true); return; }
     int cx0 = clampi(x0 / cells, 0, chunks_x - 1), cx1 = clampi(x1 / cells, 0, chunks_x - 1);

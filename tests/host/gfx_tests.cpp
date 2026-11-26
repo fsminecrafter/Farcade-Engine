@@ -979,6 +979,39 @@ void test_many_items_and_budget() {
     CHECK(lum(px(r, W / 2, H / 2)) > 0);
 }
 
+void test_mesh_cache_full() {
+    // More distinct meshes in one frame than the mesh cache holds (2048 buffers): the ones that do not fit
+    // are left out and counted, the frame still renders (no error, no fall back), and the next frame too.
+    constexpr int N = 2300;
+    static DrawItem items[N];
+    TestScene t;
+    for (int i = 0; i < N; i++) {
+        items[i] = t.items[0];
+        items[i].mesh.key = 0x5000u + (uint64_t)i;          // each its own cached mesh
+        items[i].model = Mat4::translation(Vec3((float)(i % 60 - 30) * 0.5f, (float)(i / 60) * 0.4f, -20.0f)) *
+                         Mat4::scale(Vec3(0.2f, 0.2f, 0.2f));
+    }
+    t.scene.items = items;
+    t.scene.item_count = N;
+    t.lights[0] = dir_light(Vec3(-1, -1, -1));
+    t.scene.light_count = 1;
+    t.camera(Vec3(0, 8, 8), Vec3(0, 8, -20), 70.0f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    for (int frame = 0; frame < 2; frame++) {
+        if (!render_ok(r, t.scene)) return;
+        CHECK(r.stats().meshes_dropped > 0);
+        CHECK(r.stats().meshes_dropped <= N - 2000);
+        CHECK(r.stats().draws >= 2000 && r.stats().draws + r.stats().meshes_dropped <= N);
+        CHECK(lum(px(r, W / 2, H / 2)) > 0);
+    }
+    // Back under the limit: nothing is dropped.
+    t.scene.item_count = 500;
+    if (!render_ok(r, t.scene)) return;
+    CHECK_EQ(r.stats().meshes_dropped, 0);
+    CHECK_EQ(r.stats().draws, 500);
+}
+
 void test_big_mesh() {
     // More than one upload slice (8190 vertices) per buffer: 64 x 32 segments is 12288
     // vertices. With and without normals (made from the faces) the picture is the same
@@ -2148,8 +2181,39 @@ void check_cutout(bool tier) {
     t.items[0].double_sided = false;
 }
 
+// A detail texture multiplies the albedo (x2, so its 0.5 grey is neutral): a red detail (1, 0, 0) doubles red
+// and removes green, at its strength.
+void check_detail(bool tier) {
+    const char* tn = tier ? "GPU tier" : "base tier";
+    ShadowRig rig;
+    TestScene& t = rig.t;
+    t.scene.read_asset = read_hook_asset;
+    t.scene.item_count = 1;
+    t.items[0].color = Vec3(0.4f, 0.4f, 0.4f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    GraphicsSettings g = tier_off();
+    if (tier) g.pbr = true; else g.allow_gpu_effects_on_cpu = false;
+    r.set_settings(g);
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px plain = t.at(r, Vec3(0, 1.0f, 0));
+    t.items[0].detail_path = "red.bmp";
+    t.items[0].detail_repeats = 4.0f;
+    t.items[0].detail_strength = 1.0f;
+    CHECK(render_ok(r, t.scene) && r.uses_gpu_tier() == tier);
+    Px full = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(full.r > plain.r + 20 && full.g < plain.g / 2, "%s: the detail texture multiplies the albedo (%d %d %d, was %d %d %d)", tn,
+           full.r, full.g, full.b, plain.r, plain.g, plain.b);
+    t.items[0].detail_strength = 0.0f;
+    CHECK(render_ok(r, t.scene));
+    Px none = t.at(r, Vec3(0, 1.0f, 0));
+    CHECKF(abs(none.g - plain.g) < 4, "%s: strength 0 leaves it as it was (%d vs %d)", tn, none.g, plain.g);
+}
+
 void test_shader_hooks() {
     test_shader_sections();
+    check_detail(true);
+    check_detail(false);
     check_cutout(true);
     check_cutout(false);
     check_displace_matches(true);
@@ -2195,6 +2259,7 @@ int main() {
     test_sky();
     test_cache_and_resize();
     test_many_items_and_budget();
+    test_mesh_cache_full();
     test_big_mesh();
     test_jit_matches_interpreter();
     test_errors();

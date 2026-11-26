@@ -36,6 +36,18 @@ chunk count, the cell size and the memory the heights take.
 **Generate** asks before it replaces existing ground. It keeps the map
 centred where it was. Undo (Ctrl+Z) brings the old map back.
 
+**Import heightmap...** (in the same section) replaces every height with an
+image stretched over the whole map, read bilinearly, as one undo step:
+
+- A 16-bit or 8-bit grey PNG maps black to **Low** and white to **High**
+  (the two fields under the button).
+- An RGB PNG is read as Terrarium elevation, `R × 256 + G + B / 256 − 32768`
+  metres. Its lowest point lands on the Y level.
+
+Code: `TerrainData::import_heights()`. The example world
+(`docs/example-world.md`) builds its terrain from real elevation tiles this
+way, with `tools/worldgen`.
+
 ## The brushes
 
 The **Terrain tools** section has six tools. Select the terrain, choose a
@@ -75,7 +87,8 @@ duplicated terrain gets a copy of the data under its own name.
 | Load distance | `load_distance` | Meters from the camera to a chunk's edge within which the chunk is loaded at run time |
 | Stream in editor | `stream_in_editor` | The editor view also unloads chunks and objects (off: the editor shows everything) |
 | Detail distance | `lod_distance` | Full mesh detail up to here. Then half the cells, a quarter, an eighth, one step per doubling of the distance |
-| Texture, Color, Roughness, Texture size | `texture`, `color`, `roughness`, `uv_scale` | The ground's look. Texture size is meters per repeat |
+| Texture, Color, Roughness, Texture size | `texture`, `color`, `roughness`, `uv_scale` | The ground's look. Texture size is meters per repeat (up to 100000, so one colour map can cover the whole map) |
+| Detail texture, Detail size, Detail strength | `detail_texture`, `detail_scale`, `detail_strength` | A second, tiling texture multiplied over the first up close (grey, 0.5 = no change), Detail size meters per repeat. With a colour map as Texture it gives the ground its fine grain |
 | Cast shadows | `cast_shadows` | |
 | Friction, Layers | `friction`, `layer` | Physics |
 
@@ -104,7 +117,7 @@ unloaded`. Dynamic is the default and is not written.
 
 ## Foliage
 
-A terrain has four foliage layers, in the **Foliage** section. Each layer
+A terrain has eight foliage layers, in the **Foliage** section. Each layer
 grows a `.mof` model wherever you paint it with the Foliage tool.
 
 | Field | Meaning |
@@ -114,6 +127,7 @@ grows a `.mof` model wherever you paint it with the Foliage tool.
 | Density | Instances per square meter where the layer is painted at full strength |
 | Scale | The smallest and largest random scale |
 | Distance | The farthest the layer is drawn. Over the last 60% it thins out |
+| LOD distance | Blocks beyond it draw `x_lod1.mof` instead of `x.mof`, and beyond twice it `x_lod2.mof`, when those files are next to the model (`mofconv --lods` writes them). 0: always the full model |
 | Max slope | Ground steeper than this gets none |
 | Align to slope | The model stands along the ground's normal (else straight up) |
 | Shadows | The layer casts shadows (off by default: it is expensive) |
@@ -191,8 +205,16 @@ FarcadeGL has no instanced draws, so foliage has its own path:
 The Profiler tab shows the chunks drawn at each detail level, the unloaded
 chunks and objects, and the foliage instances, batches and memory.
 
-There is no alpha cut-out yet. Grass should be modelled blades, not textured
-cards with transparent parts.
+Leaf and grass cards with transparent parts work: a material with alpha mode
+MASK (glTF `alphaMode`, or `mofconv --alpha`) is cut out by its texture's
+alpha in every pass, shadows included, and a double-sided material is lit
+from both sides (docs/graphics.md, Textures).
+
+When a frame has more meshes than the renderer's mesh cache (2048 buffers)
+or GPU memory holds, the meshes that do not fit are left out of that frame
+and counted (`RendererStats::meshes_dropped`); the rest draws. Big maps keep
+the count down with big chunks and few model variants per layer (see
+docs/example-world.md, which stresses all of this).
 
 ## Occlusion culling
 

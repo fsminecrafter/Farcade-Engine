@@ -13,6 +13,7 @@ licence file. To update one, copy the new files over and change this table.
 | flecs | https://github.com/SanderMertens/flecs | tag v4.1.6 | fb55f3c | MIT (single-file distribution: flecs.c, flecs.h) |
 | lua | https://www.lua.org/ftp/lua-5.4.7.tar.gz | release 5.4.7 | sha256 9fbf5e28 | MIT (src/*.c, *.h without lua.c, luac.c; the engine builds without liolib, loslib, loadlib, linit) |
 | dr_libs | https://github.com/mackron/dr_libs | master | f12e197 | Public domain or MIT-0 (dr_wav.h 0.14.7, dr_mp3.h 0.7.5; audio decoders, used from memory only: engine/audio/impl_*.c define the NO_STDIO flags) |
+| meshoptimizer | https://github.com/zeux/meshoptimizer | tag v0.22 | v0.22 | MIT (src/meshoptimizer.h, simplifier.cpp, allocator.cpp only: the triangle reduction behind mofconv --max-triangles / --lods, engine/mof/simplify.h) |
 | fgpu | https://github.com/fsminecrafter/Minimal-OS | claude/nice-planck-g8m5ss | 6c70d5c (FGPU ABI 4); `x86_64/fgpu_abi.h` from 6eae73f (16 texture units on the NVIDIA backend) | GPLv3 |
 | Minimal-OS-SDK | https://github.com/fsminecrafter/Minimal-OS-SDK | main | git submodule | GPLv3 |
 

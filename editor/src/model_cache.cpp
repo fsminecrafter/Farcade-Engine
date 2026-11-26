@@ -9,7 +9,7 @@ namespace fe {
 
 namespace {
 
-constexpr int kMaxModels = 64;
+constexpr int kMaxModels = 256;              // foliage layers with LOD files use three each
 Model* g_models[kMaxModels];
 int g_count = 0;
 ModelReader g_reader = nullptr;

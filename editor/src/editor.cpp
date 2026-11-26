@@ -92,7 +92,7 @@ Vec3 ViewCamera::eye() const {
 
 Mat4 ViewCamera::view() const { return Mat4::look_at(eye(), target, Vec3(0, 1, 0)); }
 
-Mat4 ViewCamera::projection(float aspect) const { return Mat4::perspective(radians(fov), aspect, 0.1f, 500.0f); }
+Mat4 ViewCamera::projection(float aspect, float znear, float zfar) const { return Mat4::perspective(radians(fov), aspect, znear, zfar); }
 
 // ---------------------------------------------------------------- theme
 //

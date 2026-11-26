@@ -113,7 +113,20 @@ void collect_object(Ctx& c, const Object& o, const char* scene_name) {
             if (mi.fields[f].type == FieldType::Path) add_file(c, fp, mi.fields[f].name, who);
             else if (mi.fields[f].type == FieldType::PathList) {
                 char one[kPathMax];
-                for (const char* at = path_list_next(fp, one, kPathMax); at; at = path_list_next(at, one, kPathMax)) add_file(c, one, mi.fields[f].name, who);
+                for (const char* at = path_list_next(fp, one, kPathMax); at; at = path_list_next(at, one, kPathMax)) {
+                    add_file(c, one, mi.fields[f].name, who);
+                    // Foliage models: the LOD files next to x.mof (x_lod1.mof, x_lod2.mof) are packed too, when they exist.
+                    size_t n = strlen(one);
+                    if (n < 4 || n + 5 >= sizeof one || strcmp(one + n - 4, ".mof") != 0) continue;
+                    for (int l = 1; l <= 2; l++) {
+                        char lod[kPathMax + 8], v[512], full[1100];
+                        snprintf(lod, sizeof lod, "%.*s_lod%d.mof", (int)(n - 4), one, l);
+                        if (virtual_path(c, lod, v, sizeof v)) {
+                            full_path(c, v, full, sizeof full);
+                            if (platform::file_exists(full)) add_file(c, lod, "foliage LOD", who);
+                        }
+                    }
+                }
             }
         }
     }

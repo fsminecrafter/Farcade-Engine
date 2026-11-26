@@ -2233,6 +2233,9 @@ void Editor::panel_profiler() {
     ImGui::Text("Culling: %d items, %d outside the view, %d hidden by %d occluders (%d triangles), %.2f ms%s", st.items_in,
                 st.culled_frustum, st.culled_occlusion, st.occluders, st.occluder_triangles, st.cull_ms,
                 settings.graphics.occlusion_culling ? "" : "  (occlusion culling off)");
+    if (st.meshes_dropped > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "%d meshes left out: the mesh cache or GPU memory is full (fewer chunks, foliage variants or distance)",
+                           st.meshes_dropped);
     if (terrain_stats_.terrains > 0) {
         const TerrainViewStats& ts = terrain_stats_;
         ImGui::Text("Terrain: %d of %d chunks drawn (detail %d / %d / %d / %d), %d unloaded, %d objects unloaded", ts.chunks_drawn, ts.chunks,

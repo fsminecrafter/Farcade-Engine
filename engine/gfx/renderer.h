@@ -163,6 +163,7 @@ struct RendererStats {
     int items_in = 0, culled_frustum = 0, culled_occlusion = 0, occluders = 0, occluder_triangles = 0;
     double cull_ms = 0;
     int cloud_quality = 0;                  // clouds drawn: 0 none, 1 low, 2 medium, 3 ultra (after the caps)
+    int meshes_dropped = 0;                 // items left out: the mesh cache was full of meshes this frame uses
 };
 
 // Milliseconds per stage of the last frame that ran the GPU tier (0 = the stage

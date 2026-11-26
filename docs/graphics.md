@@ -16,7 +16,21 @@ in each pass, so nothing drops the frame to the base tier.
 
 The texture multiplies the material colour (both in linear light). Built-in
 meshes get generated planar UVs. Texture alpha is not blended (the targets
-are XRGB).
+are XRGB), but it can cut out:
+
+- **Alpha cut-out.** An item with `DrawItem::alpha_cut` > 0 (a `.mof`
+  material with alpha mode MASK, its `alphaCutoff`, else 0.5) discards the
+  pixels whose texture alpha is below it. This happens in the lit and unlit
+  shaders of both tiers and in the shadow, local-shadow, depth and normal
+  passes, so leaf cards cast leaf-shaped shadows. Cut-out items never act as
+  occluders.
+- **Two-sided.** `DrawItem::double_sided` (glTF `doubleSided`) draws without
+  back-face culling and turns the normal towards the viewer, so a card is lit
+  the same from both sides.
+- **Detail texture.** Terrains can multiply a second, tiling texture over
+  the first (`u_detail`, docs/terrain.md).
+
+Textures keep their alpha in the top byte. FarcadeGL has 16 texture units.
 
 ### Shader hooks: `@displace` and `@surface`
 

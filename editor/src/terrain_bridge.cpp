@@ -181,7 +181,7 @@ namespace {
 
 constexpr int kMaxParts = 8;                // parts drawn of each foliage model (variants x materials)
 constexpr int kMaxLayerModels = 64;         // models in one foliage layer's list
-constexpr int kMaxInstances = 65536;        // per chunk and layer
+constexpr int kMaxInstances = 262144;       // per chunk and layer (an even thinning beyond it)
 constexpr uint32_t kMaxBatchVertices = 1u << 21;
 
 struct ChunkMesh {
@@ -335,6 +335,11 @@ gfx::DrawItem* TerrainView::push(ObjectId id) {
     return d;
 }
 
+namespace {
+double g_budget_override = 0;
+}
+void terrain_build_budget_override(double ms) { g_budget_override = ms; }
+
 void TerrainView::evict(size_t budget) {
     for (;;) {
         size_t total = 0;
@@ -360,6 +365,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
     item_count_ = 0;
     stats_ = TerrainViewStats();
     double t_start = clock_ms();
+    const double budget_ms = g_budget_override > 0 ? g_budget_override : build_budget_ms;
     bool budget_left = true;
     for (int i = 0; i < sc.count(); i++) {
         Object& o = sc.at(i);
@@ -576,7 +582,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                     }
                     free(counts);
                     free(all);
-                    if (clock_ms() - t_start > build_budget_ms) budget_left = false;
+                    if (clock_ms() - t_start > budget_ms) budget_left = false;
                 }
                 float smax = fl.scale_max > fl.scale_min ? fl.scale_max : fl.scale_min;
                 for (int q = 0; q < S2; q++) {
@@ -662,7 +668,7 @@ void TerrainView::update(Scene& sc, const Vec3& eye, bool playing) {
                                 gr.lod = glod;
                                 b.sum();
                                 stats_.foliage_built++;
-                                if (clock_ms() - t_start > build_budget_ms) budget_left = false;
+                                if (clock_ms() - t_start > budget_ms) budget_left = false;
                             }
                         }
                         if (gr.built <= 0) continue;

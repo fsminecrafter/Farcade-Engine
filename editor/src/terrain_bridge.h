@@ -71,6 +71,10 @@ struct TerrainViewStats {
     size_t memory = 0;                      // meshes and batches held, bytes
 };
 
+// Tools (fe-editor-shot --world) and loading screens: the foliage build time every TerrainView gets per frame
+// (ms), in place of its own build_budget_ms; 0 gives each its own again.
+void terrain_build_budget_override(double ms);
+
 class TerrainView {
 public:
     TerrainView() = default;
@@ -92,7 +96,7 @@ public:
     bool pending() const { return stats_.pending; }
     void clear();                           // drops every cached mesh and batch
     // Foliage build time per frame (ms); the rest waits for the next frames.
-    double build_budget_ms = 6.0;
+    double build_budget_ms = 6.0;           // terrain_build_budget_override() > 0 replaces it (tools, loading)
     size_t memory_budget = (size_t)384 << 20;
 
     struct Cache;

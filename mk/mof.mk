@@ -15,6 +15,7 @@ MOF_TOOL_SRCS := tools/mofconv/mof_info.cpp tools/mofconv/samples.cpp
 MOF_SIMPLIFY_SRCS := engine/mof/simplify.cpp external/meshoptimizer/simplifier.cpp external/meshoptimizer/allocator.cpp
 MOF_SIMPLIFY_OBJS := $(call host_objs,$(MOF_SIMPLIFY_SRCS))
 $(BUILD)/host/external/meshoptimizer/%.cpp.o: HOST_EXTRA_FLAGS += -w
+$(BUILD)/host/tools/mofconv/main.cpp.o: HOST_EXTRA_FLAGS += -Wno-unused-function     # static stb_image_write
 
 MOF_CORE_OBJS   := $(call host_objs,$(MOF_CORE_SRCS))
 MOF_IMPORT_OBJS := $(call host_objs,$(MOF_IMPORT_SRCS) $(MOF_IMPORT_CSRCS))

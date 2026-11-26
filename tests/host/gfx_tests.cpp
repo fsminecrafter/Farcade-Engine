@@ -979,6 +979,39 @@ void test_many_items_and_budget() {
     CHECK(lum(px(r, W / 2, H / 2)) > 0);
 }
 
+void test_mesh_cache_full() {
+    // More distinct meshes in one frame than the mesh cache holds (2048 buffers): the ones that do not fit
+    // are left out and counted, the frame still renders (no error, no fall back), and the next frame too.
+    constexpr int N = 2300;
+    static DrawItem items[N];
+    TestScene t;
+    for (int i = 0; i < N; i++) {
+        items[i] = t.items[0];
+        items[i].mesh.key = 0x5000u + (uint64_t)i;          // each its own cached mesh
+        items[i].model = Mat4::translation(Vec3((float)(i % 60 - 30) * 0.5f, (float)(i / 60) * 0.4f, -20.0f)) *
+                         Mat4::scale(Vec3(0.2f, 0.2f, 0.2f));
+    }
+    t.scene.items = items;
+    t.scene.item_count = N;
+    t.lights[0] = dir_light(Vec3(-1, -1, -1));
+    t.scene.light_count = 1;
+    t.camera(Vec3(0, 8, 8), Vec3(0, 8, -20), 70.0f);
+    Renderer r;
+    CHECK(r.init(W, H));
+    for (int frame = 0; frame < 2; frame++) {
+        if (!render_ok(r, t.scene)) return;
+        CHECK(r.stats().meshes_dropped > 0);
+        CHECK(r.stats().meshes_dropped <= N - 2000);
+        CHECK(r.stats().draws >= 2000 && r.stats().draws + r.stats().meshes_dropped <= N);
+        CHECK(lum(px(r, W / 2, H / 2)) > 0);
+    }
+    // Back under the limit: nothing is dropped.
+    t.scene.item_count = 500;
+    if (!render_ok(r, t.scene)) return;
+    CHECK_EQ(r.stats().meshes_dropped, 0);
+    CHECK_EQ(r.stats().draws, 500);
+}
+
 void test_big_mesh() {
     // More than one upload slice (8190 vertices) per buffer: 64 x 32 segments is 12288
     // vertices. With and without normals (made from the faces) the picture is the same
@@ -2226,6 +2259,7 @@ int main() {
     test_sky();
     test_cache_and_resize();
     test_many_items_and_budget();
+    test_mesh_cache_full();
     test_big_mesh();
     test_jit_matches_interpreter();
     test_errors();

@@ -106,6 +106,16 @@ run 0:/programs/farcade-editor.run --export 0:/projects/MyGame 0:/games/MyGame  
 tools/ci/export_os_test.sh                                     # QEMU: export from the editor, run the result
 ```
 
+## The example world: Åre Valley
+
+A big stress-test project built from real elevation data around Åre, Sweden. It has forested hills, a lake, alpine slopes, CC0 trees, shrubs and grass from Poly Haven in 8 foliage layers, wind sway and volumetric clouds. A script downloads the free assets and builds it locally, and a camera flies a benchmark loop. Details in `docs/example-world.md`.
+
+```sh
+make example-world                                             # 8 x 8 km into build/examples/are-valley (~1.5 GB download)
+make example-world-lite                                        # 4 x 4 km, lighter (for Minimal-OS)
+run 0:/programs/farcade-editor.run --project 0:/projects/are-valley-lite   # on Minimal-OS; Play flies the loop, B a benchmark lap
+```
+
 ## Models: `.mof`
 
 `.mof` is the engine's model file: meshes (positions, normals, tangents,
@@ -118,6 +128,7 @@ are `engine/mof/mof.h` (the reader is freestanding and zero-copy).
 ```sh
 build/host/bin/mofconv model.glb model.mof     # from glTF 2.0 (.gltf/.glb) or OBJ (+MTL)
 build/host/bin/mofconv --info model.mof        # what is inside
+build/host/bin/mofconv tree.gltf tree.mof --split --max-triangles 12000 --lods 3000,400   # big assets: variants, reduce, LODs
 make mof-samples                               # rebuild assets/samples/*.mof
 make test-mof-asan                             # the .mof tests under ASan/UBSan
 ```

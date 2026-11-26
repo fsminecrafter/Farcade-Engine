@@ -69,7 +69,7 @@ struct ViewCamera {     // the editor's orbit camera (not a scene Camera object)
     float fov = 50.0f;
     Vec3 eye() const;
     Mat4 view() const;
-    Mat4 projection(float aspect) const;
+    Mat4 projection(float aspect, float znear = 0.1f, float zfar = 500.0f) const;
 };
 
 class Editor {

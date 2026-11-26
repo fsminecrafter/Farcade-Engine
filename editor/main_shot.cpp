@@ -2,6 +2,11 @@
 // so its look can be checked without a screen (host only).
 //
 //   fe-editor-shot <out_dir> [width height]
+//   fe-editor-shot --world <project> <out.png> <x> <y> <z> <yaw> <pitch> <distance> [frames] [low|high|ultra]
+//
+// --world opens a project (its entry scene) and renders the view of the orbit camera around (x, y, z) after
+// `frames` frames (default 40, so the terrain streams in and the foliage is built), with the editor's panels.
+// Prints the terrain and draw stats. Used to check the example world (docs/example-world.md).
 //
 // Writes <out_dir>/editor-dark.png and <out_dir>/editor-light.png. The demo
 // project (a few files to show in the Files panel) is created in
@@ -100,7 +105,60 @@ static void demo_scene(Editor& ed) {
     ed.log(LogLevel::Info, "Crate: texture crate.png");
 }
 
+static int world_shot(int argc, char** argv) {
+    if (argc < 10) { fprintf(stderr, "usage: fe-editor-shot --world <project> <out.png> x y z yaw pitch distance [frames] [low|high|ultra]\n"); return 2; }
+    static Editor ed;
+    if (!ed.init(1600, 900)) { fprintf(stderr, "init failed\n"); return 1; }
+    ed.perf_clock = real_seconds;
+    ed.open_project(argv[2]);
+    const char* q = argc > 11 ? argv[11] : "ultra";
+    gfx::GraphicsPreset preset = !strcmp(q, "low") ? gfx::GraphicsPreset::Low : !strcmp(q, "high") ? gfx::GraphicsPreset::High : gfx::GraphicsPreset::Ultra;
+    ed.settings.graphics.apply_preset(preset);
+    ed.settings.graphics.allow_gpu_effects_on_cpu = preset == gfx::GraphicsPreset::Ultra;
+    ed.settings.graphics.feature_level = preset == gfx::GraphicsPreset::Ultra ? gfx::FeatureLevelMode::GpuTier : gfx::FeatureLevelMode::Auto;
+    ed.view_renderer = Editor::ViewRenderer::FarcadeGL;
+    ed.settings.show_grid = false;
+    ed.scene.clear_selection();
+    // y as "+N": N meters above the ground at (x, z).
+    float cx = (float)atof(argv[4]), cz = (float)atof(argv[6]), cy = (float)atof(argv[5]);
+    if (argv[5][0] == '+')
+        for (int i = 0; i < ed.scene.count(); i++) {
+            Object& o = ed.scene.at(i);
+            TerrainData* td = o.kind == ObjectKind::Terrain ? terrain_data(o) : nullptr;
+            if (!td) continue;
+            Vec3 org = terrain_origin(ed.scene, o);
+            bool inside = false;
+            float h = td->height_at(cx - org.x, cz - org.z, &inside);
+            if (inside) { cy = org.y + h + cy; printf("ground at %.1f\n", org.y + h); break; }
+        }
+    ed.camera.target = Vec3(cx, cy, cz);
+    ed.camera.yaw = (float)atof(argv[7]);
+    ed.camera.pitch = (float)atof(argv[8]);
+    ed.camera.distance = (float)atof(argv[9]);
+    int frames = argc > 10 ? atoi(argv[10]) : 40;
+    terrain_build_budget_override(1e9);      // every frame builds all the foliage it wants (a still shot)
+    double t0 = real_seconds();
+    // `frames` frames once FarcadeGL has compiled its shaders (a few frames of compiling come first).
+    int i = 0, after = 0;
+    while (after < frames && i < frames + 600) {
+        platform::headless_set_time(i++ / 30.0);
+        ed.frame();
+        if (!ed.fgl_compiling) after++;
+    }
+    const TerrainViewStats& st = ed.terrain_stats_;
+    printf("world: %d frames (%d compiling shaders) in %.1f s; last view %.1f ms, %d triangles\n", i, i - after, real_seconds() - t0, ed.view_ms, ed.view_triangles);
+    printf("terrain: %d chunks drawn of %d, %d foliage batches, %ld instances, %s, %.1f MB\n", st.chunks_drawn, st.chunks, st.foliage_batches,
+           st.foliage_instances, st.pending ? "still building" : "built", st.memory / 1048576.0);
+    printf("draws: %d culled by frustum, %d by occluders, %d meshes left out\n", ed.fgl_stats.culled_frustum, ed.fgl_stats.culled_occlusion,
+           ed.fgl_stats.meshes_dropped);
+    if (!platform::headless_save_png(argv[3])) return 1;
+    printf("wrote %s\n", argv[3]);
+    ed.shutdown();
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "--world")) return world_shot(argc, argv);
     const char* out = argc > 1 ? argv[1] : ".";
     int w = argc > 3 ? atoi(argv[2]) : 1280;
     int h = argc > 3 ? atoi(argv[3]) : 800;

@@ -280,6 +280,7 @@ struct Renderer::Impl {
     MeshEntry* table = nullptr;
     uint32_t table_cap = 0, table_used = 0;
     int cached_buffers = 0;
+    bool out_of_buffers = false;            // the last upload failed for want of GPU memory
     FGLBuffer temp[kMaxTempBuffers];
     int temp_count = 0;
     float* scratch = nullptr;               // kUploadSlice interleaved vertices
@@ -816,7 +817,7 @@ struct Renderer::Impl {
             uint32_t first = c * kChunkVertices;
             uint32_t n = vc - first < kChunkVertices ? vc - first : kChunkVertices;
             FGLBuffer b = fglCreateBuffer(gl, n * kVertexBytes);
-            if (!b) { set_error("FarcadeGL: cannot create a vertex buffer"); return false; }
+            if (!b) { out_of_buffers = true; return false; }       // GPU memory full: the caller drops the mesh
             bufs[c] = b;
             counts[c] = n;
             (*nchunks)++;
@@ -867,8 +868,10 @@ struct Renderer::Impl {
         if (m.key == 0) {
             if (temp_count + kMaxChunks > kMaxTempBuffers) { set_error("too many uncached meshes in one frame"); return nullptr; }
             *temp_entry = MeshEntry();
+            out_of_buffers = false;
             if (!upload(m, vc, temp_entry->buffer, temp_entry->chunk_vertices, &temp_entry->chunks)) {
                 for (uint32_t c = 0; c < temp_entry->chunks; c++) fglDestroyBuffer(gl, temp_entry->buffer[c]);
+                if (out_of_buffers) { out_of_buffers = false; stats.meshes_dropped++; }
                 return nullptr;
             }
             for (uint32_t c = 0; c < temp_entry->chunks; c++) temp[temp_count++] = temp_entry->buffer[c];
@@ -884,7 +887,9 @@ struct Renderer::Impl {
             // Drop what this frame has not used.
             if (!rebuild(table_cap, true)) return nullptr;
             e = find_entry(m.key);
-            if (cached_buffers + (int)need > kMaxCachedBuffers) { set_error("too many meshes in one frame"); return nullptr; }
+            // Still full: this mesh is left out of the frame (counted), the rest still draws. A big world
+            // then loses its last items rather than the whole frame going back to the CPU preview.
+            if (cached_buffers + (int)need > kMaxCachedBuffers) { stats.meshes_dropped++; return nullptr; }
         }
         if (!e) {
             e = insert_entry(m.key);
@@ -892,10 +897,23 @@ struct Renderer::Impl {
         }
         FGLBuffer bufs[kMaxChunks];
         uint32_t counts[kMaxChunks], chunks = 0;
-        if (!upload(m, vc, bufs, counts, &chunks)) {
+        out_of_buffers = false;
+        e->last_frame = frame;                          // kept by a rebuild below
+        bool ok = upload(m, vc, bufs, counts, &chunks);
+        if (!ok && out_of_buffers) {
+            // GPU memory is full: free the meshes this frame has not used and try once more.
             for (uint32_t c = 0; c < chunks; c++) fglDestroyBuffer(gl, bufs[c]);
-            e->vertex_count = 0;
-            e->chunks = 0;
+            chunks = 0;
+            if (rebuild(table_cap, true) && (e = find_entry(m.key)) != nullptr) {
+                out_of_buffers = false;
+                ok = upload(m, vc, bufs, counts, &chunks);
+            }
+        }
+        if (!ok) {
+            for (uint32_t c = 0; c < chunks; c++) fglDestroyBuffer(gl, bufs[c]);
+            if (e) { e->vertex_count = 0; e->chunks = 0; }
+            // Still no room: the mesh is left out of this frame (counted), the rest draws.
+            if (out_of_buffers) { out_of_buffers = false; stats.meshes_dropped++; }
             return nullptr;
         }
         e->vertex_count = vc;

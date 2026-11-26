@@ -318,9 +318,17 @@ void Editor::panel_viewport() {
     if (v.size.x < 16 || v.size.y < 16) { ImGui::End(); return; }
     view_rect[0] = v.pos.x; view_rect[1] = v.pos.y; view_rect[2] = v.size.x; view_rect[3] = v.size.y;
     v.view = camera.view();
-    v.proj = camera.projection(v.size.x / v.size.y);
     Vec3 eye = camera.eye();
     float znear = 0.1f, zfar = 500.0f;
+    // Big worlds: a Terrain is seen as far as it streams (its load distance), and a camera pulled far out sees
+    // what it orbits. The near plane moves out with it, for the depth precision.
+    for (int i = 0; i < scene.count(); i++) {
+        const Object& o = scene.at(i);
+        if (o.kind == ObjectKind::Terrain && o.visible) zfar = fmaxf(zfar, o.modules.terrain.load_distance + 200.0f);
+    }
+    zfar = fmaxf(zfar, camera.distance * 4.0f);
+    if (zfar > 1500.0f) znear = 0.3f;
+    v.proj = camera.projection(v.size.x / v.size.y, znear, zfar);
     // In Play, the view of the current Camera object (the game's view).
     looking_through_camera = false;
     if (playing() && settings.play_through_camera) {

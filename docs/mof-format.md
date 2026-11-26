@@ -465,7 +465,16 @@ nothing leaks.
 ## 10. Importers (`mofconv`)
 
 `mofconv input.(gltf|glb|obj) output.mof [--info]` and `mofconv --info
-file.mof`. The importer library (`engine/mof/mof_import.h`) uses libc only
+file.mof`. Options for big assets (used by `tools/worldgen/build.py`,
+docs/example-world.md), applied in this order:
+
+| Option | What it does |
+| --- | --- |
+| `--alpha PART=FILE` | Merges a grey alpha map into the base-colour texture of the materials whose name contains PART (stored as PNG), and makes them alpha MASK (cutoff 0.5) and double-sided. Repeatable |
+| `--max-texture N` | Downsizes textures larger than N a side (box filter): opaque ones as JPEG, ones with alpha as PNG |
+| `--split` | One file per root node with a mesh (`out_0.mof`, `out_1.mof` ...), moved to the origin, with only the materials and textures it uses. For packs that lay their variants side by side |
+| `--max-triangles N` | Reduces each file to about N triangles (`engine/mof/simplify.h`: meshoptimizer's simplifier, keeping UV seams and part borders, falling back to the sloppy simplifier) |
+| `--lods N1,N2` | Also writes `out_lod1.mof`, `out_lod2.mof` ... with about N1, N2 triangles (foliage LOD, docs/terrain.md) | The importer library (`engine/mof/mof_import.h`) uses libc only
 (no POSIX calls) so it can later run on Minimal-OS.
 
 **glTF 2.0** (via cgltf, after `cgltf_validate`):
